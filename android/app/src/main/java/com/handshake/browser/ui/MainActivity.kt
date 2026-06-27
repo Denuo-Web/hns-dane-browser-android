@@ -15,7 +15,6 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.EditorInfo
-import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.ServiceWorkerController
 import android.webkit.SslErrorHandler
@@ -166,7 +165,7 @@ class MainActivity : ComponentActivity() {
             webChromeClient = BrowserChromeClient()
         }
 
-        CookieManager.getInstance().setAcceptCookie(true)
+        BrowserCookiePreferences.applyTo(webView)
 
         val toolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -232,6 +231,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        BrowserCookiePreferences.applyTo(webView)
         registerSyncSnapshotReceiver()
         HnsSyncForegroundService.start(this)
         lastSyncSnapshot = HnsSyncSnapshot(

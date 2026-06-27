@@ -34,6 +34,20 @@ class HnsSyncForegroundServiceManifestTest {
 
         assertNotNull(settings)
         assertEquals("false", settings?.getAttributeNS(ANDROID_NS, "exported"))
+
+        val cookieSettings = document.getElementsByTagName("activity")
+            .elements()
+            .firstOrNull { it.getAttributeNS(ANDROID_NS, "name") == COOKIE_SETTINGS_ACTIVITY }
+
+        assertNotNull(cookieSettings)
+        assertEquals("false", cookieSettings?.getAttributeNS(ANDROID_NS, "exported"))
+
+        val legal = document.getElementsByTagName("activity")
+            .elements()
+            .firstOrNull { it.getAttributeNS(ANDROID_NS, "name") == LEGAL_ACTIVITY }
+
+        assertNotNull(legal)
+        assertEquals("false", legal?.getAttributeNS(ANDROID_NS, "exported"))
     }
 
     private fun locateManifest(): File {
@@ -60,6 +74,8 @@ class HnsSyncForegroundServiceManifestTest {
         const val ANDROID_NS = "http://schemas.android.com/apk/res/android"
         const val HNS_SYNC_SERVICE = ".net.HnsSyncForegroundService"
         const val SETTINGS_ACTIVITY = ".ui.SettingsActivity"
+        const val COOKIE_SETTINGS_ACTIVITY = ".ui.CookieSettingsActivity"
+        const val LEGAL_ACTIVITY = ".ui.LegalActivity"
         const val FOREGROUND_SERVICE = "android.permission.FOREGROUND_SERVICE"
         const val FOREGROUND_SERVICE_DATA_SYNC = "android.permission.FOREGROUND_SERVICE_DATA_SYNC"
     }

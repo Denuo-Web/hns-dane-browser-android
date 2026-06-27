@@ -33,7 +33,9 @@ Android UI / Browser Shell
 ## Android Modules
 
 - `MainActivity`: WebView browser shell with custom omnibox, left-side security status, shared HNS host policy, live-polled first-page sync progress bar and target stats, a separate WebView loading bar, hamburger-menu back/forward/refresh/settings actions, Service Worker HNS interception setup, security state, and navigation controls.
-- `SettingsActivity`: settings dashboard linking to diagnostics and exposing browser cookie clearing plus native resolver-cache clearing.
+- `SettingsActivity`: settings dashboard linking to diagnostics, cookie options, legal/user-agreement content, native resolver-cache clearing, and donation links.
+- `CookieSettingsActivity`: cookie preferences with persisted third-party cookie blocking and delete-cookies action.
+- `LegalActivity`: license, user agreement, build label, publisher-in-license language, and source-code link.
 - `BrowserUrlClassifier`: classifies searches, normal web URLs, and HNS names. Bare HNS names default to `https://`, and dotted hosts with non-common-ICANN final labels route through native HNS interception instead of Chromium DNS resolution.
 - `BrowserSecurityPolicy`: maps target kind, proxy availability, native sync outcome status, main-frame HNS gateway response status, DANE/WebPKI policy, and resolver policy into the toolbar security state so HNS names do not stay verified after a native gateway failure and DoH compatibility loads are visibly labeled.
 - `HnsProxyController`: runtime-gated AndroidX WebKit proxy configuration.

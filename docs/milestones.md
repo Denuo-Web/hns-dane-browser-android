@@ -68,7 +68,7 @@
 - ProxyController integration.
 - Loopback HTTP/CONNECT proxy with native persistent-cache HNS HTTP routing, WebView and Service Worker bodyless HNS HTTP/HTTPS request interception with file-backed decoded response bodies, bounded HNS redirect following, bounded header/body forwarding, reserved-name filtering, local HTTPS termination for HNS CONNECT using exact generated-certificate fingerprint pins, ICANN HTTP Upgrade tunnel preservation, and explicit fail-closed HNS WebSocket/HTTP Upgrade handling until native stream tunneling exists.
 - Packaged Rust JNI library.
-- Android `dataSync` foreground service, native sync scheduler, sync status broadcasts, live-polled first-page sync progress bar with target fallback, separate WebView loading bar, hamburger back/forward/refresh/settings menu, Settings dashboard for diagnostics/cookies/resolver cache, automatic active first-run catch-up while peer height or estimated tip is ahead, sync/cache diagnostics status with manual sync triggering, explicit syncing/up-to-date vs peer-failed outcomes, and per-peer sync failure stages.
+- Android `dataSync` foreground service, native sync scheduler, sync status broadcasts, live-polled first-page sync progress bar with target fallback, separate WebView loading bar, hamburger back/forward/refresh/settings menu, Settings dashboard for diagnostics, cookie options, resolver cache, legal/user agreement, and donations, automatic active first-run catch-up while peer height or estimated tip is ahead, sync/cache diagnostics status with manual sync triggering, explicit syncing/up-to-date vs peer-failed outcomes, and per-peer sync failure stages.
 - HNS omnibox rules.
 - Security and diagnostics UI.
 
