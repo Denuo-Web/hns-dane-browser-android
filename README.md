@@ -2,8 +2,6 @@
 
 Android HNS-native browser with a Rust resolver core.
 
-Source code: https://github.com/denuoweb/handshake-browser-android
-
 ## Layout
 
 - `rust/`: Cargo workspace for consensus primitives, header chain, Urkel proof interfaces, resolver, DNSSEC, DANE, transport, gateway, cache, and Android FFI.
@@ -71,3 +69,5 @@ Donations are optional and do not unlock any app features.
 ## License
 
 This repository is source-available under the PolyForm Noncommercial License 1.0.0. Noncommercial use, study, modification, and redistribution are allowed under the license. Commercial use requires separate written permission from Denuo Web, LLC.
+
+Source code: https://github.com/denuoweb/handshake-browser-android
