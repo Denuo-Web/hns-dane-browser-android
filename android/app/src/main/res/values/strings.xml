@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Handshake Browser</string>
+    <string name="app_name">HNS Browser</string>
     <string name="omnibox_hint">Search or enter HNS name</string>
     <string name="security_syncing">Syncing</string>
     <string name="security_loading">Loading</string>
