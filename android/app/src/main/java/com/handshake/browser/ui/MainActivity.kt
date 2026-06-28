@@ -2,19 +2,25 @@ package com.handshake.browser.ui
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.DownloadManager
 import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.webkit.URLUtil
 import android.webkit.WebChromeClient
 import android.webkit.ServiceWorkerController
 import android.webkit.SslErrorHandler
@@ -28,6 +34,7 @@ import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.core.content.ContextCompat
@@ -83,6 +90,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var webView: WebView
     private lateinit var omnibox: EditText
     private lateinit var securityLabel: TextView
+    private lateinit var hamburgerButton: TextView
     private lateinit var syncProgressBar: ProgressBar
     private lateinit var syncProgressStats: TextView
     private lateinit var pageProgressBar: ProgressBar
@@ -172,6 +180,9 @@ class MainActivity : ComponentActivity() {
             BrowserWebViewHardening.applyTo(this, allowJavaScript = true)
             webViewClient = BrowserClient()
             webChromeClient = BrowserChromeClient()
+            setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+                handleDownload(url, userAgent, contentDisposition, mimeType)
+            }
         }
 
         BrowserCookiePreferences.applyTo(webView)
@@ -240,8 +251,17 @@ class MainActivity : ComponentActivity() {
         })
 
         if (savedInstanceState == null) {
-            loadTarget(classifier.classify(DEFAULT_HOME))
+            loadInitialPage(intent)
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.getStringExtra(EXTRA_LOAD_URL)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { loadTarget(classifier.classify(it)) }
     }
 
     override fun onStart() {
@@ -342,33 +362,63 @@ class MainActivity : ComponentActivity() {
 
     private fun menuButton(): TextView =
         TextView(this).apply {
+            hamburgerButton = this
             text = "☰"
             textSize = 30f
             gravity = Gravity.CENTER
-            setPadding(18, 0, 18, 0)
+            contentDescription = getString(R.string.menu_hamburger_content_description)
+            minWidth = dp(48)
+            minHeight = dp(48)
+            setPadding(dp(12), 0, dp(12), 0)
             setTextColor(Color.rgb(36, 36, 36))
-            setOnClickListener { showBrowserMenu(this) }
+            setOnClickListener { showHamburgerMenu() }
         }
 
-    private fun showBrowserMenu(anchor: View) {
-        PopupMenu(this, anchor).apply {
-            menu.add(0, MENU_BACK, 0, "← Back").apply {
+    private fun showHamburgerMenu() {
+        val currentUrl = currentPageUrl()
+        val hasHnsDiagnosticContext = currentTargetKind == BrowserTargetKind.HnsName ||
+            !mainFrameHnsTraceJson.isNullOrBlank()
+
+        PopupMenu(this, hamburgerButton).apply {
+            menu.add(0, MENU_BACK, 0, getString(R.string.menu_back)).apply {
                 setIcon(android.R.drawable.ic_media_previous)
                 isEnabled = webView.canGoBack()
             }
-            menu.add(0, MENU_FORWARD, 1, "→ Forward").apply {
+            menu.add(0, MENU_FORWARD, 1, getString(R.string.menu_forward)).apply {
                 setIcon(android.R.drawable.ic_media_next)
                 isEnabled = webView.canGoForward()
             }
-            menu.add(0, MENU_REFRESH, 2, "↻ Refresh")
+            menu.add(0, MENU_REFRESH, 2, getString(R.string.menu_refresh))
                 .setIcon(android.R.drawable.ic_popup_sync)
-            menu.add(0, MENU_RESOLVER_TRACE, 3, "Resolver trace")
+            menu.add(0, MENU_HOME, 3, getString(R.string.menu_home))
+                .setIcon(android.R.drawable.ic_menu_upload)
+            menu.add(0, MENU_HISTORY, 4, getString(R.string.menu_history))
+                .setIcon(android.R.drawable.ic_menu_recent_history)
+            menu.add(0, MENU_DOWNLOADS, 5, getString(R.string.menu_downloads))
+                .setIcon(android.R.drawable.stat_sys_download_done)
+            menu.add(0, MENU_COPY_URL, 6, getString(R.string.menu_copy_current_url)).apply {
+                setIcon(android.R.drawable.ic_menu_save)
+                isEnabled = currentUrl != null
+            }
+            menu.add(0, MENU_SHARE_URL, 7, getString(R.string.menu_share_current_url)).apply {
+                setIcon(android.R.drawable.ic_menu_share)
+                isEnabled = currentUrl != null
+            }
+            menu.add(0, MENU_DIAGNOSTICS, 8, getString(R.string.menu_diagnostics))
                 .setIcon(android.R.drawable.ic_menu_info_details)
-            menu.add(0, MENU_HNS_PROOF_DETAILS, 4, "HNS proof details")
-                .setIcon(android.R.drawable.ic_menu_search)
-            menu.add(0, MENU_TLSA_INSPECTOR, 5, "TLSA inspector")
-                .setIcon(android.R.drawable.ic_menu_view)
-            menu.add(0, MENU_SETTINGS, 6, "Settings")
+            menu.add(0, MENU_RESOLVER_TRACE, 9, getString(R.string.menu_resolver_trace)).apply {
+                setIcon(android.R.drawable.ic_menu_info_details)
+                isEnabled = hasHnsDiagnosticContext
+            }
+            menu.add(0, MENU_HNS_PROOF_DETAILS, 10, getString(R.string.menu_hns_proof_details)).apply {
+                setIcon(android.R.drawable.ic_menu_search)
+                isEnabled = hasHnsDiagnosticContext
+            }
+            menu.add(0, MENU_TLSA_INSPECTOR, 11, getString(R.string.menu_tlsa_inspector)).apply {
+                setIcon(android.R.drawable.ic_menu_view)
+                isEnabled = hasHnsDiagnosticContext
+            }
+            menu.add(0, MENU_SETTINGS, 12, getString(R.string.menu_settings))
                 .setIcon(android.R.drawable.ic_menu_manage)
             setOnMenuItemClickListener { item ->
                 when (item.itemId) {
@@ -388,6 +438,30 @@ class MainActivity : ComponentActivity() {
                         webView.reload()
                         true
                     }
+                    MENU_HOME -> {
+                        loadHomePage()
+                        true
+                    }
+                    MENU_HISTORY -> {
+                        openHistory()
+                        true
+                    }
+                    MENU_DOWNLOADS -> {
+                        openDownloads()
+                        true
+                    }
+                    MENU_COPY_URL -> {
+                        copyCurrentUrl()
+                        true
+                    }
+                    MENU_SHARE_URL -> {
+                        shareCurrentUrl()
+                        true
+                    }
+                    MENU_DIAGNOSTICS -> {
+                        startActivity(Intent(this@MainActivity, DiagnosticsActivity::class.java))
+                        true
+                    }
                     MENU_RESOLVER_TRACE -> {
                         openResolverTrace()
                         true
@@ -401,7 +475,7 @@ class MainActivity : ComponentActivity() {
                         true
                     }
                     MENU_SETTINGS -> {
-                        startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
+                        openSettings()
                         true
                     }
                     else -> false
@@ -409,6 +483,22 @@ class MainActivity : ComponentActivity() {
             }
             show()
         }
+    }
+
+    private fun loadInitialPage(intent: Intent?) {
+        val requestedUrl = intent
+            ?.getStringExtra(EXTRA_LOAD_URL)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        if (requestedUrl != null) {
+            loadTarget(classifier.classify(requestedUrl))
+        } else {
+            loadHomePage()
+        }
+    }
+
+    private fun loadHomePage() {
+        loadTarget(classifier.classify(BrowserPreferences.homepage(this)))
     }
 
     private fun loadFromInput() {
@@ -499,6 +589,10 @@ class MainActivity : ComponentActivity() {
             pageLoadProgress = pageLoadProgress.coerceAtLeast(5)
             omnibox.setText(url)
             currentTargetKind = classifier.classify(url).kind
+            mainFrameHnsStatusCode = null
+            mainFrameHnsTlsPolicy = null
+            mainFrameHnsResolverPolicy = null
+            mainFrameHnsTraceJson = null
             refreshSecurityState()
             refreshPageProgress()
         }
@@ -536,6 +630,7 @@ class MainActivity : ComponentActivity() {
             omnibox.setText(url)
             pageIsLoading = false
             pageLoadProgress = PAGE_PROGRESS_MAX
+            recordHistoryEntry(url, view.title)
             refreshSecurityState()
             refreshPageProgress()
         }
@@ -575,10 +670,132 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun openSettings() {
+        val intent = Intent(this, SettingsActivity::class.java)
+        currentPageUrl()?.let { intent.putExtra(SettingsActivity.EXTRA_CURRENT_URL, it) }
+        startActivity(intent)
+    }
+
+    private fun openHistory() {
+        startActivity(Intent(this, HistoryActivity::class.java))
+    }
+
+    private fun openDownloads() {
+        startActivity(Intent(this, DownloadsActivity::class.java))
+    }
+
+    private fun copyCurrentUrl() {
+        val url = currentPageUrl()
+        if (url == null) {
+            Toast.makeText(this, getString(R.string.toast_no_current_url), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        getSystemService(ClipboardManager::class.java)
+            .setPrimaryClip(ClipData.newPlainText(getString(R.string.clip_current_url), url))
+        Toast.makeText(this, getString(R.string.toast_current_url_copied), Toast.LENGTH_SHORT).show()
+    }
+
+    private fun shareCurrentUrl() {
+        val url = currentPageUrl()
+        if (url == null) {
+            Toast.makeText(this, getString(R.string.toast_no_current_url), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, url)
+        }
+        startActivity(Intent.createChooser(sendIntent, getString(R.string.menu_share_current_url)))
+    }
+
+    private fun recordHistoryEntry(url: String, title: String?) {
+        BrowserHistoryStore.record(this, url, title)
+    }
+
+    private fun handleDownload(
+        url: String?,
+        userAgent: String?,
+        contentDisposition: String?,
+        mimeType: String?,
+    ) {
+        val downloadUrl = url?.trim().orEmpty()
+        unsupportedDownloadReason(downloadUrl)?.let { reason ->
+            Toast.makeText(this, reason, Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val fileName = URLUtil.guessFileName(downloadUrl, contentDisposition, mimeType)
+        val request = DownloadManager.Request(Uri.parse(downloadUrl))
+            .setTitle(fileName)
+            .setDescription(downloadUrl)
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+        if (!mimeType.isNullOrBlank()) {
+            request.setMimeType(mimeType)
+        }
+        if (!userAgent.isNullOrBlank()) {
+            request.addRequestHeader("User-Agent", userAgent)
+        }
+
+        try {
+            val id = getSystemService(DownloadManager::class.java).enqueue(request)
+            BrowserDownloadStore.record(this, id, downloadUrl, fileName, mimeType)
+            Toast.makeText(this, getString(R.string.toast_download_queued, fileName), Toast.LENGTH_SHORT).show()
+        } catch (error: IllegalArgumentException) {
+            Toast.makeText(
+                this,
+                getString(R.string.toast_download_not_supported, error.message ?: "unsupported URL"),
+                Toast.LENGTH_LONG,
+            ).show()
+        } catch (error: SecurityException) {
+            Toast.makeText(
+                this,
+                getString(R.string.toast_download_not_supported, error.message ?: "blocked by Android"),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    private fun unsupportedDownloadReason(url: String): String? {
+        if (url.isBlank()) {
+            return getString(R.string.toast_download_not_supported, "missing URL")
+        }
+
+        val uri = runCatching { Uri.parse(url) }.getOrNull()
+            ?: return getString(R.string.toast_download_not_supported, "invalid URL")
+        val scheme = uri.scheme?.lowercase()
+        if (scheme == "blob" || scheme == "data") {
+            return getString(R.string.toast_download_not_supported, "$scheme URLs are not supported yet")
+        }
+        if (scheme != "http" && scheme != "https") {
+            return getString(R.string.toast_download_not_supported, "only HTTP and HTTPS downloads are supported")
+        }
+        if (uri.host.equals("appassets.androidplatform.net", ignoreCase = true)) {
+            return getString(R.string.toast_download_not_supported, "local app assets cannot be downloaded")
+        }
+        if (classifier.classify(url).kind == BrowserTargetKind.HnsName) {
+            return getString(R.string.toast_download_not_supported, "HNS-resolved downloads are not supported yet")
+        }
+        return null
+    }
+
+    private fun currentPageUrl(): String? =
+        webView.url
+            ?.trim()
+            ?.takeIf { it.isNotBlank() && it != "about:blank" }
+            ?: omnibox.text.toString()
+                .trim()
+                .takeIf { it.isNotBlank() && it != "about:blank" }
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density).toInt()
+
     companion object {
+        const val EXTRA_LOAD_URL = "com.handshake.browser.LOAD_URL"
+
         private const val EPHEMERAL_GATEWAY_PORT = 0
-        private const val DEFAULT_HOME =
-            "https://appassets.androidplatform.net/assets/hns_directory.html"
         private const val SYNC_PROGRESS_MAX = 1000
         private const val PAGE_PROGRESS_MAX = 100
         private const val SYNC_STATUS_POLL_MS = 2_000L
@@ -586,9 +803,15 @@ class MainActivity : ComponentActivity() {
         private const val MENU_BACK = 1
         private const val MENU_FORWARD = 2
         private const val MENU_REFRESH = 3
-        private const val MENU_RESOLVER_TRACE = 4
-        private const val MENU_HNS_PROOF_DETAILS = 5
-        private const val MENU_TLSA_INSPECTOR = 6
-        private const val MENU_SETTINGS = 7
+        private const val MENU_HOME = 4
+        private const val MENU_HISTORY = 5
+        private const val MENU_DOWNLOADS = 6
+        private const val MENU_COPY_URL = 7
+        private const val MENU_SHARE_URL = 8
+        private const val MENU_DIAGNOSTICS = 9
+        private const val MENU_RESOLVER_TRACE = 10
+        private const val MENU_HNS_PROOF_DETAILS = 11
+        private const val MENU_TLSA_INSPECTOR = 12
+        private const val MENU_SETTINGS = 13
     }
 }
