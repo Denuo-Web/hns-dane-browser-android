@@ -27,6 +27,7 @@ pub const DEFAULT_MALFORMED_BAN_SECONDS: u64 = 24 * 60 * 60;
 pub const DEFAULT_PEER_DISCOVERY_TARGET: usize = 64;
 pub const DEFAULT_PEER_DISCOVERY_QUERY_PEERS: usize = 8;
 pub const DEFAULT_PARALLEL_PEER_PROBES: usize = 0;
+pub const DEFAULT_PARALLEL_HEADER_FETCH_PEERS: usize = 1;
 const MAX_HSD_NAME_STATE_NAME_BYTES: usize = 63;
 const MAX_HSD_NAME_STATE_DATA_BYTES: usize = 512;
 const HSD_NAME_STATE_FIXED_TAIL_BYTES: usize = 10;
@@ -50,6 +51,7 @@ pub struct HeaderSyncRunnerConfig {
     pub peer_discovery_target: usize,
     pub peer_discovery_query_peers: usize,
     pub parallel_peer_probes: usize,
+    pub parallel_header_fetch_peers: usize,
     pub parallel_peer_probe_timeout: Duration,
     pub timeout: Duration,
     pub stop: Hash,
@@ -182,6 +184,7 @@ impl Default for HeaderSyncRunnerConfig {
             peer_discovery_target: DEFAULT_PEER_DISCOVERY_TARGET,
             peer_discovery_query_peers: DEFAULT_PEER_DISCOVERY_QUERY_PEERS,
             parallel_peer_probes: DEFAULT_PARALLEL_PEER_PROBES,
+            parallel_header_fetch_peers: DEFAULT_PARALLEL_HEADER_FETCH_PEERS,
             parallel_peer_probe_timeout: DEFAULT_PARALLEL_PEER_PROBE_TIMEOUT,
             timeout: DEFAULT_SYNC_TIMEOUT,
             stop: Hash::ZERO,
@@ -519,7 +522,116 @@ impl HeaderSyncRunner<TcpHeaderPeerConnector> {
         now: u64,
     ) -> Result<HeaderSyncRunResult, SyncError> {
         self.probe_peers_parallel_and_persist(peers, store, now)?;
-        self.sync_once_and_persist(coordinator, peers, store, now)
+        if self.config.parallel_header_fetch_peers > 1 {
+            self.sync_once_racing_and_persist(coordinator, peers, store, now)
+        } else {
+            self.sync_once_and_persist(coordinator, peers, store, now)
+        }
+    }
+
+    fn sync_once_racing_and_persist<S: HeaderStore>(
+        &self,
+        coordinator: &mut HeaderSyncCoordinator<S>,
+        peers: &mut PeerManager,
+        store: &SqlitePeerStore,
+        now: u64,
+    ) -> Result<HeaderSyncRunResult, SyncError> {
+        let max_batches = self
+            .config
+            .preferred_peers
+            .max(1)
+            .saturating_mul(self.config.max_header_batches_per_peer.max(1));
+        let mut result = HeaderSyncRunResult::empty();
+
+        for _ in 0..max_batches {
+            let candidates =
+                peers.select_outbound(self.config.parallel_header_fetch_peers.max(1), now);
+            if candidates.is_empty() {
+                break;
+            }
+            let locator = coordinator.locator()?;
+            let batch = race_tcp_header_batch(
+                candidates,
+                self.network.clone(),
+                self.local_version.clone(),
+                self.config.timeout,
+                locator,
+                self.config.stop,
+            );
+            result.attempted = result.attempted.saturating_add(1);
+
+            let (address, remote_height, headers) = match batch {
+                HeaderRaceOutcome::Success {
+                    address,
+                    remote_height,
+                    headers,
+                } => (address, remote_height, headers),
+                HeaderRaceOutcome::Failure(failures) => {
+                    for failure in failures {
+                        peers.record_transient_failure(failure.address);
+                        result.failures.push(failure);
+                    }
+                    persist_peer_manager(Some(store), peers)?;
+                    break;
+                }
+            };
+
+            peers.record_observed_height(address, remote_height, now);
+            persist_peer_manager(Some(store), peers)?;
+            let header_count = headers.len();
+            if header_count == 0 {
+                peers.record_success(address, remote_height, now);
+                persist_peer_manager(Some(store), peers)?;
+                result.successful = result.successful.saturating_add(1);
+                break;
+            }
+
+            match coordinator.ingest_headers(headers) {
+                Ok(batch) => {
+                    result.successful = result.successful.saturating_add(1);
+                    result.accepted = result.accepted.saturating_add(batch.accepted);
+                    result.best = batch.best;
+                    peers.record_success(address, remote_height, now);
+                    persist_peer_manager(Some(store), peers)?;
+                    if header_count < MAX_HEADERS || batch.accepted == 0 {
+                        break;
+                    }
+                }
+                Err(SyncError::Chain(error)) => {
+                    record_chain_failure(
+                        peers,
+                        address,
+                        now,
+                        &error,
+                        self.config.malformed_ban_seconds,
+                    );
+                    persist_peer_manager(Some(store), peers)?;
+                    return match error {
+                        ChainError::Storage(_) | ChainError::MissingBestHeader => {
+                            Err(SyncError::Chain(error))
+                        }
+                        ChainError::UnknownParent
+                        | ChainError::DuplicateHeader
+                        | ChainError::InvalidGenesisHeader
+                        | ChainError::InvalidDifficultyBits { .. }
+                        | ChainError::InvalidDifficultyWindow
+                        | ChainError::InvalidProofOfWork
+                        | ChainError::Pow(_) => {
+                            result.failures.push(HeaderPeerFailure {
+                                address,
+                                stage: HeaderPeerFailureStage::Chain,
+                                error: error.to_string(),
+                            });
+                            Ok(result)
+                        }
+                    };
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        store.save_manager(peers)?;
+        Ok(result)
     }
 
     pub fn probe_peers_parallel_and_persist(
@@ -592,6 +704,112 @@ enum ParallelPeerProbe {
         discovered: Vec<SocketAddr>,
     },
     Failure(HeaderPeerFailure),
+}
+
+enum HeaderRaceOutcome {
+    Success {
+        address: SocketAddr,
+        remote_height: Height,
+        headers: Vec<BlockHeader>,
+    },
+    Failure(Vec<HeaderPeerFailure>),
+}
+
+fn race_tcp_header_batch(
+    addresses: Vec<SocketAddr>,
+    network: Network,
+    local_version: VersionPacket,
+    timeout: Duration,
+    locator: Vec<Hash>,
+    stop: Hash,
+) -> HeaderRaceOutcome {
+    let count = addresses.len();
+    let (sender, receiver) = mpsc::channel();
+    for address in addresses {
+        let sender = sender.clone();
+        let network = network.clone();
+        let local_version = local_version.clone();
+        let locator = locator.clone();
+        thread::spawn(move || {
+            let _ = sender.send(request_tcp_header_batch(
+                address,
+                network,
+                local_version,
+                timeout,
+                locator,
+                stop,
+            ));
+        });
+    }
+    drop(sender);
+
+    let mut failures = Vec::new();
+    for _ in 0..count {
+        match receiver.recv() {
+            Ok(HeaderRaceOutcome::Success {
+                address,
+                remote_height,
+                headers,
+            }) => {
+                return HeaderRaceOutcome::Success {
+                    address,
+                    remote_height,
+                    headers,
+                };
+            }
+            Ok(HeaderRaceOutcome::Failure(mut batch_failures)) => {
+                failures.append(&mut batch_failures);
+            }
+            Err(_) => break,
+        }
+    }
+    HeaderRaceOutcome::Failure(failures)
+}
+
+fn request_tcp_header_batch(
+    address: SocketAddr,
+    network: Network,
+    local_version: VersionPacket,
+    timeout: Duration,
+    locator: Vec<Hash>,
+    stop: Hash,
+) -> HeaderRaceOutcome {
+    let mut peer = match PeerConnection::connect(address, network, timeout) {
+        Ok(peer) => peer,
+        Err(error) => {
+            return HeaderRaceOutcome::Failure(vec![HeaderPeerFailure {
+                address,
+                stage: HeaderPeerFailureStage::Connect,
+                error: error.to_string(),
+            }]);
+        }
+    };
+    let mut session = HeaderSyncSession::new(local_version);
+    let remote = match peer.handshake(&mut session) {
+        Ok(remote) => remote,
+        Err(error) => {
+            return HeaderRaceOutcome::Failure(vec![HeaderPeerFailure {
+                address,
+                stage: HeaderPeerFailureStage::Handshake,
+                error: error.to_string(),
+            }]);
+        }
+    };
+    let headers = match peer.request_headers(&mut session, locator, stop) {
+        Ok(headers) => headers,
+        Err(error) => {
+            return HeaderRaceOutcome::Failure(vec![HeaderPeerFailure {
+                address,
+                stage: HeaderPeerFailureStage::Headers,
+                error: error.to_string(),
+            }]);
+        }
+    };
+    HeaderRaceOutcome::Success {
+        address,
+        remote_height: remote.height,
+        headers,
+    }
 }
 
 fn probe_tcp_header_peer(
@@ -675,17 +893,7 @@ impl<S: HeaderStore> HeaderSyncCoordinator<S> {
         &mut self,
         headers: Vec<BlockHeader>,
     ) -> Result<HeaderBatchResult, SyncError> {
-        let mut accepted = 0;
-        for header in headers {
-            if self.chain.get_header(header.hash()).is_some() {
-                continue;
-            }
-            match self.chain.insert_header(header) {
-                Ok(_) => accepted += 1,
-                Err(ChainError::DuplicateHeader) => continue,
-                Err(error) => return Err(error.into()),
-            }
-        }
+        let accepted = self.chain.insert_headers(headers)?.len();
 
         Ok(HeaderBatchResult {
             accepted,
@@ -1097,7 +1305,10 @@ mod tests {
     use hns_chain::MemoryHeaderStore;
     use hns_core::network;
     use hns_core::pow::verify_pow;
-    use hns_p2p::{AddrPacket, NetAddress, Packet, PeerConnection, SERVICE_NETWORK, VersionPacket};
+    use hns_p2p::{
+        AddrPacket, HeadersPacket, NetAddress, Packet, PeerConnection, SERVICE_NETWORK,
+        VersionPacket,
+    };
     use hns_resolver::HnsResourceValueProvider;
     use hns_urkel::{FailClosedProofVerifier, ProofKind};
     use std::cell::RefCell;
@@ -1506,6 +1717,49 @@ mod tests {
     }
 
     #[test]
+    fn header_sync_runner_races_header_batch_and_uses_fast_peer() {
+        let path = temp_db_path("race-headers");
+        let mut coordinator = seeded_coordinator();
+        let genesis = coordinator.chain().best_header().unwrap().unwrap();
+        let child = low_difficulty_child(&genesis);
+        let (slow, slow_server) =
+            spawn_header_server(Height(1), vec![child.clone()], Duration::from_millis(300));
+        let (fast, fast_server) = spawn_header_server(Height(1), vec![child], Duration::ZERO);
+        let mut peers = PeerManager::default();
+        peers.seed([slow, fast]);
+        let runner = HeaderSyncRunner::with_config(
+            network::mainnet(),
+            TcpHeaderPeerConnector,
+            HeaderSyncRunnerConfig {
+                preferred_peers: 1,
+                max_header_batches_per_peer: 1,
+                parallel_header_fetch_peers: 2,
+                timeout: Duration::from_secs(2),
+                ..HeaderSyncRunnerConfig::default()
+            },
+        );
+
+        {
+            let store = SqlitePeerStore::open(&path).unwrap();
+            let result = runner
+                .sync_once_parallel_and_persist(&mut coordinator, &mut peers, &store, 800)
+                .unwrap();
+
+            assert_eq!(result.attempted, 1);
+            assert_eq!(result.successful, 1);
+            assert_eq!(result.accepted, 1);
+            assert_eq!(result.best.unwrap().height, Height(1));
+            assert_eq!(peers.get(fast).unwrap().successes, 1);
+            assert_eq!(peers.get(slow).unwrap().successes, 0);
+            store.flush().unwrap();
+        }
+
+        fast_server.join().unwrap();
+        slow_server.join().unwrap();
+        cleanup_db_path(&path);
+    }
+
+    #[test]
     fn header_sync_runner_reports_peer_failure_stage() {
         let mut coordinator = seeded_coordinator();
         let address: std::net::SocketAddr = "127.0.0.1:12039".parse().unwrap();
@@ -1866,6 +2120,48 @@ mod tests {
                     .collect(),
             }))
             .unwrap();
+        });
+
+        (address, server)
+    }
+
+    fn spawn_header_server(
+        remote_height: Height,
+        headers: Vec<BlockHeader>,
+        response_delay: Duration,
+    ) -> (SocketAddr, thread::JoinHandle<()>) {
+        let network = network::mainnet();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut peer = PeerConnection::new(stream, network);
+
+            assert!(matches!(peer.receive_packet().unwrap(), Packet::Version(_),));
+            peer.send_packet(&Packet::Version(VersionPacket {
+                height: remote_height,
+                ..VersionPacket::default()
+            }))
+            .unwrap();
+            assert_eq!(peer.receive_packet().unwrap(), Packet::Verack);
+            peer.send_packet(&Packet::Verack).unwrap();
+
+            match peer.receive_packet().unwrap() {
+                Packet::GetHeaders(request) => {
+                    assert_eq!(request.locator, vec![BlockHeader::mainnet_genesis().hash()]);
+                    assert_eq!(request.stop, Hash::ZERO);
+                }
+                other => panic!("unexpected packet: {other:?}"),
+            }
+            thread::sleep(response_delay);
+            peer.send_packet(&Packet::Headers(HeadersPacket { items: headers }))
+                .unwrap();
         });
 
         (address, server)

@@ -181,9 +181,38 @@ pub fn target_to_compact(target: &Target) -> u32 {
 }
 
 pub fn verify_pow(hash: Hash, bits: u32) -> Result<bool, PowError> {
-    let target = Target::from_compact(bits)?;
-    let value = BigUint::from_bytes_be(hash.as_bytes());
-    Ok(value <= *target.as_biguint())
+    Ok(hash.as_bytes() <= &target_bytes_from_compact(bits)?)
+}
+
+fn target_bytes_from_compact(bits: u32) -> Result<[u8; 32], PowError> {
+    if bits & 0x0080_0000 != 0 {
+        return Err(PowError::NegativeTarget);
+    }
+
+    let exponent = bits >> 24;
+    let mantissa = bits & 0x007f_ffff;
+    if mantissa == 0 {
+        return Err(PowError::ZeroTarget);
+    }
+
+    if exponent > 32 {
+        return Ok(Target::from_compact(bits)?.to_be_bytes_32());
+    }
+
+    let mut out = [0u8; 32];
+    if exponent <= 3 {
+        let target = mantissa >> (8 * (3 - exponent));
+        out[28..].copy_from_slice(&target.to_be_bytes());
+    } else {
+        let offset = 32usize
+            .checked_sub(exponent as usize)
+            .ok_or(PowError::Overflow)?;
+        out[offset] = (mantissa >> 16) as u8;
+        out[offset + 1] = (mantissa >> 8) as u8;
+        out[offset + 2] = mantissa as u8;
+    }
+
+    Ok(out)
 }
 
 #[cfg(test)]

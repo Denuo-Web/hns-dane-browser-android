@@ -2,7 +2,7 @@ use hns_core::hash::Hash;
 use hns_core::pow::{Chainwork, PowError, Target, target_for_work, verify_pow};
 use hns_core::{BlockHeader, Height};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use thiserror::Error;
 
@@ -23,9 +23,21 @@ pub struct StoredHeader {
 pub trait HeaderStore {
     fn get_header(&self, hash: Hash) -> Option<StoredHeader>;
     fn put_header(&mut self, header: StoredHeader) -> Result<(), ChainError>;
+    fn put_headers(&mut self, headers: &[StoredHeader]) -> Result<(), ChainError> {
+        for header in headers {
+            self.put_header(header.clone())?;
+        }
+        Ok(())
+    }
     fn best_hash(&self) -> Option<Hash>;
     fn canonical_hash(&self, height: Height) -> Option<Hash>;
     fn promote_canonical_tip(&mut self, header: &StoredHeader) -> Result<(), ChainError>;
+    fn promote_canonical_tips(&mut self, headers: &[StoredHeader]) -> Result<(), ChainError> {
+        for header in headers {
+            self.promote_canonical_tip(header)?;
+        }
+        Ok(())
+    }
     fn replace_canonical_chain(&mut self, headers: &[StoredHeader]) -> Result<(), ChainError>;
 }
 
@@ -256,6 +268,42 @@ impl HeaderStore for SqliteHeaderStore {
         Ok(())
     }
 
+    fn put_headers(&mut self, headers: &[StoredHeader]) -> Result<(), ChainError> {
+        if headers.is_empty() {
+            return Ok(());
+        }
+
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|error| ChainError::Storage(error.to_string()))?;
+        for header in headers {
+            let inserted = transaction
+                .execute(
+                    "
+                    INSERT OR IGNORE INTO headers_by_hash(hash, height, chainwork, header)
+                    VALUES (?1, ?2, ?3, ?4)
+                    ",
+                    params![
+                        header.hash.as_bytes().as_slice(),
+                        header.height.0,
+                        header.chainwork.to_hex(),
+                        header.header.serialize().as_slice(),
+                    ],
+                )
+                .map_err(|error| ChainError::Storage(error.to_string()))?;
+
+            if inserted == 0 {
+                return Err(ChainError::DuplicateHeader);
+            }
+        }
+        transaction
+            .commit()
+            .map_err(|error| ChainError::Storage(error.to_string()))?;
+
+        Ok(())
+    }
+
     fn best_hash(&self) -> Option<Hash> {
         self.connection
             .query_row(
@@ -322,6 +370,44 @@ impl HeaderStore for SqliteHeaderStore {
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value
                 ",
                 params![header.hash.as_bytes().as_slice()],
+            )
+            .map_err(|error| ChainError::Storage(error.to_string()))?;
+        transaction
+            .commit()
+            .map_err(|error| ChainError::Storage(error.to_string()))?;
+
+        Ok(())
+    }
+
+    fn promote_canonical_tips(&mut self, headers: &[StoredHeader]) -> Result<(), ChainError> {
+        let Some(tip) = headers.last() else {
+            return Ok(());
+        };
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|error| ChainError::Storage(error.to_string()))?;
+
+        for header in headers {
+            transaction
+                .execute(
+                    "
+                    INSERT INTO hash_by_height(height, hash)
+                    VALUES (?1, ?2)
+                    ON CONFLICT(height) DO UPDATE SET hash = excluded.hash
+                    ",
+                    params![header.height.0, header.hash.as_bytes().as_slice()],
+                )
+                .map_err(|error| ChainError::Storage(error.to_string()))?;
+        }
+        transaction
+            .execute(
+                "
+                INSERT INTO chain_state(key, value)
+                VALUES ('best_hash', ?1)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                ",
+                params![tip.hash.as_bytes().as_slice()],
             )
             .map_err(|error| ChainError::Storage(error.to_string()))?;
         transaction
@@ -441,6 +527,87 @@ impl<S: HeaderStore> HeaderChain<S> {
         Ok(stored)
     }
 
+    pub fn insert_headers<I>(&mut self, headers: I) -> Result<Vec<StoredHeader>, ChainError>
+    where
+        I: IntoIterator<Item = BlockHeader>,
+    {
+        let mut accepted = Vec::new();
+        let mut pending = HashMap::new();
+        let mut seen = HashSet::new();
+        let mut chainwork_by_bits = HashMap::new();
+
+        for header in headers {
+            let hash = header.hash();
+            if !seen.insert(hash) || self.store.get_header(hash).is_some() {
+                continue;
+            }
+            let parent = pending
+                .get(&header.prev_block)
+                .cloned()
+                .or_else(|| self.store.get_header(header.prev_block))
+                .ok_or(ChainError::UnknownParent)?;
+            self.validate_difficulty_bits_with_pending(&header, &parent, &pending)?;
+            if !verify_pow(hash, header.bits)? {
+                return Err(ChainError::InvalidProofOfWork);
+            }
+            let header_work = match chainwork_by_bits.get(&header.bits) {
+                Some(work) => work,
+                None => {
+                    chainwork_by_bits.insert(header.bits, Chainwork::from_bits(header.bits)?);
+                    chainwork_by_bits
+                        .get(&header.bits)
+                        .expect("cached chainwork must exist")
+                }
+            };
+            let chainwork = parent.chainwork.checked_add(header_work);
+            let stored = StoredHeader {
+                hash,
+                header,
+                height: Height(parent.height.0 + 1),
+                chainwork,
+            };
+            pending.insert(hash, stored.clone());
+            accepted.push(stored);
+        }
+
+        if accepted.is_empty() {
+            return Ok(accepted);
+        }
+
+        let best = self.best_header()?;
+        let (best_index, best_candidate) = accepted
+            .iter()
+            .enumerate()
+            .max_by(|(_, left), (_, right)| left.chainwork.cmp(&right.chainwork))
+            .map(|(index, header)| (index, header.clone()))
+            .ok_or(ChainError::MissingBestHeader)?;
+        let should_promote = match &best {
+            Some(best) => best_candidate.chainwork > best.chainwork,
+            None => true,
+        };
+        let extends_best = best.as_ref().is_some_and(|best| {
+            accepted
+                .first()
+                .is_some_and(|header| header.header.prev_block == best.hash)
+                && accepted[..=best_index]
+                    .windows(2)
+                    .all(|window| window[1].header.prev_block == window[0].hash)
+        });
+
+        self.store.put_headers(&accepted)?;
+
+        if should_promote {
+            if extends_best {
+                self.store
+                    .promote_canonical_tips(&accepted[..=best_index])?;
+            } else {
+                self.promote_best_hash(best_candidate.hash)?;
+            }
+        }
+
+        Ok(accepted)
+    }
+
     pub fn best_header(&self) -> Result<Option<StoredHeader>, ChainError> {
         match self.store.best_hash() {
             Some(hash) => self
@@ -489,11 +656,20 @@ impl<S: HeaderStore> HeaderChain<S> {
         header: &BlockHeader,
         parent: &StoredHeader,
     ) -> Result<(), ChainError> {
+        self.validate_difficulty_bits_with_pending(header, parent, &HashMap::new())
+    }
+
+    fn validate_difficulty_bits_with_pending(
+        &self,
+        header: &BlockHeader,
+        parent: &StoredHeader,
+        pending: &HashMap<Hash, StoredHeader>,
+    ) -> Result<(), ChainError> {
         let DifficultyPolicy::Mainnet = self.difficulty_policy else {
             return Ok(());
         };
 
-        let expected = self.expected_mainnet_bits(parent)?;
+        let expected = self.expected_mainnet_bits_with_pending(parent, pending)?;
         if header.bits != expected {
             return Err(ChainError::InvalidDifficultyBits {
                 actual: header.bits,
@@ -504,14 +680,27 @@ impl<S: HeaderStore> HeaderChain<S> {
         Ok(())
     }
 
+    #[cfg(test)]
     fn expected_mainnet_bits(&self, parent: &StoredHeader) -> Result<u32, ChainError> {
+        self.expected_mainnet_bits_with_pending(parent, &HashMap::new())
+    }
+
+    fn expected_mainnet_bits_with_pending(
+        &self,
+        parent: &StoredHeader,
+        pending: &HashMap<Hash, StoredHeader>,
+    ) -> Result<u32, ChainError> {
         if parent.height.0 < MAINNET_BLOCKS_PER_DAY + 2 {
             return Ok(MAINNET_POW_BITS);
         }
 
-        let last = self.suitable_block(parent)?;
-        let ancestor = self.ancestor(parent, Height(parent.height.0 - MAINNET_BLOCKS_PER_DAY))?;
-        let first = self.suitable_block(&ancestor)?;
+        let last = self.suitable_block_with_pending(parent, pending)?;
+        let ancestor = self.ancestor_with_pending(
+            parent,
+            Height(parent.height.0 - MAINNET_BLOCKS_PER_DAY),
+            pending,
+        )?;
+        let first = self.suitable_block_with_pending(&ancestor, pending)?;
 
         self.retarget_bits(&first, &last)
     }
@@ -545,30 +734,46 @@ impl<S: HeaderStore> HeaderChain<S> {
         Ok(target.to_compact())
     }
 
-    fn suitable_block(&self, header: &StoredHeader) -> Result<StoredHeader, ChainError> {
+    fn suitable_block_with_pending(
+        &self,
+        header: &StoredHeader,
+        pending: &HashMap<Hash, StoredHeader>,
+    ) -> Result<StoredHeader, ChainError> {
         let z = header.clone();
-        let y = self.previous(&z)?;
-        let x = self.previous(&y)?;
+        let y = self.previous_with_pending(&z, pending)?;
+        let x = self.previous_with_pending(&y, pending)?;
         let mut blocks = [x, y, z];
         blocks.sort_by_key(|block| block.header.time);
 
         Ok(blocks[1].clone())
     }
 
-    fn ancestor(&self, header: &StoredHeader, height: Height) -> Result<StoredHeader, ChainError> {
+    fn ancestor_with_pending(
+        &self,
+        header: &StoredHeader,
+        height: Height,
+        pending: &HashMap<Hash, StoredHeader>,
+    ) -> Result<StoredHeader, ChainError> {
         if height.0 > header.height.0 {
             return Err(ChainError::InvalidDifficultyWindow);
         }
 
         let mut current = header.clone();
         while current.height.0 > height.0 {
-            current = self.previous(&current)?;
+            current = self.previous_with_pending(&current, pending)?;
         }
 
         Ok(current)
     }
 
-    fn previous(&self, header: &StoredHeader) -> Result<StoredHeader, ChainError> {
+    fn previous_with_pending(
+        &self,
+        header: &StoredHeader,
+        pending: &HashMap<Hash, StoredHeader>,
+    ) -> Result<StoredHeader, ChainError> {
+        if let Some(previous) = pending.get(&header.header.prev_block) {
+            return Ok(previous.clone());
+        }
         self.store
             .get_header(header.header.prev_block)
             .ok_or(ChainError::UnknownParent)
@@ -747,6 +952,48 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_batch_header_insert_survives_reopen() {
+        let path = temp_db_path("batch-headers");
+        let genesis;
+        let child;
+        let grandchild;
+        {
+            let store = SqliteHeaderStore::open(&path).unwrap();
+            let mut chain = permissive_chain(store);
+            genesis = chain
+                .insert_genesis(BlockHeader::mainnet_genesis())
+                .unwrap();
+            let child_header = low_difficulty_child(&genesis, 12);
+            let child_stub = StoredHeader {
+                hash: child_header.hash(),
+                header: child_header.clone(),
+                height: Height(1),
+                chainwork: Chainwork::zero(),
+            };
+            let grandchild_header = low_difficulty_child(&child_stub, 13);
+            let accepted = chain
+                .insert_headers([child_header, grandchild_header])
+                .unwrap();
+            child = accepted[0].clone();
+            grandchild = accepted[1].clone();
+            chain.into_store().flush().unwrap();
+        }
+
+        {
+            let store = SqliteHeaderStore::open(&path).unwrap();
+            let chain = permissive_chain(store);
+
+            assert_eq!(chain.best_header().unwrap().unwrap(), grandchild);
+            assert_eq!(chain.canonical_hash(Height(0)), Some(genesis.hash));
+            assert_eq!(chain.canonical_hash(Height(1)), Some(child.hash));
+            assert_eq!(chain.canonical_hash(Height(2)), Some(grandchild.hash));
+            chain.into_store().flush().unwrap();
+        }
+
+        cleanup_db_path(&path);
+    }
+
+    #[test]
     fn best_chain_extension_promotes_only_new_tip() {
         let mut chain = permissive_chain(CountingHeaderStore::default());
         let genesis = chain
@@ -764,11 +1011,49 @@ mod tests {
         assert_eq!(store.inner.best_hash(), Some(child.hash));
     }
 
+    #[test]
+    fn batch_chain_extension_uses_one_batch_put_and_promotion() {
+        let mut chain = permissive_chain(CountingHeaderStore::default());
+        let genesis = chain
+            .insert_genesis(BlockHeader::mainnet_genesis())
+            .unwrap();
+        let child_header = low_difficulty_child(&genesis, 14);
+        let child_stub = StoredHeader {
+            hash: child_header.hash(),
+            header: child_header.clone(),
+            height: Height(1),
+            chainwork: Chainwork::zero(),
+        };
+        let grandchild_header = low_difficulty_child(&child_stub, 15);
+        let accepted = chain
+            .insert_headers([child_header, grandchild_header])
+            .unwrap();
+        let store = chain.into_store();
+
+        assert_eq!(accepted.len(), 2);
+        assert_eq!(store.full_replacements, 1);
+        assert_eq!(store.batch_puts, 1);
+        assert_eq!(store.batch_tip_promotions, 1);
+        assert_eq!(store.tip_promotions, 0);
+        assert_eq!(store.inner.canonical_hash(Height(0)), Some(genesis.hash));
+        assert_eq!(
+            store.inner.canonical_hash(Height(1)),
+            Some(accepted[0].hash)
+        );
+        assert_eq!(
+            store.inner.canonical_hash(Height(2)),
+            Some(accepted[1].hash)
+        );
+        assert_eq!(store.inner.best_hash(), Some(accepted[1].hash));
+    }
+
     #[derive(Default)]
     struct CountingHeaderStore {
         inner: MemoryHeaderStore,
         full_replacements: usize,
         tip_promotions: usize,
+        batch_puts: usize,
+        batch_tip_promotions: usize,
     }
 
     impl HeaderStore for CountingHeaderStore {
@@ -778,6 +1063,11 @@ mod tests {
 
         fn put_header(&mut self, header: StoredHeader) -> Result<(), ChainError> {
             self.inner.put_header(header)
+        }
+
+        fn put_headers(&mut self, headers: &[StoredHeader]) -> Result<(), ChainError> {
+            self.batch_puts += 1;
+            self.inner.put_headers(headers)
         }
 
         fn best_hash(&self) -> Option<Hash> {
@@ -791,6 +1081,11 @@ mod tests {
         fn promote_canonical_tip(&mut self, header: &StoredHeader) -> Result<(), ChainError> {
             self.tip_promotions += 1;
             self.inner.promote_canonical_tip(header)
+        }
+
+        fn promote_canonical_tips(&mut self, headers: &[StoredHeader]) -> Result<(), ChainError> {
+            self.batch_tip_promotions += 1;
+            self.inner.promote_canonical_tips(headers)
         }
 
         fn replace_canonical_chain(&mut self, headers: &[StoredHeader]) -> Result<(), ChainError> {

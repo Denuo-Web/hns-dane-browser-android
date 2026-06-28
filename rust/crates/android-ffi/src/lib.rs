@@ -50,6 +50,7 @@ const DEFAULT_GATEWAY_PROOF_TIMEOUT: Duration = Duration::from_secs(3);
 const ANDROID_HEADER_SYNC_PEERS: usize = 12;
 const ANDROID_HEADER_SYNC_BATCHES_PER_PEER: usize = 16;
 const ANDROID_PARALLEL_PEER_PROBES: usize = 32;
+const ANDROID_PARALLEL_HEADER_FETCH_PEERS: usize = 4;
 const ANDROID_MIN_PEER_TARGET: usize = 64;
 const MAINNET_GENESIS_TIME: u64 = 1_580_745_078;
 const MAINNET_TARGET_SPACING_SECONDS: u64 = 10 * 60;
@@ -2159,6 +2160,7 @@ fn run_sync_once(
             max_header_batches_per_peer: ANDROID_HEADER_SYNC_BATCHES_PER_PEER,
             peer_discovery_target: ANDROID_MIN_PEER_TARGET,
             parallel_peer_probes: ANDROID_PARALLEL_PEER_PROBES,
+            parallel_header_fetch_peers: ANDROID_PARALLEL_HEADER_FETCH_PEERS,
             timeout,
             ..HeaderSyncRunnerConfig::default()
         },
