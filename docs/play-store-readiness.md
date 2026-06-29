@@ -9,7 +9,7 @@ This checklist maps HNS Browser to current Google Play release requirements and 
 | Area | Status | Evidence / Action |
 | --- | --- | --- |
 | Target API level | Ready | `targetSdk = 37`, above the current Google Play requirement of Android 15 / API 35 for new apps and updates. |
-| Android App Bundle | Ready | Signed upload AAB: `dist/play-store/hns-browser-v0.1.9-play-upload-signed.aab`. |
+| Android App Bundle | Ready | Signed upload AAB: `dist/play-store/hns-browser-v0.2.0-play-upload-signed.aab`. |
 | 64-bit native code | Ready | Release bundle includes `arm64-v8a` and `x86_64` `libhns_browser_ffi.so`; no 32-bit ABI is shipped. |
 | Restricted permissions | Ready | Manifest does not request location, contacts, SMS, call logs, camera, microphone, all-files, package visibility, or account permissions. |
 | Foreground service | Play Console declaration required | App uses `dataSync` foreground service for visible HNS header/proof sync. Complete the Foreground service declaration and provide a short demo video. |
@@ -43,7 +43,7 @@ Then run:
   :app:verifyPlayReleaseBundle
 ```
 
-`verifyPlayReleaseBundle` builds `android/app/build/outputs/bundle/release/app-release.aab`, verifies that upload signing is configured, verifies the bundle has a jar signature, and checks required 64-bit native libraries. The current signed upload copy is `dist/play-store/hns-browser-v0.1.9-play-upload-signed.aab`.
+`verifyPlayReleaseBundle` builds `android/app/build/outputs/bundle/release/app-release.aab`, verifies that upload signing is configured, verifies the bundle has a jar signature, and checks required 64-bit native libraries. The current signed upload copy is `dist/play-store/hns-browser-v0.2.0-play-upload-signed.aab`.
 
 ## Google Play Developer API
 
