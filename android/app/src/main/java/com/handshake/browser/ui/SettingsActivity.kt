@@ -5,12 +5,15 @@ import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
-import android.graphics.Paint
+import android.graphics.Color
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
+import android.text.TextUtils
+import android.util.TypedValue
 import android.view.Gravity
+import android.view.View
 import android.view.inputmethod.EditorInfo
-import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -24,6 +27,7 @@ import org.json.JSONObject
 
 class SettingsActivity : ComponentActivity() {
     private lateinit var homepageStatus: TextView
+    private lateinit var cookieStatus: TextView
     private lateinit var hnsModeStatus: TextView
     private lateinit var resolverCacheStatus: TextView
     private lateinit var historyStatus: TextView
@@ -32,113 +36,191 @@ class SettingsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        homepageStatus = statusRow("Current homepage", BrowserPreferences.homepage(this))
-        hnsModeStatus = statusRow("Current mode", hnsModeText())
-        resolverCacheStatus = statusRow("Resolver cache", "Ready")
-        historyStatus = statusRow("Browsing history", historySummary())
-        downloadStatus = statusRow("Downloads", downloadSummary())
+        homepageStatus = preferenceSummary(BrowserPreferences.homepage(this))
+        cookieStatus = preferenceSummary(cookieSummary())
+        hnsModeStatus = preferenceSummary(hnsModeText())
+        resolverCacheStatus = preferenceSummary("Ready to clear cached resolver values.")
+        historyStatus = preferenceSummary(historySummary())
+        downloadStatus = preferenceSummary(downloadSummary())
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(32, 32, 32, 32)
+            gravity = Gravity.START
+            setPadding(dp(20), dp(20), dp(20), dp(20))
             applySystemBarPadding()
             addView(heading("Settings"))
 
-            addView(sectionHeading("Homepage / startup"))
-            addView(homepageStatus)
-            addView(actionButton("Edit homepage") {
-                showEditHomepageDialog()
-            })
-            currentUrlFromIntent()?.let { currentUrl ->
-                addView(actionButton("Use current page as homepage") {
-                    useCurrentPageAsHomepage(currentUrl)
+            addView(section("Start page") {
+                addPreference(preferenceRow(
+                    title = "Homepage",
+                    summaryView = homepageStatus,
+                    actionLabel = "Edit",
+                ) {
+                    showEditHomepageDialog()
                 })
-            }
-            addView(actionButton("Reset homepage") {
-                confirmResetHomepage()
+                currentUrlFromIntent()?.let { currentUrl ->
+                    addPreference(preferenceRow(
+                        title = "Set current page as homepage",
+                        summary = currentUrl,
+                        actionLabel = "Set",
+                    ) {
+                        useCurrentPageAsHomepage(currentUrl)
+                    })
+                }
+                addPreference(preferenceRow(
+                    title = "Reset homepage",
+                    summary = "Restore the built-in HNS browser start page.",
+                    actionLabel = "Reset",
+                    destructive = true,
+                ) {
+                    confirmResetHomepage()
+                })
             })
 
-            addView(sectionHeading("HNS resolution"))
-            addView(strictHnsModeOption())
-            addView(bodyText("Strict mode never uses the third-party HNS DoH compatibility fallback. Compatibility mode may use it only after local HNS proof verification identifies the HNS name path and direct delegated resolution fails."))
-            addView(hnsModeStatus)
-            addView(actionButton("View diagnostics") {
-                startActivity(Intent(this@SettingsActivity, DiagnosticsActivity::class.java))
-            })
-            addView(actionButton("Clear resolver cache") {
-                confirmClearResolverCache()
-            })
-            addView(resolverCacheStatus)
-
-            addView(sectionHeading("Browser privacy / website data"))
-            addView(actionButton("Cookie options") {
-                startActivity(Intent(this@SettingsActivity, CookieSettingsActivity::class.java))
-            })
-            addView(actionButton("View history") {
-                startActivity(Intent(this@SettingsActivity, HistoryActivity::class.java))
-            })
-            addView(actionButton("Clear browsing history") {
-                confirmClearHistory()
-            })
-            addView(historyStatus)
-
-            addView(sectionHeading("Downloads"))
-            addView(actionButton("View downloads") {
-                startActivity(Intent(this@SettingsActivity, DownloadsActivity::class.java))
-            })
-            addView(actionButton("Clear app download records") {
-                confirmClearDownloadRecords()
-            })
-            addView(downloadStatus)
-            addView(bodyText("Download files are managed by Android. This app only stores the small list of downloads it queued."))
-
-            addView(sectionHeading("Diagnostics and tools"))
-            addView(actionButton("Make my HNS domain work") {
-                startActivity(Intent(this@SettingsActivity, HnsDomainWizardActivity::class.java))
-            })
-            addView(actionButton("Resolver trace") {
-                startActivity(Intent(this@SettingsActivity, HnsResolverTraceActivity::class.java))
-            })
-            addView(actionButton("HNS proof details") {
-                startActivity(Intent(this@SettingsActivity, HnsProofDetailsActivity::class.java))
-            })
-            addView(actionButton("TLSA / DANE inspector") {
-                startActivity(Intent(this@SettingsActivity, HnsTlsaInspectorActivity::class.java))
+            addView(section("Privacy and data") {
+                addPreference(preferenceRow(
+                    title = "Cookies",
+                    summaryView = cookieStatus,
+                    actionLabel = "Manage",
+                ) {
+                    startActivity(Intent(this@SettingsActivity, CookieSettingsActivity::class.java))
+                })
+                addPreference(preferenceRow(
+                    title = "History",
+                    summaryView = historyStatus,
+                    actionLabel = "View",
+                ) {
+                    startActivity(Intent(this@SettingsActivity, HistoryActivity::class.java))
+                })
+                addPreference(preferenceRow(
+                    title = "Clear history",
+                    summary = "Remove saved browsing history from this device.",
+                    actionLabel = "Clear",
+                    destructive = true,
+                ) {
+                    confirmClearHistory()
+                })
+                addPreference(preferenceRow(
+                    title = "Downloads",
+                    summaryView = downloadStatus,
+                    actionLabel = "View",
+                ) {
+                    startActivity(Intent(this@SettingsActivity, DownloadsActivity::class.java))
+                })
+                addPreference(preferenceRow(
+                    title = "Clear download records",
+                    summary = "Remove this app's download list. Downloaded files stay on the device.",
+                    actionLabel = "Clear",
+                    destructive = true,
+                ) {
+                    confirmClearDownloadRecords()
+                })
             })
 
-            addView(sectionHeading("About / legal / support"))
-            addView(statusRow("Build", buildLabel()))
-            addView(actionButton("Privacy, license, and user agreement") {
-                startActivity(Intent(this@SettingsActivity, LegalActivity::class.java))
+            addView(section("HNS resolution") {
+                addPreference(strictHnsModeOption())
+                addPreference(preferenceRow(
+                    title = "Diagnostics",
+                    summary = "Sync status, resolver state, and native core details.",
+                    actionLabel = "View",
+                ) {
+                    startActivity(Intent(this@SettingsActivity, DiagnosticsActivity::class.java))
+                })
+                addPreference(preferenceRow(
+                    title = "Clear resolver cache",
+                    summaryView = resolverCacheStatus,
+                    actionLabel = "Clear",
+                    destructive = true,
+                ) {
+                    confirmClearResolverCache()
+                })
             })
-            addView(linkRow(
-                label = "Privacy policy",
-                value = BrowserAppInfo.PRIVACY_POLICY_URL,
-                uri = BrowserAppInfo.PRIVACY_POLICY_URL,
-                copyLabel = "privacy policy URL",
-                copyText = BrowserAppInfo.PRIVACY_POLICY_URL,
-            ))
-            addView(linkRow(
-                label = "Source code",
-                value = BrowserAppInfo.SOURCE_CODE_URL,
-                uri = BrowserAppInfo.SOURCE_CODE_URL,
-                copyLabel = "source code URL",
-                copyText = BrowserAppInfo.SOURCE_CODE_URL,
-            ))
-            addView(bodyText("Donations are optional and unlock no features."))
-            addView(linkRow(
-                label = "Donate HNS",
-                value = BrowserAppInfo.HNS_DONATION_ADDRESS,
-                uri = BrowserAppInfo.HNS_DONATION_URI,
-                copyLabel = "HNS donation address",
-                copyText = BrowserAppInfo.HNS_DONATION_ADDRESS,
-            ))
+
+            addView(section("Diagnostics and tools") {
+                addPreference(preferenceRow(
+                    title = "HNS domain setup",
+                    summary = "Check records and delegation for an HNS domain.",
+                    actionLabel = "Open",
+                ) {
+                    startActivity(Intent(this@SettingsActivity, HnsDomainWizardActivity::class.java))
+                })
+                addPreference(preferenceRow(
+                    title = "Resolver trace",
+                    summary = "Inspect resolution steps for a name.",
+                    actionLabel = "Open",
+                ) {
+                    startActivity(Intent(this@SettingsActivity, HnsResolverTraceActivity::class.java))
+                })
+                addPreference(preferenceRow(
+                    title = "HNS proof details",
+                    summary = "Inspect local proof data for an HNS name.",
+                    actionLabel = "Open",
+                ) {
+                    startActivity(Intent(this@SettingsActivity, HnsProofDetailsActivity::class.java))
+                })
+                addPreference(preferenceRow(
+                    title = "TLSA / DANE inspector",
+                    summary = "Check TLSA records and DANE policy.",
+                    actionLabel = "Open",
+                ) {
+                    startActivity(Intent(this@SettingsActivity, HnsTlsaInspectorActivity::class.java))
+                })
+            })
+
+            addView(section("About, legal, and support") {
+                addPreference(preferenceRow(
+                    title = "Build",
+                    summary = buildLabel(),
+                ))
+                addPreference(preferenceRow(
+                    title = "Legal",
+                    summary = "Privacy policy, license, and user agreement.",
+                    actionLabel = "View",
+                ) {
+                    startActivity(Intent(this@SettingsActivity, LegalActivity::class.java))
+                })
+                addPreference(preferenceRow(
+                    title = "Privacy policy",
+                    summary = BrowserAppInfo.PRIVACY_POLICY_URL,
+                    actionLabel = "Open",
+                ) {
+                    openLink(
+                        Uri.parse(BrowserAppInfo.PRIVACY_POLICY_URL),
+                        "privacy policy URL",
+                        BrowserAppInfo.PRIVACY_POLICY_URL,
+                    )
+                })
+                addPreference(preferenceRow(
+                    title = "Source code",
+                    summary = BrowserAppInfo.SOURCE_CODE_URL,
+                    actionLabel = "Open",
+                ) {
+                    openLink(
+                        Uri.parse(BrowserAppInfo.SOURCE_CODE_URL),
+                        "source code URL",
+                        BrowserAppInfo.SOURCE_CODE_URL,
+                    )
+                })
+                addPreference(preferenceRow(
+                    title = "Donate HNS",
+                    summary = "Optional. Donations do not unlock features.",
+                    actionLabel = "Open",
+                ) {
+                    openLink(
+                        Uri.parse(BrowserAppInfo.HNS_DONATION_URI),
+                        "HNS donation address",
+                        BrowserAppInfo.HNS_DONATION_ADDRESS,
+                    )
+                })
+            })
         }
 
         setContentView(
             ScrollView(this).apply {
-                addView(root)
+                addView(root, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ))
             },
         )
     }
@@ -147,6 +229,8 @@ class SettingsActivity : ComponentActivity() {
         super.onResume()
         if (::homepageStatus.isInitialized) {
             refreshHomepageStatus()
+            refreshCookieStatus()
+            refreshHnsModeStatus()
             refreshHistoryStatus()
             refreshDownloadStatus()
         }
@@ -155,62 +239,154 @@ class SettingsActivity : ComponentActivity() {
     private fun heading(text: String): TextView =
         TextView(this).apply {
             this.text = text
-            textSize = 24f
-            setPadding(0, 0, 0, 14)
+            textSize = 28f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(32, 33, 36))
+            setPadding(0, 0, 0, dp(10))
+        }
+
+    private fun section(title: String, content: LinearLayout.() -> Unit): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(10), 0, dp(12))
+            addView(sectionHeading(title))
+            content()
         }
 
     private fun sectionHeading(text: String): TextView =
         TextView(this).apply {
             this.text = text
-            textSize = 20f
-            setPadding(0, 24, 0, 8)
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(95, 99, 104))
+            setPadding(0, dp(18), 0, dp(6))
         }
 
-    private fun bodyText(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            textSize = 15f
-            setTextIsSelectable(true)
-            setPadding(0, 4, 0, 12)
-        }
+    private fun LinearLayout.addPreference(row: View) {
+        addView(row, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        ))
+        addView(divider())
+    }
 
-    private fun actionButton(text: String, action: () -> Unit): Button =
-        Button(this).apply {
-            this.text = text
-            setAllCaps(false)
-            setOnClickListener { action() }
-        }
+    private fun preferenceRow(
+        title: String,
+        summary: String? = null,
+        summaryView: TextView? = null,
+        actionLabel: String? = null,
+        destructive: Boolean = false,
+        action: (() -> Unit)? = null,
+    ): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(64)
+            setPadding(0, dp(10), 0, dp(10))
+            if (action != null) {
+                isClickable = true
+                isFocusable = true
+                applySelectableBackground(this)
+                setOnClickListener { action() }
+            }
 
-    private fun statusRow(label: String, value: String): TextView =
-        TextView(this).apply {
-            text = "$label: $value"
-            textSize = 16f
-            setTextIsSelectable(true)
-            setPadding(0, 6, 0, 10)
-        }
+            val labels = LinearLayout(this@SettingsActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, 0, dp(12), 0)
+                addView(preferenceTitle(title))
+                val detail = summaryView ?: summary?.let { preferenceSummary(it) }
+                if (detail != null) {
+                    addView(detail)
+                }
+            }
+            addView(labels, LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f,
+            ))
 
-    private fun strictHnsModeOption(): CheckBox =
-        CheckBox(this).apply {
-            text = "Strict HNS mode: never use third-party HNS DoH fallback"
-            textSize = 16f
-            setPadding(0, 0, 0, 14)
-            isChecked = HnsResolutionPreferences.strictHnsMode(this@SettingsActivity)
-            setOnCheckedChangeListener { _, checked ->
-                HnsResolutionPreferences.setStrictHnsMode(this@SettingsActivity, checked)
-                hnsModeStatus.text = "Current mode: ${hnsModeText()}"
+            if (actionLabel != null) {
+                addView(preferenceActionLabel(actionLabel, destructive))
             }
         }
 
-    private fun linkRow(label: String, value: String, uri: String, copyLabel: String, copyText: String): TextView =
-        statusRow(label, value).apply {
-            paintFlags = paintFlags or Paint.UNDERLINE_TEXT_FLAG
-            setTextColor(0xff1565c0.toInt())
-            setTextIsSelectable(false)
-            isClickable = true
-            setOnClickListener {
-                openLink(Uri.parse(uri), copyLabel, copyText)
-            }
+    private fun preferenceTitle(text: String): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = 16f
+            setTextColor(Color.rgb(32, 33, 36))
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
         }
+
+    private fun preferenceSummary(text: String): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = 14f
+            setTextColor(Color.rgb(95, 99, 104))
+            maxLines = 3
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, dp(3), 0, 0)
+        }
+
+    private fun preferenceActionLabel(text: String, destructive: Boolean): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER_VERTICAL or Gravity.END
+            minWidth = dp(56)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            setTextColor(
+                if (destructive) {
+                    Color.rgb(183, 28, 28)
+                } else {
+                    Color.rgb(21, 101, 192)
+                },
+            )
+        }
+
+    private fun strictHnsModeOption(): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, dp(10))
+            addView(CheckBox(this@SettingsActivity).apply {
+                text = "Strict HNS mode"
+                textSize = 16f
+                setTextColor(Color.rgb(32, 33, 36))
+                setPadding(0, 0, 0, 0)
+                isChecked = HnsResolutionPreferences.strictHnsMode(this@SettingsActivity)
+                setOnCheckedChangeListener { _, checked ->
+                    HnsResolutionPreferences.setStrictHnsMode(this@SettingsActivity, checked)
+                    refreshHnsModeStatus()
+                }
+            })
+            addView(hnsModeStatus, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                leftMargin = dp(36)
+            })
+        }
+
+    private fun divider(): View =
+        View(this).apply {
+            setBackgroundColor(Color.rgb(218, 220, 224))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                1,
+            )
+        }
+
+    private fun applySelectableBackground(view: View) {
+        val typedValue = TypedValue()
+        theme.resolveAttribute(android.R.attr.selectableItemBackground, typedValue, true)
+        view.setBackgroundResource(typedValue.resourceId)
+    }
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density + 0.5f).toInt()
 
     private fun openLink(uri: Uri, copyLabel: String, copyText: String) {
         try {
@@ -294,7 +470,11 @@ class SettingsActivity : ComponentActivity() {
         } else {
             "Resolver cache did not report a successful clear"
         }
-        resolverCacheStatus.text = "$message: $result"
+        resolverCacheStatus.text = if (status == "cleared") {
+            "Cleared just now."
+        } else {
+            "Clear did not complete. Open diagnostics for details."
+        }
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
@@ -337,22 +517,37 @@ class SettingsActivity : ComponentActivity() {
     }
 
     private fun refreshHomepageStatus() {
-        homepageStatus.text = "Current homepage: ${BrowserPreferences.homepage(this)}"
+        homepageStatus.text = BrowserPreferences.homepage(this)
+    }
+
+    private fun refreshCookieStatus() {
+        cookieStatus.text = cookieSummary()
+    }
+
+    private fun refreshHnsModeStatus() {
+        hnsModeStatus.text = hnsModeText()
     }
 
     private fun refreshHistoryStatus() {
-        historyStatus.text = "Browsing history: ${historySummary()}"
+        historyStatus.text = historySummary()
     }
 
     private fun refreshDownloadStatus() {
-        downloadStatus.text = "Downloads: ${downloadSummary()}"
+        downloadStatus.text = downloadSummary()
     }
 
     private fun hnsModeText(): String =
         if (HnsResolutionPreferences.strictHnsMode(this)) {
-            "Strict. Delegated resolution failures fail closed."
+            "On. Delegated resolution failures fail closed."
         } else {
-            "Compatibility. HNS DoH fallback may be used after proof availability or delegated resolution failures."
+            "Off. Compatibility fallback may be used after local or direct resolution fails."
+        }
+
+    private fun cookieSummary(): String =
+        if (BrowserCookiePreferences.blockThirdPartyCookies(this)) {
+            "Third-party cookies are blocked. First-party cookies are allowed."
+        } else {
+            "First-party and third-party cookies are allowed."
         }
 
     private fun historySummary(): String {
