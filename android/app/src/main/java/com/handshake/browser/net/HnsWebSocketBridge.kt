@@ -47,7 +47,7 @@ class HnsWebSocketBridge(
         val data = message.data ?: return
         val payload = runCatching { JSONObject(data) }.getOrNull() ?: return
         when (payload.optString("type")) {
-            "open" -> openSession(payload, sourceOrigin.toString(), isMainFrame, replyProxy)
+            "open" -> openSession(payload, sourceOrigin.toString(), isMainFrame, view)
             "send" -> sendSessionPayload(payload)
             "close" -> closeSession(payload)
         }
@@ -69,14 +69,14 @@ class HnsWebSocketBridge(
         payload: JSONObject,
         sourceOrigin: String,
         isMainFrame: Boolean,
-        replyProxy: JavaScriptReplyProxy,
+        webView: WebView,
     ) {
         val id = payload.optInt("id", -1)
         if (id < 0) {
             return
         }
         if (sessions.size >= MAX_ACTIVE_SESSIONS) {
-            emitClose(replyProxy, id, CLOSE_ABNORMAL, "too many HNS WebSockets", false)
+            emitClose(webView, id, CLOSE_ABNORMAL, "too many HNS WebSockets", false)
             return
         }
         val target = runCatching {
@@ -87,8 +87,8 @@ class HnsWebSocketBridge(
                 isMainFrame = isMainFrame,
             )
         }.getOrElse { error ->
-            emitError(replyProxy, id, error.message ?: "HNS WebSocket blocked")
-            emitClose(replyProxy, id, CLOSE_ABNORMAL, error.message ?: "HNS WebSocket blocked", false)
+            emitError(webView, id, error.message ?: "HNS WebSocket blocked")
+            emitClose(webView, id, CLOSE_ABNORMAL, error.message ?: "HNS WebSocket blocked", false)
             return
         }
         val session = NativeHnsWebSocketSession(
@@ -99,11 +99,11 @@ class HnsWebSocketBridge(
             strictHnsMode = strictHnsMode,
             hnsGatewayBridge = hnsGatewayBridge,
             executor = executor,
-            emit = { event -> emit(replyProxy, event) },
+            emit = { event -> emit(webView, event) },
             onFinished = { sessions.remove(id) },
         )
         if (sessions.putIfAbsent(id, session) != null) {
-            emitClose(replyProxy, id, CLOSE_ABNORMAL, "duplicate HNS WebSocket id", false)
+            emitClose(webView, id, CLOSE_ABNORMAL, "duplicate HNS WebSocket id", false)
             return
         }
         session.start()
@@ -129,19 +129,20 @@ class HnsWebSocketBridge(
         )
     }
 
-    private fun emit(replyProxy: JavaScriptReplyProxy, event: JSONObject) {
+    private fun emit(webView: WebView, event: JSONObject) {
+        val script = "window.__hnsWebSocketDispatch&&window.__hnsWebSocketDispatch(${JSONObject.quote(event.toString())});"
         callbackHandler.post {
-            runCatching { replyProxy.postMessage(event.toString()) }
+            runCatching { webView.evaluateJavascript(script, null) }
         }
     }
 
-    private fun emitError(replyProxy: JavaScriptReplyProxy, id: Int, reason: String) {
-        emit(replyProxy, JSONObject().put("id", id).put("event", "error").put("reason", reason))
+    private fun emitError(webView: WebView, id: Int, reason: String) {
+        emit(webView, JSONObject().put("id", id).put("event", "error").put("reason", reason))
     }
 
-    private fun emitClose(replyProxy: JavaScriptReplyProxy, id: Int, code: Int, reason: String, wasClean: Boolean) {
+    private fun emitClose(webView: WebView, id: Int, code: Int, reason: String, wasClean: Boolean) {
         emit(
-            replyProxy,
+            webView,
             JSONObject()
                 .put("id", id)
                 .put("event", "close")

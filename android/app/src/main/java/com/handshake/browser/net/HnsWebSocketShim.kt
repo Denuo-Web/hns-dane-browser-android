@@ -260,6 +260,9 @@ internal object HnsWebSocketShim {
     var socket = sockets[message.id];
     if (socket) socket.__handleBridgeEvent(message);
   };
+  window.__hnsWebSocketDispatch = function(data) {
+    onBridgeMessage({ data: data });
+  };
   if (typeof bridge.addEventListener === 'function') bridge.addEventListener('message', onBridgeMessage);
   bridge.onmessage = onBridgeMessage;
   window.WebSocket = WebSocketWrapper;
