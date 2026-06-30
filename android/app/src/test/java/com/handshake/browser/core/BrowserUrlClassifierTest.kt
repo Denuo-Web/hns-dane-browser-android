@@ -59,6 +59,31 @@ class BrowserUrlClassifierTest {
     }
 
     @Test
+    fun discordGgUsesNormalWebMode() {
+        val target = classifier.classify("discord.gg")
+
+        assertEquals(BrowserTargetKind.ExactUrl, target.kind)
+        assertEquals("https://discord.gg/", target.url)
+        assertEquals("discord.gg", target.displayHost)
+    }
+
+    @Test
+    fun currentIcannTldsUseNormalWebMode() {
+        for (host in listOf(
+            "example.zip",
+            "example.museum",
+            "example.arpa",
+            "example.xn--p1ai",
+            "example.google",
+        )) {
+            val target = classifier.classify(host)
+
+            assertEquals(host, BrowserTargetKind.ExactUrl, target.kind)
+            assertEquals("https://$host/", target.url)
+        }
+    }
+
+    @Test
     fun bundledAppAssetPageLoadsAsExactUrl() {
         val target = classifier.classify(
             "https://appassets.androidplatform.net/assets/hns_directory.html",

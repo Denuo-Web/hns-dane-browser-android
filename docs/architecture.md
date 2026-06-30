@@ -38,7 +38,7 @@ Android UI / Browser Shell
 - `SettingsActivity`: settings dashboard linking to diagnostics, cookie options, legal/user-agreement content, native resolver-cache clearing, and donation links.
 - `CookieSettingsActivity`: cookie preferences with persisted third-party cookie blocking and delete-cookies action.
 - `LegalActivity`: license, user agreement, build label, publisher-in-license language, and source-code link.
-- `BrowserUrlClassifier`: classifies searches, normal web URLs, and HNS names. Bare HNS names default to `https://`, and dotted hosts with non-common-ICANN final labels route through native HNS interception instead of Chromium DNS resolution.
+- `BrowserUrlClassifier`: classifies searches, normal web URLs, and HNS names. Bare HNS names default to `https://`, and dotted hosts whose final label is not in the vendored IANA root-zone TLD snapshot route through native HNS interception instead of Chromium DNS resolution.
 - `BrowserSecurityPolicy`: maps target kind, proxy availability, native sync outcome status, main-frame HNS gateway response status, DANE/WebPKI policy, and resolver policy into the toolbar security state so HNS names do not stay verified after a native gateway failure and DoH compatibility loads are visibly labeled.
 - `HnsProxyController`: runtime-gated AndroidX WebKit proxy configuration pointed at the currently bound randomized loopback gateway port.
 - `HnsSyncForegroundService`: Android 14+ `dataSync` foreground service that owns repeated native sync, starts automatically with the main activity, keeps a user-visible notification active, and broadcasts sync status snapshots with explicit progress and per-peer failure stages to the UI.
@@ -56,4 +56,5 @@ Android builds are compiled through APK Workbench on this ARM64 host so Gradle r
 - HNS proof, DNSSEC, and DANE failures fail closed.
 - Local gateway binds to a randomized loopback port only.
 - Android WebView proxy use is gated by `WebViewFeature.PROXY_OVERRIDE`.
+- Dotted names under IANA root-zone TLDs remain normal WebView/ICANN destinations and must not be routed into HNS resolution.
 - URL classification never sends single-label HNS names to a search provider before local HNS resolution is attempted, and reserved non-HNS single-label names are not shown as HNS state.

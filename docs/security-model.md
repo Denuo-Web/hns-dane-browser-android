@@ -109,6 +109,7 @@ Applied WebView controls:
 - No unbounded or panic-prone X.509 parsing for DANE SPKI selector matching.
 - No QUIC downgrade without an explicit policy event.
 - No local gateway listener beyond loopback, no fixed browser proxy port in normal app startup, no broad proxy fallback when WebView cannot scope proxying to the active HNS host, no intentional ICANN browsing through the HNS proxy override, and no long-lived browser proxy listener while the main browser activity is stopped.
+- No dotted host under the vendored IANA root-zone TLD snapshot should be routed into HNS resolution; normal ICANN destinations such as `discord.gg` must stay on the WebView/ICANN path.
 - No origin fetch unless the gateway resolution name matches the requested origin host.
 - No intercepted HNS redirect should be followed unless the target remains inside HNS resolution policy and the redirect chain stays under the configured bound.
 - No main-frame HNS gateway 4xx/5xx response should leave the toolbar in verified state.

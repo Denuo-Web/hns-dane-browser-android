@@ -108,7 +108,7 @@ class LoopbackProxyServerTest {
     }
 
     @Test
-    fun dottedHnsHostRequiresLocalResolutionWhenTldIsNotCommonIcann() {
+    fun dottedHnsHostRequiresLocalResolutionWhenTldIsNotIcann() {
         assertTrue(requiresHnsResolution("welcome.2d"))
         assertTrue(requiresHnsResolution("blog.proofofconcept"))
     }
@@ -116,8 +116,13 @@ class LoopbackProxyServerTest {
     @Test
     fun icannLocalhostAndIpHostsDoNotRequireHnsResolution() {
         assertFalse(requiresHnsResolution("example.com"))
+        assertFalse(requiresHnsResolution("discord.gg"))
         assertFalse(requiresHnsResolution("handshake.org"))
         assertFalse(requiresHnsResolution("example.io"))
+        assertFalse(requiresHnsResolution("example.zip"))
+        assertFalse(requiresHnsResolution("example.museum"))
+        assertFalse(requiresHnsResolution("example.arpa"))
+        assertFalse(requiresHnsResolution("example.xn--p1ai"))
         assertFalse(requiresHnsResolution("localhost"))
         assertFalse(requiresHnsResolution("example"))
         assertFalse(requiresHnsResolution("invalid"))

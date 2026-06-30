@@ -27,7 +27,7 @@ object HnsHostPolicy {
             return true
         }
 
-        return labels.last() !in COMMON_ICANN_TLDS
+        return labels.last() !in IcannTlds.ALL
     }
 
     private fun isIpLiteral(host: String): Boolean {
@@ -46,52 +46,4 @@ object HnsHostPolicy {
 
     private val RESERVED_NON_HNS_SINGLE_LABELS = setOf("example", "invalid", "local", "test")
 
-    private val COMMON_ICANN_TLDS = setOf(
-        "ai",
-        "app",
-        "au",
-        "biz",
-        "blog",
-        "br",
-        "ca",
-        "ch",
-        "cloud",
-        "cn",
-        "co",
-        "com",
-        "de",
-        "dev",
-        "edu",
-        "es",
-        "eu",
-        "fr",
-        "gov",
-        "id",
-        "in",
-        "info",
-        "int",
-        "io",
-        "it",
-        "jp",
-        "me",
-        "mil",
-        "name",
-        "net",
-        "nl",
-        "no",
-        "online",
-        "org",
-        "page",
-        "pl",
-        "ru",
-        "se",
-        "site",
-        "store",
-        "tech",
-        "to",
-        "tv",
-        "uk",
-        "us",
-        "xyz",
-    )
 }
