@@ -6,10 +6,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.os.Bundle
 import android.text.format.DateFormat
-import android.view.Gravity
-import android.widget.Button
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -21,33 +18,37 @@ class DownloadsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        status = bodyText("")
+        status = preferenceSummary("")
         listContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(32, 32, 32, 32)
-            applySystemBarPadding()
-            addView(heading("Downloads"))
-            addView(status)
-            addView(actionButton("Open system downloads") {
-                openSystemDownloads()
+        setSecondaryScreen("Downloads") {
+            addView(screenSection("Download records") {
+                addScreenRow(preferenceRow(
+                    title = "App-queued downloads",
+                    summaryView = status,
+                ))
+                addScreenRow(preferenceRow(
+                    title = "Open system downloads",
+                    summary = "View downloaded files in Android DownloadManager.",
+                    actionLabel = "Open",
+                ) {
+                    openSystemDownloads()
+                })
+                addScreenRow(preferenceRow(
+                    title = "Clear download records",
+                    summary = "Remove this browser's download list. Downloaded files stay on the device.",
+                    actionLabel = "Clear",
+                    destructive = true,
+                ) {
+                    confirmClearDownloadRecords()
+                })
             })
-            addView(actionButton("Clear app download records") {
-                confirmClearDownloadRecords()
+            addView(screenSection("Recent downloads") {
+                addView(listContainer)
             })
-            addView(bodyText("This screen tracks downloads queued by this browser. Files are managed by Android DownloadManager."))
-            addView(listContainer)
         }
-
-        setContentView(
-            ScrollView(this).apply {
-                addView(root)
-            },
-        )
 
         refreshDownloads()
     }
@@ -61,17 +62,28 @@ class DownloadsActivity : ComponentActivity() {
             "${records.size} app-queued download${if (records.size == 1) "" else "s"}."
         }
 
-        records.forEach { record ->
-            listContainer.addView(subheading(record.fileName))
-            listContainer.addView(bodyText(
-                buildString {
-                    appendLine("Queued: ${formatTime(record.queuedAtMillis)}")
-                    appendLine("Status: ${downloadStatus(record.downloadId)}")
-                    appendLine("URL: ${record.url}")
-                },
+        if (records.isEmpty()) {
+            listContainer.addScreenRow(preferenceRow(
+                title = "No recent downloads",
+                summary = "Downloads queued by this browser will appear here.",
             ))
+        } else {
+            records.forEach { record ->
+                listContainer.addScreenRow(downloadRow(record))
+            }
         }
     }
+
+    private fun downloadRow(record: BrowserDownloadRecord): LinearLayout =
+        preferenceRow(
+            title = record.fileName,
+            summary = buildString {
+                appendLine("Queued: ${formatTime(record.queuedAtMillis)}")
+                appendLine("Status: ${downloadStatus(record.downloadId)}")
+                appendLine("URL: ${record.url}")
+            },
+            summaryMaxLines = 4,
+        )
 
     private fun downloadStatus(downloadId: Long): String {
         val manager = getSystemService(DownloadManager::class.java)
@@ -136,34 +148,5 @@ class DownloadsActivity : ComponentActivity() {
             "Unknown time"
         } else {
             DateFormat.format("yyyy-MM-dd HH:mm", queuedAtMillis).toString()
-        }
-
-    private fun heading(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            textSize = 24f
-            setPadding(0, 0, 0, 14)
-        }
-
-    private fun subheading(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            textSize = 18f
-            setPadding(0, 18, 0, 8)
-        }
-
-    private fun bodyText(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            textSize = 15f
-            setTextIsSelectable(true)
-            setPadding(0, 8, 0, 12)
-        }
-
-    private fun actionButton(text: String, action: () -> Unit): Button =
-        Button(this).apply {
-            this.text = text
-            setAllCaps(false)
-            setOnClickListener { action() }
         }
 }

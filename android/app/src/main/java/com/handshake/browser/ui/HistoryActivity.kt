@@ -4,10 +4,7 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
 import android.text.format.DateFormat
-import android.view.Gravity
-import android.widget.Button
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -19,29 +16,30 @@ class HistoryActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        status = bodyText("")
+        status = preferenceSummary("")
         listContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(32, 32, 32, 32)
-            applySystemBarPadding()
-            addView(heading("History"))
-            addView(status)
-            addView(actionButton("Clear history") {
-                confirmClearHistory()
+        setSecondaryScreen("History") {
+            addView(screenSection("Browsing history") {
+                addScreenRow(preferenceRow(
+                    title = "Saved pages",
+                    summaryView = status,
+                ))
+                addScreenRow(preferenceRow(
+                    title = "Clear history",
+                    summary = "Remove saved browsing history from this device.",
+                    actionLabel = "Clear",
+                    destructive = true,
+                ) {
+                    confirmClearHistory()
+                })
             })
-            addView(listContainer)
+            addView(screenSection("Recent pages") {
+                addView(listContainer)
+            })
         }
-
-        setContentView(
-            ScrollView(this).apply {
-                addView(root)
-            },
-        )
 
         refreshHistory()
     }
@@ -55,16 +53,25 @@ class HistoryActivity : ComponentActivity() {
             "${entries.size} recent page${if (entries.size == 1) "" else "s"}."
         }
 
-        entries.forEach { entry ->
-            listContainer.addView(historyButton(entry))
-            listContainer.addView(bodyText(
-                "${formatTime(entry.visitedAtMillis)}\n${entry.url}",
+        if (entries.isEmpty()) {
+            listContainer.addScreenRow(preferenceRow(
+                title = "No recent pages",
+                summary = "Pages you visit will appear here.",
             ))
+        } else {
+            entries.forEach { entry ->
+                listContainer.addScreenRow(historyRow(entry))
+            }
         }
     }
 
-    private fun historyButton(entry: BrowserHistoryEntry): Button =
-        actionButton(entry.title.ifBlank { entry.url }) {
+    private fun historyRow(entry: BrowserHistoryEntry): LinearLayout =
+        preferenceRow(
+            title = entry.title.ifBlank { entry.url },
+            summary = "${formatTime(entry.visitedAtMillis)}\n${entry.url}",
+            actionLabel = "Open",
+            summaryMaxLines = 3,
+        ) {
             startActivity(
                 Intent(this, MainActivity::class.java)
                     .putExtra(MainActivity.EXTRA_LOAD_URL, entry.url)
@@ -96,27 +103,5 @@ class HistoryActivity : ComponentActivity() {
             "Unknown time"
         } else {
             DateFormat.format("yyyy-MM-dd HH:mm", visitedAtMillis).toString()
-        }
-
-    private fun heading(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            textSize = 24f
-            setPadding(0, 0, 0, 14)
-        }
-
-    private fun bodyText(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            textSize = 15f
-            setTextIsSelectable(true)
-            setPadding(0, 8, 0, 12)
-        }
-
-    private fun actionButton(text: String, action: () -> Unit): Button =
-        Button(this).apply {
-            this.text = text
-            setAllCaps(false)
-            setOnClickListener { action() }
         }
 }

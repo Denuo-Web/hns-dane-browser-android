@@ -4,11 +4,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Bundle
-import android.view.Gravity
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import org.json.JSONObject
@@ -23,34 +18,46 @@ class HnsResolverTraceActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(32, 32, 32, 32)
-            applySystemBarPadding()
-            addView(heading("Resolver Trace"))
-            addView(bodyText(friendlySummary()))
-            addView(actionButton("Copy JSON") {
-                copy("HNS resolver trace JSON", rawJson())
+        setSecondaryScreen("Resolver Trace") {
+            addView(screenSection("Summary") {
+                addView(reportText(friendlySummary()))
             })
-            addView(actionButton("Copy Markdown") {
-                copy("HNS resolver trace Markdown", markdownReport())
+            addView(screenSection("Related tools") {
+                addScreenRow(preferenceRow(
+                    title = "HNS proof details",
+                    summary = "Open local proof data for this page.",
+                    actionLabel = "Open",
+                ) {
+                    openHnsProofDetails()
+                })
+                addScreenRow(preferenceRow(
+                    title = "TLSA / DANE inspector",
+                    summary = "Inspect TLSA records and DANE policy for this page.",
+                    actionLabel = "Open",
+                ) {
+                    openTlsaInspector()
+                })
             })
-            addView(actionButton("View HNS Proof Details") {
-                openHnsProofDetails()
+            addView(screenSection("Export") {
+                addScreenRow(preferenceRow(
+                    title = "Copy JSON",
+                    summary = "Copy the raw resolver trace payload.",
+                    actionLabel = "Copy",
+                ) {
+                    copy("HNS resolver trace JSON", rawJson())
+                })
+                addScreenRow(preferenceRow(
+                    title = "Copy Markdown",
+                    summary = "Copy a compact Markdown report.",
+                    actionLabel = "Copy",
+                ) {
+                    copy("HNS resolver trace Markdown", markdownReport())
+                })
             })
-            addView(actionButton("View TLSA Inspector") {
-                openTlsaInspector()
+            addView(screenSection("Raw export") {
+                addView(reportText(rawJson(), monospace = true))
             })
-            addView(subheading("Raw Export"))
-            addView(bodyText(rawJson()))
         }
-
-        setContentView(
-            ScrollView(this).apply {
-                addView(root)
-            },
-        )
     }
 
     private fun friendlySummary(): String {
@@ -160,35 +167,6 @@ class HnsResolverTraceActivity : ComponentActivity() {
                 .putExtra(HnsTlsaInspectorActivity.EXTRA_TRACE_JSON, traceJson),
         )
     }
-
-    private fun heading(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            textSize = 24f
-            setPadding(0, 0, 0, 14)
-        }
-
-    private fun subheading(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            textSize = 18f
-            setPadding(0, 18, 0, 8)
-        }
-
-    private fun bodyText(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            textSize = 15f
-            setTextIsSelectable(true)
-            setPadding(0, 0, 0, 12)
-        }
-
-    private fun actionButton(text: String, action: () -> Unit): Button =
-        Button(this).apply {
-            this.text = text
-            setAllCaps(false)
-            setOnClickListener { action() }
-        }
 
     companion object {
         const val EXTRA_URL = "com.handshake.browser.HNS_TRACE_URL"

@@ -3,12 +3,9 @@ package com.handshake.browser.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.os.Bundle
-import android.view.Gravity
 import android.view.inputmethod.EditorInfo
-import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -38,27 +35,33 @@ class HnsDomainWizardActivity : ComponentActivity() {
             }
         }
 
-        output = bodyText("Enter an HNS name you own, then run the local proof/resource analyzer.")
+        output = reportText("Enter an HNS name you own, then run the local proof/resource analyzer.")
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(32, 32, 32, 32)
-            applySystemBarPadding()
-            addView(heading("Make My HNS Domain Work"))
-            addView(input)
-            addView(actionButton("Analyze") { analyze() })
-            addView(actionButton("Copy Report") {
-                copy(lastReport.ifBlank { output.text.toString() })
+        setSecondaryScreen("HNS Domain Setup") {
+            addView(screenSection("Domain") {
+                addView(input, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ))
+                addScreenRow(preferenceRow(
+                    title = "Analyze domain",
+                    summary = "Check the local HNS proof and resource records.",
+                    actionLabel = "Analyze",
+                ) {
+                    analyze()
+                })
+                addScreenRow(preferenceRow(
+                    title = "Copy report",
+                    summary = "Copy the current analysis as text.",
+                    actionLabel = "Copy",
+                ) {
+                    copy(lastReport.ifBlank { output.text.toString() })
+                })
             })
-            addView(output)
+            addView(screenSection("Report") {
+                addView(output)
+            })
         }
-
-        setContentView(
-            ScrollView(this).apply {
-                addView(root)
-            },
-        )
     }
 
     private fun analyze() {
@@ -202,26 +205,4 @@ class HnsDomainWizardActivity : ComponentActivity() {
             .setPrimaryClip(ClipData.newPlainText("HNS domain wizard report", value))
         Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
     }
-
-    private fun heading(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            textSize = 24f
-            setPadding(0, 0, 0, 14)
-        }
-
-    private fun bodyText(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            textSize = 15f
-            setTextIsSelectable(true)
-            setPadding(0, 18, 0, 12)
-        }
-
-    private fun actionButton(text: String, action: () -> Unit): Button =
-        Button(this).apply {
-            this.text = text
-            setAllCaps(false)
-            setOnClickListener { action() }
-        }
 }

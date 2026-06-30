@@ -1,12 +1,7 @@
 package com.handshake.browser.ui
 
 import android.os.Bundle
-import android.view.Gravity
 import android.webkit.CookieManager
-import android.widget.Button
-import android.widget.CheckBox
-import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -17,44 +12,29 @@ class CookieSettingsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        status = TextView(this).apply {
-            text = summary()
-            textSize = 16f
-            setPadding(0, 10, 0, 18)
-            setTextIsSelectable(true)
-        }
+        status = preferenceSummary(summary())
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(32, 32, 32, 32)
-            applySystemBarPadding()
-            addView(heading("Cookie Options"))
-            addView(blockThirdPartyOption())
-            addView(actionButton("Delete cookies") {
-                deleteCookies()
+        setSecondaryScreen("Cookie Options") {
+            addView(screenSection("Website data") {
+                addScreenRow(checkboxRow(
+                    title = "Block third-party cookies",
+                    summaryView = status,
+                    checked = BrowserCookiePreferences.blockThirdPartyCookies(this@CookieSettingsActivity),
+                ) { checked ->
+                    BrowserCookiePreferences.setBlockThirdPartyCookies(this@CookieSettingsActivity, checked)
+                    status.text = summary()
+                })
+                addScreenRow(preferenceRow(
+                    title = "Delete cookies",
+                    summary = "Remove cookies stored by websites in this browser.",
+                    actionLabel = "Delete",
+                    destructive = true,
+                ) {
+                    deleteCookies()
+                })
             })
-            addView(status)
         }
-
-        setContentView(
-            ScrollView(this).apply {
-                addView(root)
-            },
-        )
     }
-
-    private fun blockThirdPartyOption(): CheckBox =
-        CheckBox(this).apply {
-            text = "Block third-party cookies"
-            textSize = 16f
-            setPadding(0, 0, 0, 14)
-            isChecked = BrowserCookiePreferences.blockThirdPartyCookies(this@CookieSettingsActivity)
-            setOnCheckedChangeListener { _, checked ->
-                BrowserCookiePreferences.setBlockThirdPartyCookies(this@CookieSettingsActivity, checked)
-                status.text = summary()
-            }
-        }
 
     private fun deleteCookies() {
         CookieManager.getInstance().removeAllCookies { removedAny ->
@@ -66,20 +46,6 @@ class CookieSettingsActivity : ComponentActivity() {
             }
         }
     }
-
-    private fun heading(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            textSize = 24f
-            setPadding(0, 0, 0, 14)
-        }
-
-    private fun actionButton(text: String, action: () -> Unit): Button =
-        Button(this).apply {
-            this.text = text
-            setAllCaps(false)
-            setOnClickListener { action() }
-        }
 
     private fun summary(): String =
         if (BrowserCookiePreferences.blockThirdPartyCookies(this)) {

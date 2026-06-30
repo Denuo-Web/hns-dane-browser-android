@@ -4,11 +4,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Bundle
-import android.view.Gravity
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.webkit.WebViewFeature
@@ -25,83 +20,110 @@ class DiagnosticsActivity : ComponentActivity() {
         GatewayEventLog.configureAppStorage(filesDir)
         HnsSyncForegroundService.start(this)
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(32, 32, 32, 32)
-            applySystemBarPadding()
-        }
-
         var latestSyncStatus = NativeBridge.syncStatus(filesDir.absolutePath)
-        val syncStatus = row("Sync status", latestSyncStatus)
+        var syncRunInProgress = false
+        val syncStatus = preferenceSummary(
+            text = latestSyncStatus,
+            selectable = true,
+            maxLines = Int.MAX_VALUE,
+        )
 
-        root.addView(row("Build", buildLabel()))
-        root.addView(row("Rust core", NativeBridge.version()))
-        root.addView(row("Rust diagnostics", NativeBridge.diagnostics()))
-        root.addView(syncStatus)
-        root.addView(Button(this).apply {
-            text = "Run sync now"
-            setOnClickListener {
-                HnsSyncForegroundService.start(this@DiagnosticsActivity)
-                isEnabled = false
-                syncStatus.text = "Sync status: running"
-                val running = AtomicBoolean(true)
-                thread(name = "hns-sync-status-poll") {
-                    while (running.get()) {
-                        Thread.sleep(SYNC_STATUS_POLL_MS)
-                        val status = NativeBridge.syncStatus(filesDir.absolutePath)
-                        runOnUiThread {
-                            if (running.get()) {
-                                latestSyncStatus = status
-                                syncStatus.text = "Sync status: running $status"
+        setSecondaryScreen("Diagnostics") {
+            addView(screenSection("App and runtime") {
+                addScreenRow(preferenceRow(
+                    title = "Build",
+                    summary = buildLabel(),
+                    selectableSummary = true,
+                ))
+                addScreenRow(preferenceRow(
+                    title = "Rust core",
+                    summary = NativeBridge.version(),
+                    selectableSummary = true,
+                ))
+                addScreenRow(preferenceRow(
+                    title = "Rust diagnostics",
+                    summary = NativeBridge.diagnostics(),
+                    selectableSummary = true,
+                    summaryMaxLines = Int.MAX_VALUE,
+                ))
+                addScreenRow(preferenceRow(
+                    title = "Proxy override",
+                    summary = WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE).toString(),
+                    selectableSummary = true,
+                ))
+                addScreenRow(preferenceRow(
+                    title = "Third-party cookies blocked",
+                    summary = BrowserCookiePreferences.blockThirdPartyCookies(this@DiagnosticsActivity).toString(),
+                    selectableSummary = true,
+                ))
+            })
+            addView(screenSection("HNS sync") {
+                addScreenRow(preferenceRow(
+                    title = "Sync status",
+                    summaryView = syncStatus,
+                ))
+                addScreenRow(preferenceRow(
+                    title = "Run sync now",
+                    summary = "Start a foreground HNS sync and watch the status update here.",
+                    actionLabel = "Run",
+                ) {
+                    if (syncRunInProgress) {
+                        Toast.makeText(this@DiagnosticsActivity, "Sync is already running", Toast.LENGTH_SHORT).show()
+                        return@preferenceRow
+                    }
+                    syncRunInProgress = true
+                    HnsSyncForegroundService.start(this@DiagnosticsActivity)
+                    syncStatus.text = "running"
+                    val running = AtomicBoolean(true)
+                    thread(name = "hns-sync-status-poll") {
+                        while (running.get()) {
+                            Thread.sleep(SYNC_STATUS_POLL_MS)
+                            val status = NativeBridge.syncStatus(filesDir.absolutePath)
+                            runOnUiThread {
+                                if (running.get()) {
+                                    latestSyncStatus = status
+                                    syncStatus.text = "running $status"
+                                }
                             }
                         }
                     }
-                }
-                thread(name = "hns-sync-now") {
-                    val status = NativeBridge.syncOnce(filesDir.absolutePath)
-                    running.set(false)
-                    runOnUiThread {
-                        latestSyncStatus = status
-                        syncStatus.text = "Sync status: $status"
-                        isEnabled = true
+                    thread(name = "hns-sync-now") {
+                        val status = NativeBridge.syncOnce(filesDir.absolutePath)
+                        running.set(false)
+                        runOnUiThread {
+                            latestSyncStatus = status
+                            syncStatus.text = status
+                            syncRunInProgress = false
+                        }
                     }
-                }
-            }
-        })
-        root.addView(row("Proxy override", WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE).toString()))
-        root.addView(row(
-            "Third-party cookies blocked",
-            BrowserCookiePreferences.blockThirdPartyCookies(this).toString(),
-        ))
-        root.addView(row("Recent gateway events", GatewayEventLog.snapshotText()))
-        root.addView(Button(this).apply {
-            text = "Copy diagnostic bundle"
-            setOnClickListener {
-                copyDiagnosticBundle(latestSyncStatus)
-            }
-        })
-        root.addView(Button(this).apply {
-            text = "Share diagnostic bundle"
-            setOnClickListener {
-                shareDiagnosticBundle(latestSyncStatus)
-            }
-        })
-
-        setContentView(
-            ScrollView(this).apply {
-                addView(root)
-            },
-        )
-    }
-
-    private fun row(label: String, value: String): TextView =
-        TextView(this).apply {
-            text = "$label: $value"
-            textSize = 16f
-            setTextIsSelectable(true)
-            setPadding(0, 10, 0, 10)
+                })
+            })
+            addView(screenSection("Gateway") {
+                addScreenRow(preferenceRow(
+                    title = "Recent gateway events",
+                    summary = GatewayEventLog.snapshotText(),
+                    selectableSummary = true,
+                    summaryMaxLines = Int.MAX_VALUE,
+                ))
+            })
+            addView(screenSection("Diagnostic bundle") {
+                addScreenRow(preferenceRow(
+                    title = "Copy diagnostic bundle",
+                    summary = "Copy build, sync, runtime, and gateway details.",
+                    actionLabel = "Copy",
+                ) {
+                    copyDiagnosticBundle(latestSyncStatus)
+                })
+                addScreenRow(preferenceRow(
+                    title = "Share diagnostic bundle",
+                    summary = "Send the same diagnostic report through Android sharing.",
+                    actionLabel = "Share",
+                ) {
+                    shareDiagnosticBundle(latestSyncStatus)
+                })
+            })
         }
+    }
 
     private fun copyDiagnosticBundle(syncStatus: String) {
         getSystemService(ClipboardManager::class.java)
