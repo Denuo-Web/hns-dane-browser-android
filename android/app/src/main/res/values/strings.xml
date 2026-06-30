@@ -11,6 +11,7 @@
     <string name="security_hns_webpki">HNS + WebPKI</string>
     <string name="security_failed">Validation failed</string>
     <string name="security_proof_unavailable">Proof unavailable</string>
+    <string name="security_status_content_description">Open resolver trace</string>
     <string name="menu_hamburger_content_description">Browser menu</string>
     <string name="menu_back">Back</string>
     <string name="menu_forward">Forward</string>
@@ -21,9 +22,6 @@
     <string name="menu_copy_current_url">Copy current URL</string>
     <string name="menu_share_current_url">Share current URL</string>
     <string name="menu_diagnostics">Diagnostics</string>
-    <string name="menu_resolver_trace">Resolver trace</string>
-    <string name="menu_hns_proof_details">HNS proof details</string>
-    <string name="menu_tlsa_inspector">TLSA / DANE inspector</string>
     <string name="menu_settings">Settings</string>
     <string name="clip_current_url">Current URL</string>
     <string name="toast_no_current_url">No current URL</string>

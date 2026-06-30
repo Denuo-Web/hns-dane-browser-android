@@ -180,6 +180,11 @@ class MainActivity : ComponentActivity() {
             setPadding(18, 0, 18, 0)
             setTextColor(Color.rgb(28, 71, 75))
             text = getString(R.string.security_syncing)
+            contentDescription = getString(R.string.security_status_content_description)
+            isClickable = true
+            isFocusable = true
+            applyScreenSelectableBackground()
+            setOnClickListener { openResolverTrace() }
         }
 
         syncProgressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -566,8 +571,6 @@ class MainActivity : ComponentActivity() {
 
     private fun showHamburgerMenu() {
         val currentUrl = currentPageUrl()
-        val hasHnsDiagnosticContext = currentTargetKind == BrowserTargetKind.HnsName ||
-            !mainFrameHnsTraceJson.isNullOrBlank()
 
         PopupMenu(this, hamburgerButton).apply {
             menu.add(0, MENU_BACK, 0, getString(R.string.menu_back)).apply {
@@ -594,19 +597,7 @@ class MainActivity : ComponentActivity() {
                 setIcon(android.R.drawable.ic_menu_share)
                 isEnabled = currentUrl != null
             }
-            menu.add(0, MENU_RESOLVER_TRACE, 8, getString(R.string.menu_resolver_trace)).apply {
-                setIcon(android.R.drawable.ic_menu_info_details)
-                isEnabled = hasHnsDiagnosticContext
-            }
-            menu.add(0, MENU_HNS_PROOF_DETAILS, 9, getString(R.string.menu_hns_proof_details)).apply {
-                setIcon(android.R.drawable.ic_menu_search)
-                isEnabled = hasHnsDiagnosticContext
-            }
-            menu.add(0, MENU_TLSA_INSPECTOR, 10, getString(R.string.menu_tlsa_inspector)).apply {
-                setIcon(android.R.drawable.ic_menu_view)
-                isEnabled = hasHnsDiagnosticContext
-            }
-            menu.add(0, MENU_SETTINGS, 11, getString(R.string.menu_settings))
+            menu.add(0, MENU_SETTINGS, 8, getString(R.string.menu_settings))
                 .setIcon(android.R.drawable.ic_menu_manage)
             setOnMenuItemClickListener { item ->
                 when (item.itemId) {
@@ -644,18 +635,6 @@ class MainActivity : ComponentActivity() {
                     }
                     MENU_SHARE_URL -> {
                         shareCurrentUrl()
-                        true
-                    }
-                    MENU_RESOLVER_TRACE -> {
-                        openResolverTrace()
-                        true
-                    }
-                    MENU_HNS_PROOF_DETAILS -> {
-                        openHnsProofDetails()
-                        true
-                    }
-                    MENU_TLSA_INSPECTOR -> {
-                        openTlsaInspector()
                         true
                     }
                     MENU_SETTINGS -> {
@@ -892,22 +871,6 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun openHnsProofDetails() {
-        startActivity(
-            Intent(this, HnsProofDetailsActivity::class.java)
-                .putExtra(HnsProofDetailsActivity.EXTRA_URL, omnibox.text.toString())
-                .putExtra(HnsProofDetailsActivity.EXTRA_TRACE_JSON, mainFrameHnsTraceJson),
-        )
-    }
-
-    private fun openTlsaInspector() {
-        startActivity(
-            Intent(this, HnsTlsaInspectorActivity::class.java)
-                .putExtra(HnsTlsaInspectorActivity.EXTRA_URL, omnibox.text.toString())
-                .putExtra(HnsTlsaInspectorActivity.EXTRA_TRACE_JSON, mainFrameHnsTraceJson),
-        )
-    }
-
     private fun openSettings() {
         val intent = Intent(this, SettingsActivity::class.java)
         currentPageUrl()?.let { intent.putExtra(SettingsActivity.EXTRA_CURRENT_URL, it) }
@@ -1095,10 +1058,7 @@ class MainActivity : ComponentActivity() {
         private const val MENU_DOWNLOADS = 6
         private const val MENU_COPY_URL = 7
         private const val MENU_SHARE_URL = 8
-        private const val MENU_RESOLVER_TRACE = 9
-        private const val MENU_HNS_PROOF_DETAILS = 10
-        private const val MENU_TLSA_INSPECTOR = 11
-        private const val MENU_SETTINGS = 12
+        private const val MENU_SETTINGS = 9
         private val WEB_NAVIGATION_SCHEMES = setOf("http", "https")
         private val EXTERNAL_VIEW_SCHEMES = setOf("mailto", "tel", "sms", "geo")
         private val SUBFRAME_ALLOWED_SCHEMES = setOf("http", "https", "about", "data", "blob")

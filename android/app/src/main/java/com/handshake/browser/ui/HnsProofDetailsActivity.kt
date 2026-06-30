@@ -27,7 +27,16 @@ class HnsProofDetailsActivity : ComponentActivity() {
             NativeBridge.hnsProofDetails(filesDir.absolutePath, host)
         }
 
-        setSecondaryScreen("HNS Proof Details") {
+        setSecondaryScreen(
+            title = "HNS Proof Details",
+            onSwipeLeft = {
+                openAdjacentHnsDiagnostic(HnsDiagnosticTool.ProofDetails, forward = true, url, traceJson)
+            },
+            onSwipeRight = {
+                openAdjacentHnsDiagnostic(HnsDiagnosticTool.ProofDetails, forward = false, url, traceJson)
+            },
+        ) {
+            addView(hnsDiagnosticTabs(HnsDiagnosticTool.ProofDetails, url, traceJson))
             addView(screenSection("Summary") {
                 addView(reportText(friendlySummary(detailsJson)))
             })

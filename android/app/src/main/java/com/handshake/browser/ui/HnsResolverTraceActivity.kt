@@ -2,7 +2,6 @@ package com.handshake.browser.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -18,25 +17,18 @@ class HnsResolverTraceActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        setSecondaryScreen("Resolver Trace") {
+        setSecondaryScreen(
+            title = "Resolver Trace",
+            onSwipeLeft = {
+                openAdjacentHnsDiagnostic(HnsDiagnosticTool.ResolverTrace, forward = true, url, traceJson)
+            },
+            onSwipeRight = {
+                openAdjacentHnsDiagnostic(HnsDiagnosticTool.ResolverTrace, forward = false, url, traceJson)
+            },
+        ) {
+            addView(hnsDiagnosticTabs(HnsDiagnosticTool.ResolverTrace, url, traceJson))
             addView(screenSection("Summary") {
                 addView(reportText(friendlySummary()))
-            })
-            addView(screenSection("Related tools") {
-                addScreenRow(preferenceRow(
-                    title = "HNS proof details",
-                    summary = "Open local proof data for this page.",
-                    actionLabel = "Open",
-                ) {
-                    openHnsProofDetails()
-                })
-                addScreenRow(preferenceRow(
-                    title = "TLSA / DANE inspector",
-                    summary = "Inspect TLSA records and DANE policy for this page.",
-                    actionLabel = "Open",
-                ) {
-                    openTlsaInspector()
-                })
             })
             addView(screenSection("Export") {
                 addScreenRow(preferenceRow(
@@ -150,22 +142,6 @@ class HnsResolverTraceActivity : ComponentActivity() {
         getSystemService(ClipboardManager::class.java)
             .setPrimaryClip(ClipData.newPlainText(label, value))
         Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun openHnsProofDetails() {
-        startActivity(
-            Intent(this, HnsProofDetailsActivity::class.java)
-                .putExtra(HnsProofDetailsActivity.EXTRA_URL, url)
-                .putExtra(HnsProofDetailsActivity.EXTRA_TRACE_JSON, traceJson),
-        )
-    }
-
-    private fun openTlsaInspector() {
-        startActivity(
-            Intent(this, HnsTlsaInspectorActivity::class.java)
-                .putExtra(HnsTlsaInspectorActivity.EXTRA_URL, url)
-                .putExtra(HnsTlsaInspectorActivity.EXTRA_TRACE_JSON, traceJson),
-        )
     }
 
     companion object {

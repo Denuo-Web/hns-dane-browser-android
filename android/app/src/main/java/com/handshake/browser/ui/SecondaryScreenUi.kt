@@ -1,20 +1,25 @@
 package com.handshake.browser.ui
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import kotlin.math.abs
 
 internal fun ComponentActivity.setSecondaryScreen(
     title: String,
+    onSwipeLeft: (() -> Unit)? = null,
+    onSwipeRight: (() -> Unit)? = null,
     content: LinearLayout.() -> Unit,
 ) {
     val root = LinearLayout(this).apply {
@@ -28,6 +33,7 @@ internal fun ComponentActivity.setSecondaryScreen(
 
     setContentView(
         ScrollView(this).apply {
+            installHorizontalSwipeNavigation(onSwipeLeft, onSwipeRight)
             addView(root, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -223,6 +229,40 @@ internal fun View.applyScreenSelectableBackground() {
 
 internal fun Context.uiDp(value: Int): Int =
     (value * resources.displayMetrics.density + 0.5f).toInt()
+
+@SuppressLint("ClickableViewAccessibility")
+private fun View.installHorizontalSwipeNavigation(
+    onSwipeLeft: (() -> Unit)?,
+    onSwipeRight: (() -> Unit)?,
+) {
+    if (onSwipeLeft == null && onSwipeRight == null) {
+        return
+    }
+
+    var downX = 0f
+    var downY = 0f
+    setOnTouchListener { _, event ->
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = event.x
+                downY = event.y
+            }
+            MotionEvent.ACTION_UP -> {
+                val deltaX = event.x - downX
+                val deltaY = event.y - downY
+                if (abs(deltaX) >= context.uiDp(72) && abs(deltaX) > abs(deltaY) * 1.5f) {
+                    if (deltaX < 0) {
+                        onSwipeLeft?.invoke()
+                    } else {
+                        onSwipeRight?.invoke()
+                    }
+                    return@setOnTouchListener true
+                }
+            }
+        }
+        false
+    }
+}
 
 private object ScreenColors {
     val PRIMARY_TEXT: Int = Color.rgb(32, 33, 36)

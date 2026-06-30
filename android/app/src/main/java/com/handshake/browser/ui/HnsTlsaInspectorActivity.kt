@@ -18,7 +18,16 @@ class HnsTlsaInspectorActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        setSecondaryScreen("TLSA / DANE Inspector") {
+        setSecondaryScreen(
+            title = "TLSA / DANE Inspector",
+            onSwipeLeft = {
+                openAdjacentHnsDiagnostic(HnsDiagnosticTool.TlsaInspector, forward = true, url, traceJson)
+            },
+            onSwipeRight = {
+                openAdjacentHnsDiagnostic(HnsDiagnosticTool.TlsaInspector, forward = false, url, traceJson)
+            },
+        ) {
+            addView(hnsDiagnosticTabs(HnsDiagnosticTool.TlsaInspector, url, traceJson))
             addView(screenSection("Summary") {
                 addView(reportText(friendlySummary()))
             })
