@@ -67,6 +67,7 @@ internal object HnsTlsaTraceFormat {
             "authoritative_nameserver_invalid_response" -> "authoritative nameserver invalid response"
             "delegated_dnssec_validation_failed" -> "delegated DNSSEC validation failed"
             "hns_resource_invalid" -> "HNS resource invalid"
+            "hns_resource_capsule_invalid" -> "HNS browser capsule invalid"
             "hns_proof_validation_failed" -> "HNS proof validation failed"
             "insecure_resolution" -> "insecure resolver result"
             "origin_address_missing" -> "origin address missing"

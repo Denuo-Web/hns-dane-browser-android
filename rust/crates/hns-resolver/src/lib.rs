@@ -1,7 +1,7 @@
 use hns_cache::TtlCache;
 use hns_core::dns::{
     DnsEncodeConfig, DnsFlags, DnsHeader, DnsMessage, DnsName, DnsQuestion, RecordType,
-    ResourceRecord,
+    ResourceRecord, SVCB_PARAM_ALPN,
 };
 use hns_core::resource::{ResourceError, decode_handshake_resource_records};
 use hns_core::{Hash, Height, NameHash, NameHashError};
@@ -29,6 +29,9 @@ const DNS_RCODE_NOERROR: u8 = 0;
 const DNS_RCODE_NXDOMAIN: u8 = 3;
 const DEFAULT_DNS_UDP_PAYLOAD: usize = 1232;
 const DEFAULT_DNS_TCP_MAX_MESSAGE_LEN: usize = 65_535;
+const HNS_CAPSULE_VERSION: &str = "1";
+const HNS_CAPSULE_MAX_TEXT_BYTES: usize = 255;
+const HNS_CAPSULE_DEFAULT_TLS_PORT: u16 = 443;
 const MAX_CNAME_CHAIN_LEN: usize = 8;
 static DNS_QUERY_ID: AtomicU16 = AtomicU16::new(0x4d00);
 
@@ -100,6 +103,8 @@ pub enum ResolverError {
     DnsTransport(String),
     #[error("DNS response is invalid")]
     InvalidDnsResponse,
+    #[error("HNS browser capsule is invalid")]
+    InvalidCapsule,
     #[error("resolver cache lock is poisoned")]
     CachePoisoned,
     #[error("resolver storage error: {0}")]
@@ -962,6 +967,14 @@ where
             return Err(ResolverError::NameNotFound);
         }
         let mut delegation_records = proven.records.clone();
+        if let Some(capsule_answer) = hns_browser_capsule_answer(
+            &delegation_records,
+            &root_owner,
+            &request_name,
+            request.qtype,
+        )? {
+            return Ok(capsule_answer);
+        }
 
         let direct_records =
             filter_records(delegation_records.clone(), &request_name, request.qtype);
@@ -1693,6 +1706,365 @@ fn root_records_answer_request(request_name: &DnsName, root_owner: &DnsName, qty
         RecordType::from_code(qtype),
         RecordType::Ds | RecordType::Ns | RecordType::Txt
     )
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HnsBrowserCapsule {
+    ipv4: Option<Ipv4Addr>,
+    ipv6: Option<Ipv6Addr>,
+    alpn: Vec<Vec<u8>>,
+    tlsa_rdata: Option<Vec<u8>>,
+}
+
+fn hns_browser_capsule_answer(
+    records: &[ResourceRecord],
+    root_owner: &DnsName,
+    request_name: &DnsName,
+    qtype: u16,
+) -> Result<Option<ResolutionAnswer>, ResolverError> {
+    let qtype = RecordType::from_code(qtype);
+    if !matches!(
+        qtype,
+        RecordType::A | RecordType::Aaaa | RecordType::Https | RecordType::Tlsa
+    ) {
+        return Ok(None);
+    }
+
+    let mut matching_capsule = None;
+    for text in hns_browser_capsule_texts(records, root_owner)? {
+        let Some(host) = hns_browser_capsule_host(&text)? else {
+            continue;
+        };
+        let owner = hns_browser_capsule_owner(root_owner, &host)?;
+        if !hns_browser_capsule_matches_request(&owner, request_name, qtype) {
+            continue;
+        }
+        if matching_capsule.is_some() {
+            return Err(ResolverError::InvalidCapsule);
+        }
+        matching_capsule = Some(parse_hns_browser_capsule(&text, root_owner)?);
+    }
+
+    let Some(capsule) = matching_capsule else {
+        return Ok(None);
+    };
+    Ok(Some(ResolutionAnswer {
+        name: request_name.clone(),
+        records: hns_browser_capsule_records(&capsule, request_name, qtype)?,
+        secure: true,
+    }))
+}
+
+fn hns_browser_capsule_records(
+    capsule: &HnsBrowserCapsule,
+    request_name: &DnsName,
+    qtype: RecordType,
+) -> Result<Vec<ResourceRecord>, ResolverError> {
+    let ttl = hns_core::resource::DEFAULT_HANDSHAKE_RESOURCE_TTL;
+    let records = match qtype {
+        RecordType::A => capsule
+            .ipv4
+            .map(|address| {
+                vec![ResourceRecord {
+                    name: request_name.clone(),
+                    record_type: RecordType::A,
+                    class: DNS_CLASS_IN,
+                    ttl,
+                    rdata: address.octets().to_vec(),
+                }]
+            })
+            .unwrap_or_default(),
+        RecordType::Aaaa => capsule
+            .ipv6
+            .map(|address| {
+                vec![ResourceRecord {
+                    name: request_name.clone(),
+                    record_type: RecordType::Aaaa,
+                    class: DNS_CLASS_IN,
+                    ttl,
+                    rdata: address.octets().to_vec(),
+                }]
+            })
+            .unwrap_or_default(),
+        RecordType::Https if !capsule.alpn.is_empty() => vec![ResourceRecord {
+            name: request_name.clone(),
+            record_type: RecordType::Https,
+            class: DNS_CLASS_IN,
+            ttl,
+            rdata: hns_browser_capsule_https_rdata(&capsule.alpn)?,
+        }],
+        RecordType::Https => Vec::new(),
+        RecordType::Tlsa => capsule
+            .tlsa_rdata
+            .as_ref()
+            .map(|rdata| {
+                vec![ResourceRecord {
+                    name: request_name.clone(),
+                    record_type: RecordType::Tlsa,
+                    class: DNS_CLASS_IN,
+                    ttl,
+                    rdata: rdata.clone(),
+                }]
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    Ok(records)
+}
+
+fn hns_browser_capsule_texts(
+    records: &[ResourceRecord],
+    root_owner: &DnsName,
+) -> Result<Vec<String>, ResolverError> {
+    let mut texts = Vec::new();
+    for record in records
+        .iter()
+        .filter(|record| record.name == *root_owner && record.record_type == RecordType::Txt)
+    {
+        for text in txt_rdata_strings(&record.rdata)? {
+            if hns_browser_capsule_is_declared(&text) {
+                texts.push(text);
+            }
+        }
+    }
+    Ok(texts)
+}
+
+fn hns_browser_capsule_is_declared(text: &str) -> bool {
+    text.split(';').any(|part| {
+        let Some((key, value)) = capsule_key_value(part) else {
+            return false;
+        };
+        key.eq_ignore_ascii_case("hnsb") && value == HNS_CAPSULE_VERSION
+    })
+}
+
+fn hns_browser_capsule_host(text: &str) -> Result<Option<String>, ResolverError> {
+    if text.len() > HNS_CAPSULE_MAX_TEXT_BYTES {
+        return Err(ResolverError::InvalidCapsule);
+    }
+    if !hns_browser_capsule_is_declared(text) {
+        return Ok(None);
+    }
+    let mut host = None;
+    for part in text.split(';') {
+        let Some((key, value)) = capsule_key_value(part) else {
+            continue;
+        };
+        if key.eq_ignore_ascii_case("host") {
+            if host.is_some() {
+                return Err(ResolverError::InvalidCapsule);
+            }
+            host = Some(value.to_ascii_lowercase());
+        }
+    }
+    Ok(Some(host.unwrap_or_else(|| "@".to_owned())))
+}
+
+fn parse_hns_browser_capsule(
+    text: &str,
+    root_owner: &DnsName,
+) -> Result<HnsBrowserCapsule, ResolverError> {
+    if text.len() > HNS_CAPSULE_MAX_TEXT_BYTES {
+        return Err(ResolverError::InvalidCapsule);
+    }
+
+    let mut saw_version = false;
+    let mut host = None;
+    let mut ipv4 = None;
+    let mut ipv6 = None;
+    let mut alpn = Vec::new();
+    let mut tlsa_rdata = None;
+
+    for part in text.split(';') {
+        let Some((key, value)) = capsule_key_value(part) else {
+            return Err(ResolverError::InvalidCapsule);
+        };
+        match key.to_ascii_lowercase().as_str() {
+            "hnsb" if value == HNS_CAPSULE_VERSION => saw_version = true,
+            "hnsb" => return Err(ResolverError::InvalidCapsule),
+            "host" => {
+                if host.is_some() {
+                    return Err(ResolverError::InvalidCapsule);
+                }
+                host = Some(value.to_ascii_lowercase());
+            }
+            "a" => {
+                if ipv4.is_some() {
+                    return Err(ResolverError::InvalidCapsule);
+                }
+                ipv4 = Some(
+                    value
+                        .parse::<Ipv4Addr>()
+                        .map_err(|_| ResolverError::InvalidCapsule)?,
+                );
+            }
+            "aaaa" => {
+                if ipv6.is_some() {
+                    return Err(ResolverError::InvalidCapsule);
+                }
+                ipv6 = Some(
+                    value
+                        .parse::<Ipv6Addr>()
+                        .map_err(|_| ResolverError::InvalidCapsule)?,
+                );
+            }
+            "alpn" => alpn = parse_hns_browser_capsule_alpn(value)?,
+            "tlsa" => {
+                if tlsa_rdata.is_some() {
+                    return Err(ResolverError::InvalidCapsule);
+                }
+                tlsa_rdata = Some(parse_hns_browser_capsule_tlsa(value)?);
+            }
+            _ => {}
+        }
+    }
+
+    if !saw_version {
+        return Err(ResolverError::InvalidCapsule);
+    }
+    let host = host.unwrap_or_else(|| "@".to_owned());
+    hns_browser_capsule_owner(root_owner, &host)?;
+    Ok(HnsBrowserCapsule {
+        ipv4,
+        ipv6,
+        alpn,
+        tlsa_rdata,
+    })
+}
+
+fn capsule_key_value(part: &str) -> Option<(&str, &str)> {
+    let (key, value) = part.trim().split_once('=')?;
+    let key = key.trim();
+    let value = value.trim();
+    if key.is_empty() || value.is_empty() {
+        None
+    } else {
+        Some((key, value))
+    }
+}
+
+fn hns_browser_capsule_owner(root_owner: &DnsName, host: &str) -> Result<DnsName, ResolverError> {
+    if host == "@" {
+        return Ok(root_owner.clone());
+    }
+    let host_name = DnsName::from_ascii(host).map_err(|_| ResolverError::InvalidCapsule)?;
+    if host_name.labels().len() != 1 || host_name.labels()[0] == "*" {
+        return Err(ResolverError::InvalidCapsule);
+    }
+    DnsName::from_ascii(&format!("{host}.{root_owner}")).map_err(|_| ResolverError::InvalidCapsule)
+}
+
+fn hns_browser_capsule_matches_request(
+    owner: &DnsName,
+    request_name: &DnsName,
+    qtype: RecordType,
+) -> bool {
+    match qtype {
+        RecordType::A | RecordType::Aaaa | RecordType::Https => request_name == owner,
+        RecordType::Tlsa => {
+            let labels = request_name.labels();
+            labels.len() == owner.labels().len() + 2
+                && labels[0] == format!("_{HNS_CAPSULE_DEFAULT_TLS_PORT}")
+                && labels[1] == "_tcp"
+                && labels[2..] == *owner.labels()
+        }
+        _ => false,
+    }
+}
+
+fn parse_hns_browser_capsule_alpn(value: &str) -> Result<Vec<Vec<u8>>, ResolverError> {
+    let mut ids = Vec::new();
+    for id in value.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+        if id.len() > u8::MAX as usize || !id.bytes().all(|byte| byte.is_ascii_graphic()) {
+            return Err(ResolverError::InvalidCapsule);
+        }
+        let bytes = id.as_bytes().to_vec();
+        if !ids.contains(&bytes) {
+            ids.push(bytes);
+        }
+    }
+    if ids.is_empty() {
+        return Err(ResolverError::InvalidCapsule);
+    }
+    Ok(ids)
+}
+
+fn parse_hns_browser_capsule_tlsa(value: &str) -> Result<Vec<u8>, ResolverError> {
+    let parts = value.split(',').map(str::trim).collect::<Vec<_>>();
+    if parts.len() != 4 || parts[0] != "3" || parts[1] != "1" || parts[2] != "1" {
+        return Err(ResolverError::InvalidCapsule);
+    }
+    let digest = hex_decode_fixed(parts[3], 32)?;
+    let mut rdata = Vec::with_capacity(3 + digest.len());
+    rdata.extend([3, 1, 1]);
+    rdata.extend(digest);
+    Ok(rdata)
+}
+
+fn hns_browser_capsule_https_rdata(alpn: &[Vec<u8>]) -> Result<Vec<u8>, ResolverError> {
+    let mut alpn_value = Vec::new();
+    for id in alpn {
+        if id.is_empty() || id.len() > u8::MAX as usize {
+            return Err(ResolverError::InvalidCapsule);
+        }
+        alpn_value.push(id.len() as u8);
+        alpn_value.extend(id);
+    }
+
+    let mut rdata = Vec::new();
+    rdata.extend(1u16.to_be_bytes());
+    DnsName::root()
+        .encode_wire(&mut rdata)
+        .map_err(|_| ResolverError::InvalidCapsule)?;
+    rdata.extend(SVCB_PARAM_ALPN.to_be_bytes());
+    rdata.extend((alpn_value.len() as u16).to_be_bytes());
+    rdata.extend(alpn_value);
+    Ok(rdata)
+}
+
+fn txt_rdata_strings(rdata: &[u8]) -> Result<Vec<String>, ResolverError> {
+    let mut cursor = 0usize;
+    let mut strings = Vec::new();
+    while cursor < rdata.len() {
+        let len = *rdata.get(cursor).ok_or(ResolverError::InvalidCapsule)? as usize;
+        cursor += 1;
+        let end = cursor
+            .checked_add(len)
+            .ok_or(ResolverError::InvalidCapsule)?;
+        let bytes = rdata
+            .get(cursor..end)
+            .ok_or(ResolverError::InvalidCapsule)?;
+        strings.push(
+            std::str::from_utf8(bytes)
+                .map_err(|_| ResolverError::InvalidCapsule)?
+                .to_owned(),
+        );
+        cursor = end;
+    }
+    Ok(strings)
+}
+
+fn hex_decode_fixed(value: &str, expected_len: usize) -> Result<Vec<u8>, ResolverError> {
+    if value.len() != expected_len * 2 {
+        return Err(ResolverError::InvalidCapsule);
+    }
+    let mut out = Vec::with_capacity(expected_len);
+    for pair in value.as_bytes().chunks_exact(2) {
+        let high = hex_value(pair[0])?;
+        let low = hex_value(pair[1])?;
+        out.push((high << 4) | low);
+    }
+    Ok(out)
+}
+
+fn hex_value(byte: u8) -> Result<u8, ResolverError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(ResolverError::InvalidCapsule),
+    }
 }
 
 fn has_owner_record(records: &[ResourceRecord], owner: &DnsName, record_type: RecordType) -> bool {
@@ -3691,6 +4063,296 @@ mod tests {
     }
 
     #[test]
+    fn delegating_resolver_answers_apex_a_from_hns_browser_capsule_before_delegation() {
+        let root_name = "welcome".to_owned();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let resolver = DelegatingResolver::new(
+            StaticProofProvider {
+                proven: ProvenNameRecords {
+                    root_name: root_name.clone(),
+                    name_hash: NameHash::from_name(&root_name).unwrap(),
+                    records: vec![
+                        ns_record("welcome", "ns1.welcome"),
+                        ds_record("welcome"),
+                        txt_record(
+                            "welcome",
+                            "hnsb=1;host=@;a=203.0.113.10;alpn=h2,h3;tlsa=3,1,1,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        ),
+                    ],
+                    secure: true,
+                    exists: true,
+                },
+            },
+            ScriptedResolver::new(Vec::new(), Arc::clone(&requests)),
+        );
+
+        let answer = resolver
+            .resolve(&ResolutionRequest {
+                qname: root_name,
+                qtype: RecordType::A.code(),
+            })
+            .unwrap();
+
+        assert!(answer.secure);
+        assert_eq!(answer.records.len(), 1);
+        assert_eq!(
+            answer.records[0].name,
+            DnsName::from_ascii("welcome").unwrap()
+        );
+        assert_eq!(answer.records[0].record_type, RecordType::A);
+        assert_eq!(answer.records[0].rdata, vec![203, 0, 113, 10]);
+        assert_eq!(
+            answer.records[0].ttl,
+            hns_core::resource::DEFAULT_HANDSHAKE_RESOURCE_TTL,
+        );
+        assert!(requests.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delegating_resolver_answers_child_a_from_hns_browser_capsule() {
+        let root_name = "welcome".to_owned();
+        let resolver = DelegatingResolver::new(
+            StaticProofProvider {
+                proven: ProvenNameRecords {
+                    root_name: root_name.clone(),
+                    name_hash: NameHash::from_name(&root_name).unwrap(),
+                    records: vec![txt_record(
+                        "welcome",
+                        "hnsb=1;host=www;a=203.0.113.11;tlsa=3,1,1,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )],
+                    secure: true,
+                    exists: true,
+                },
+            },
+            FailClosedResolver,
+        );
+
+        let answer = resolver
+            .resolve(&ResolutionRequest {
+                qname: "www.welcome".to_owned(),
+                qtype: RecordType::A.code(),
+            })
+            .unwrap();
+
+        assert!(answer.secure);
+        assert_eq!(
+            answer.records[0].name,
+            DnsName::from_ascii("www.welcome").unwrap()
+        );
+        assert_eq!(answer.records[0].record_type, RecordType::A);
+        assert_eq!(answer.records[0].rdata, vec![203, 0, 113, 11]);
+    }
+
+    #[test]
+    fn delegating_resolver_synthesizes_tlsa_from_hns_browser_capsule() {
+        let root_name = "welcome".to_owned();
+        let resolver = DelegatingResolver::new(
+            StaticProofProvider {
+                proven: ProvenNameRecords {
+                    root_name: root_name.clone(),
+                    name_hash: NameHash::from_name(&root_name).unwrap(),
+                    records: vec![txt_record(
+                        "welcome",
+                        "hnsb=1;host=@;a=203.0.113.10;tlsa=3,1,1,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )],
+                    secure: true,
+                    exists: true,
+                },
+            },
+            FailClosedResolver,
+        );
+
+        let answer = resolver
+            .resolve(&ResolutionRequest {
+                qname: "_443._tcp.welcome".to_owned(),
+                qtype: RecordType::Tlsa.code(),
+            })
+            .unwrap();
+
+        assert!(answer.secure);
+        assert_eq!(answer.records.len(), 1);
+        assert_eq!(answer.records[0].record_type, RecordType::Tlsa);
+        assert_eq!(answer.records[0].rdata.len(), 35);
+        assert_eq!(&answer.records[0].rdata[..3], &[3, 1, 1]);
+        assert!(
+            answer.records[0].rdata[3..]
+                .iter()
+                .all(|byte| *byte == 0xaa)
+        );
+    }
+
+    #[test]
+    fn delegating_resolver_synthesizes_https_alpn_from_hns_browser_capsule() {
+        let root_name = "welcome".to_owned();
+        let resolver = DelegatingResolver::new(
+            StaticProofProvider {
+                proven: ProvenNameRecords {
+                    root_name: root_name.clone(),
+                    name_hash: NameHash::from_name(&root_name).unwrap(),
+                    records: vec![txt_record(
+                        "welcome",
+                        "hnsb=1;host=@;a=203.0.113.10;alpn=h2,h3;tlsa=3,1,1,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )],
+                    secure: true,
+                    exists: true,
+                },
+            },
+            FailClosedResolver,
+        );
+
+        let answer = resolver
+            .resolve(&ResolutionRequest {
+                qname: "welcome".to_owned(),
+                qtype: RecordType::Https.code(),
+            })
+            .unwrap();
+
+        assert!(answer.secure);
+        assert_eq!(answer.records.len(), 1);
+        let svcb = hns_core::dns::SvcbRecord::from_record(&answer.records[0]).unwrap();
+        assert_eq!(
+            svcb.alpn_ids().unwrap(),
+            vec![b"h2".to_vec(), b"h3".to_vec()]
+        );
+    }
+
+    #[test]
+    fn delegating_resolver_rejects_malformed_matching_hns_browser_capsule() {
+        let root_name = "welcome".to_owned();
+        let resolver = DelegatingResolver::new(
+            StaticProofProvider {
+                proven: ProvenNameRecords {
+                    root_name: root_name.clone(),
+                    name_hash: NameHash::from_name(&root_name).unwrap(),
+                    records: vec![txt_record(
+                        "welcome",
+                        "hnsb=1;host=@;a=999.0.113.10;tlsa=3,1,1,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )],
+                    secure: true,
+                    exists: true,
+                },
+            },
+            FailClosedResolver,
+        );
+
+        assert_eq!(
+            resolver
+                .resolve(&ResolutionRequest {
+                    qname: root_name,
+                    qtype: RecordType::A.code(),
+                })
+                .unwrap_err(),
+            ResolverError::InvalidCapsule,
+        );
+    }
+
+    #[test]
+    fn delegating_resolver_ignores_wrong_host_hns_browser_capsule() {
+        let root_name = "welcome".to_owned();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let resolver = DelegatingResolver::new(
+            StaticProofProvider {
+                proven: ProvenNameRecords {
+                    root_name: root_name.clone(),
+                    name_hash: NameHash::from_name(&root_name).unwrap(),
+                    records: vec![
+                        ns_record("welcome", "ns1.welcome"),
+                        ds_record("welcome"),
+                        txt_record(
+                            "welcome",
+                            "hnsb=1;host=www;a=999.0.113.10;tlsa=3,1,1,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        ),
+                    ],
+                    secure: true,
+                    exists: true,
+                },
+            },
+            ScriptedResolver::new(
+                vec![resolver_response(
+                    "welcome",
+                    RecordType::A.code(),
+                    true,
+                    vec![record(
+                        DnsName::from_ascii("welcome").unwrap(),
+                        RecordType::A,
+                        vec![127, 0, 0, 1],
+                    )],
+                )],
+                Arc::clone(&requests),
+            ),
+        );
+
+        let answer = resolver
+            .resolve(&ResolutionRequest {
+                qname: root_name,
+                qtype: RecordType::A.code(),
+            })
+            .unwrap();
+
+        assert_eq!(answer.records[0].rdata, vec![127, 0, 0, 1]);
+        assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn delegating_resolver_rejects_multiple_matching_hns_browser_capsules() {
+        let root_name = "welcome".to_owned();
+        let resolver = DelegatingResolver::new(
+            StaticProofProvider {
+                proven: ProvenNameRecords {
+                    root_name: root_name.clone(),
+                    name_hash: NameHash::from_name(&root_name).unwrap(),
+                    records: vec![
+                        txt_record("welcome", "hnsb=1;host=@;a=203.0.113.10"),
+                        txt_record("welcome", "hnsb=1;host=@;a=203.0.113.11"),
+                    ],
+                    secure: true,
+                    exists: true,
+                },
+            },
+            FailClosedResolver,
+        );
+
+        assert_eq!(
+            resolver
+                .resolve(&ResolutionRequest {
+                    qname: root_name,
+                    qtype: RecordType::A.code(),
+                })
+                .unwrap_err(),
+            ResolverError::InvalidCapsule,
+        );
+    }
+
+    #[test]
+    fn delegating_resolver_allows_unknown_hns_browser_capsule_keys() {
+        let root_name = "welcome".to_owned();
+        let resolver = DelegatingResolver::new(
+            StaticProofProvider {
+                proven: ProvenNameRecords {
+                    root_name: root_name.clone(),
+                    name_hash: NameHash::from_name(&root_name).unwrap(),
+                    records: vec![txt_record(
+                        "welcome",
+                        "hnsb=1;host=@;foo=bar;a=203.0.113.10",
+                    )],
+                    secure: true,
+                    exists: true,
+                },
+            },
+            FailClosedResolver,
+        );
+
+        let answer = resolver
+            .resolve(&ResolutionRequest {
+                qname: root_name,
+                qtype: RecordType::A.code(),
+            })
+            .unwrap();
+
+        assert_eq!(answer.records[0].rdata, vec![203, 0, 113, 10]);
+    }
+
+    #[test]
     fn delegating_resolver_fails_closed_when_ds_child_is_insecure() {
         let root_name = "welcome".to_owned();
         let resolver = DelegatingResolver::new(
@@ -5461,6 +6123,14 @@ mod tests {
             RecordType::Ds,
             vec![0, 1, 8, 2, 0xaa],
         )
+    }
+
+    fn txt_record(owner: &str, text: &str) -> ResourceRecord {
+        assert!(text.len() <= u8::MAX as usize);
+        let mut rdata = Vec::new();
+        rdata.push(text.len() as u8);
+        rdata.extend(text.as_bytes());
+        record(DnsName::from_ascii(owner).unwrap(), RecordType::Txt, rdata)
     }
 
     fn rrsig_record(owner: &str) -> ResourceRecord {

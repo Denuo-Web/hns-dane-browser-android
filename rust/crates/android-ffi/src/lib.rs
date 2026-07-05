@@ -1000,7 +1000,7 @@ pub fn core_version() -> &'static str {
 }
 
 pub fn diagnostics_json() -> String {
-    r#"{"core":"hns-browser-rust-core","version":"0.1.5","features":["header-hash","header-pow-validation","header-mainnet-difficulty-retarget","header-canonical-height-index","hns-name-hash","hns-dotted-root-label","urkel-proof-verification","urkel-proof-value-handoff","hns-name-state-resource-extraction","hns-resource-decoder","hns-resource-provider-adapter","hns-memory-resource-provider","hns-sqlite-resource-provider","hns-negative-cache","hns-ttl-cache-lru","hns-resource-cache-stats","hns-resource-cache-eviction","hns-resource-cache-cap-enforcement","hns-resource-cache-chain-anchors","hns-resource-cache-reorg-invalidation","hns-resource-cache-current-tip","hns-proof-backed-resolver-boundary","hns-delegating-resolver-boundary","hns-proof-backed-ns-address-hydration","hns-authoritative-dnssec-delegated-resolver","android-hns-doh-compat-resolver","dns-wire","dns-svcb-https","dnssec-ds-dnskey-link","dnssec-ds-sha1","dnssec-ds-sha384","dnssec-rrsig-signed-data","dnssec-canonical-name-rdata","dnssec-ecdsa-p256-verify","dnssec-ecdsa-p384-verify","dnssec-rsa-sha1-verify","dnssec-rsa-sha256-sha512-verify","dnssec-ed25519-verify","dnssec-signed-rrset-validation","dnssec-delegated-chain-validation","dnssec-delegated-no-data-validation","dnssec-delegated-name-error-validation","dnssec-delegated-cname-chain","dnssec-child-referral-validation","dnssec-child-cname-chain","dnssec-child-no-data-validation","dnssec-child-name-error-validation","dnssec-nsec-denial-validation","dnssec-nsec3-denial-validation","dnssec-nxdomain-name-error-validation","dane-policy","dane-certificate-chain-policy","x509-spki-extraction","p2p-codec","p2p-tcp-peer-connection","p2p-static-peer-source","p2p-dns-seed-source","p2p-getaddr-peer-discovery","p2p-discovery-rotation","p2p-peer-diversity","p2p-sqlite-peer-store","sync-coordinator","sync-header-runner","sync-multi-batch-header-runner","sync-parallel-peer-probing","sync-ranged-peer-rotation","sync-proof-scheduler","android-native-sync-once","android-sync-status","android-sync-outcome-status","android-sync-progress-heights","android-sync-high-batch-catchup","android-clear-resolver-cache","android-persistent-gateway-resolver","android-gateway-live-proof-fetch","android-gateway-header-forwarding","android-gateway-range-forwarding","android-gateway-body-forwarding","android-gateway-file-body-stream","android-webview-hns-intercept","android-service-worker-hns-intercept","android-hns-redirect-follow","android-actionable-hns-errors","hns-name-not-found-error","gateway-policy","gateway-hns-address-required","gateway-tlsa-service-scope","gateway-delegated-origin-address-lookup","gateway-origin-address-query","gateway-https-service-query","gateway-svcb-alpn-policy","gateway-actionable-nameserver-errors","gateway-cname-address-routing","android-proxy-gateway-hook","android-random-loopback-proxy-port","android-local-hns-connect-certs","hns-websocket-native-tunnel","http-origin-transport","http-origin-connection-pooling","http2-origin-transport","http3-origin-transport","http-origin-response-framing","https-rustls-transport","https-tls-session-resumption","https-alt-svc-promotion","dane-tls-policy"],"securityDefault":"fail-closed"}"#
+    r#"{"core":"hns-browser-rust-core","version":"0.1.5","features":["header-hash","header-pow-validation","header-mainnet-difficulty-retarget","header-canonical-height-index","hns-name-hash","hns-dotted-root-label","urkel-proof-verification","urkel-proof-value-handoff","hns-name-state-resource-extraction","hns-resource-decoder","hns-browser-txt-capsule","hns-resource-provider-adapter","hns-memory-resource-provider","hns-sqlite-resource-provider","hns-negative-cache","hns-ttl-cache-lru","hns-resource-cache-stats","hns-resource-cache-eviction","hns-resource-cache-cap-enforcement","hns-resource-cache-chain-anchors","hns-resource-cache-reorg-invalidation","hns-resource-cache-current-tip","hns-proof-backed-resolver-boundary","hns-delegating-resolver-boundary","hns-proof-backed-ns-address-hydration","hns-authoritative-dnssec-delegated-resolver","android-hns-doh-compat-resolver","dns-wire","dns-svcb-https","dnssec-ds-dnskey-link","dnssec-ds-sha1","dnssec-ds-sha384","dnssec-rrsig-signed-data","dnssec-canonical-name-rdata","dnssec-ecdsa-p256-verify","dnssec-ecdsa-p384-verify","dnssec-rsa-sha1-verify","dnssec-rsa-sha256-sha512-verify","dnssec-ed25519-verify","dnssec-signed-rrset-validation","dnssec-delegated-chain-validation","dnssec-delegated-no-data-validation","dnssec-delegated-name-error-validation","dnssec-delegated-cname-chain","dnssec-child-referral-validation","dnssec-child-cname-chain","dnssec-child-no-data-validation","dnssec-child-name-error-validation","dnssec-nsec-denial-validation","dnssec-nsec3-denial-validation","dnssec-nxdomain-name-error-validation","dane-policy","dane-certificate-chain-policy","x509-spki-extraction","p2p-codec","p2p-tcp-peer-connection","p2p-static-peer-source","p2p-dns-seed-source","p2p-getaddr-peer-discovery","p2p-discovery-rotation","p2p-peer-diversity","p2p-sqlite-peer-store","sync-coordinator","sync-header-runner","sync-multi-batch-header-runner","sync-parallel-peer-probing","sync-ranged-peer-rotation","sync-proof-scheduler","android-native-sync-once","android-sync-status","android-sync-outcome-status","android-sync-progress-heights","android-sync-high-batch-catchup","android-clear-resolver-cache","android-persistent-gateway-resolver","android-gateway-live-proof-fetch","android-gateway-header-forwarding","android-gateway-range-forwarding","android-gateway-body-forwarding","android-gateway-file-body-stream","android-webview-hns-intercept","android-service-worker-hns-intercept","android-hns-redirect-follow","android-actionable-hns-errors","hns-name-not-found-error","gateway-policy","gateway-hns-address-required","gateway-tlsa-service-scope","gateway-delegated-origin-address-lookup","gateway-origin-address-query","gateway-https-service-query","gateway-svcb-alpn-policy","gateway-actionable-nameserver-errors","gateway-cname-address-routing","android-proxy-gateway-hook","android-random-loopback-proxy-port","android-local-hns-connect-certs","hns-websocket-native-tunnel","http-origin-transport","http-origin-connection-pooling","http2-origin-transport","http3-origin-transport","http-origin-response-framing","https-rustls-transport","https-tls-session-resumption","https-alt-svc-promotion","dane-tls-policy"],"securityDefault":"fail-closed"}"#
     .replace("\"version\":\"0.1.5\"", "\"version\":\"0.2.8\"")
 }
 
@@ -1800,6 +1800,7 @@ fn resolution_trace_json(
         .unwrap_or_else(|| "null".to_owned());
     let authoritative_dns = authoritative_dns_trace_json(&dns_events);
     let dns_attempts = dns_trace_attempts_json(&dns_events);
+    let resolution_source = resolution_source_name(resolution, authoritative_dns_used, error);
     let local_currentness = local_chain_currentness_for_trace(input.data_dir);
     let local_best_height =
         optional_u32_json(local_currentness.and_then(|value| value.best_height));
@@ -1809,7 +1810,7 @@ fn resolution_trace_json(
     let local_chain_stale = optional_bool_json(local_currentness.and_then(|value| value.stale));
 
     format!(
-        r#"{{"host":"{}","url":"{}","root":"{}","mode":"{}","hnsProof":"{}","localBestHeight":{},"targetHeight":{},"estimatedTargetHeight":{},"localChainStale":{},"delegation":{},"resourceRecords":[{}],"nameserverCandidates":{},"authoritativeDns":{},"dnssec":"{}","originAddress":"{}","tls":{},"fallback":{{"used":{},"type":{},"reason":{}}},"dnsAttempts":[{}],"finalError":{}}}"#,
+        r#"{{"host":"{}","url":"{}","root":"{}","mode":"{}","hnsProof":"{}","localBestHeight":{},"targetHeight":{},"estimatedTargetHeight":{},"localChainStale":{},"delegation":{},"resolutionSource":"{}","resourceRecords":[{}],"nameserverCandidates":{},"authoritativeDns":{},"dnssec":"{}","originAddress":"{}","tls":{},"fallback":{{"used":{},"type":{},"reason":{}}},"dnsAttempts":[{}],"finalError":{}}}"#,
         json_escape(input.host),
         json_escape(&gateway_request_address(input)),
         json_escape(&hns_trace_root(input.host)),
@@ -1820,6 +1821,7 @@ fn resolution_trace_json(
         estimated_tip_height,
         local_chain_stale,
         delegation,
+        resolution_source,
         resource_types,
         nameserver_candidates_json(&dns_events),
         authoritative_dns,
@@ -1831,6 +1833,48 @@ fn resolution_trace_json(
         fallback_reason_json,
         dns_attempts,
         final_error,
+    )
+}
+
+fn resolution_source_name(
+    resolution: Option<&ResolutionAnswer>,
+    authoritative_dns_used: bool,
+    error: Option<&GatewayError>,
+) -> &'static str {
+    if authoritative_dns_used {
+        return "authoritative_dns";
+    }
+    if matches!(
+        error,
+        Some(GatewayError::Resolver(ResolverError::DnsTransport(_)))
+            | Some(GatewayError::Resolver(ResolverError::InvalidDnsResponse))
+            | Some(GatewayError::Resolver(ResolverError::DnssecFailed))
+    ) {
+        return "authoritative_dns";
+    }
+    if resolution
+        .map(|answer| answer.records.iter().any(is_capsule_synthesized_record))
+        .unwrap_or(false)
+    {
+        return "hns_resource_capsule";
+    }
+    if matches!(
+        error,
+        Some(GatewayError::Resolver(ResolverError::InvalidCapsule))
+    ) {
+        return "hns_resource_capsule";
+    }
+    if resolution.is_some() {
+        "hns_resource"
+    } else {
+        "unknown"
+    }
+}
+
+fn is_capsule_synthesized_record(record: &ResourceRecord) -> bool {
+    matches!(
+        record.record_type,
+        RecordType::A | RecordType::Aaaa | RecordType::Https | RecordType::Tlsa
     )
 }
 
@@ -2038,6 +2082,9 @@ fn tlsa_blocked_by(error: Option<&GatewayError>) -> Option<&'static str> {
         }
         Some(GatewayError::Resolver(ResolverError::InvalidResource(_))) => {
             Some("hns_resource_invalid")
+        }
+        Some(GatewayError::Resolver(ResolverError::InvalidCapsule)) => {
+            Some("hns_resource_capsule_invalid")
         }
         Some(GatewayError::Resolver(ResolverError::ProofNameMismatch)) => {
             Some("hns_proof_validation_failed")
@@ -2659,6 +2706,11 @@ fn map_gateway_error(error: &GatewayError) -> (u16, &'static str, &'static str) 
             502,
             "HNS Resource Invalid",
             "Verified HNS resource data is malformed or unsupported.",
+        ),
+        GatewayError::Resolver(ResolverError::InvalidCapsule) => (
+            502,
+            "HNS Capsule Invalid",
+            "Verified HNS browser capsule data is malformed or unsupported.",
         ),
         GatewayError::Resolver(ResolverError::ProofNameMismatch) => (
             502,
@@ -3951,6 +4003,7 @@ mod tests {
     #[test]
     fn diagnostics_reports_resource_decoder() {
         assert!(diagnostics_json().contains(r#""hns-resource-decoder""#));
+        assert!(diagnostics_json().contains(r#""hns-browser-txt-capsule""#));
     }
 
     #[test]
@@ -4605,6 +4658,39 @@ mod tests {
             trace.contains(r#""protocol":"udp53","server":"192.0.2.53:53","status":"timeout""#)
         );
         assert!(trace.contains(r#""elapsedMs":901"#));
+    }
+
+    #[test]
+    fn resolution_trace_reports_hns_resource_capsule_source() {
+        let trace = resolution_trace_json(
+            &GatewayHttpRequestInput {
+                data_dir: "/tmp",
+                method: "GET",
+                scheme: "https",
+                host: "crewball",
+                port: 443,
+                path_and_query: "/",
+                header_text: "",
+                body: &[],
+            },
+            GatewayResolutionMode::Strict,
+            Some(&ResolutionAnswer {
+                name: DnsName::from_ascii("crewball").unwrap(),
+                records: vec![address_record("crewball", [35, 212, 156, 128])],
+                secure: true,
+            }),
+            TlsTraceInput::default(),
+            None,
+            &FallbackMarker::default(),
+            &DnsTraceRecorder::default(),
+        );
+
+        assert!(trace.contains(r#""resolutionSource":"hns_resource_capsule""#));
+        assert!(
+            trace.contains(
+                r#""authoritativeDns":{"udp53":"not_attempted","tcp53":"not_attempted"}"#
+            )
+        );
     }
 
     #[test]

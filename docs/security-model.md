@@ -21,6 +21,7 @@ The default proof-backed path does not trust a single peer, external HNS resolve
 - Browser-visible HNS gateway errors must identify the failing stage without exposing private request bodies.
 - Gateway diagnostics must persist only bounded, sanitized stage/host/status/reason events in app-private storage; paths, query strings, request headers, and response/request bodies stay out of default logs.
 - Verified HNS non-inclusion must surface as name-not-found instead of origin-address-missing.
+- Explicit HNS browser TXT capsules may synthesize origin A/AAAA, HTTPS, and TLSA answers only after the root resource has a verified HNS proof. Malformed matching capsules fail closed.
 
 ## Hardened WebView Profile
 
@@ -69,6 +70,7 @@ Applied WebView controls:
 - No proven HNS answer should be returned if the proof name hash or root name mismatches the request.
 - No verified HNS non-inclusion should be treated as an existing name with an empty record set.
 - No HNS origin connect address should be selected from NS glue or another owner name unless that owner is reached through a DNSSEC-validated CNAME chain from the requested origin owner.
+- No HNS origin connect address should be inferred from GLUE or SYNTH. Only an explicit `hnsb=1` TXT capsule may bypass delegated DNS, and v0 capsules must not use wildcards.
 - No HNS origin request that starts from root delegation records should be treated as complete until a secure delegated A/AAAA lookup has been attempted.
 - No dotted HNS host should be routed to Chromium DNS when its final label is treated as an HNS root by browser policy.
 - No out-of-zone HNS nameserver address should be used unless it comes from a separate verified HNS root proof for that nameserver owner.

@@ -69,6 +69,7 @@ class HnsResolverTraceActivity : ComponentActivity() {
             appendLine("Estimated target height: ${nullableTraceValue(trace, "estimatedTargetHeight")}")
             appendLine("Local chain stale: ${nullableTraceValue(trace, "localChainStale")}")
             appendLine("Delegation: ${if (trace.optBoolean("delegation", false)) "yes" else "no"}")
+            appendLine("Resolution source: ${trace.optString("resolutionSource", "unknown")}")
             appendLine("Resource records: ${trace.optJSONArray("resourceRecords")?.join(", ") ?: "unknown"}")
             appendLine("Nameserver candidates: ${trace.optJSONArray("nameserverCandidates")?.join(", ") ?: "unknown"}")
             appendLine("Authoritative UDP 53: ${authoritativeDns?.optString("udp53") ?: "unknown"}")
@@ -129,8 +130,10 @@ class HnsResolverTraceActivity : ComponentActivity() {
                 "Let HNS sync catch up, then retry. The local proof is valid for its historical block, but not current enough to decide whether the name exists now."
             hnsProof == "unavailable" || hnsProof == "unknown" ->
                 "Sync headers/proofs first, then retry. No verified HNS proof was available."
+            trace.optString("resolutionSource") == "hns_resource_capsule" ->
+                "This page used the experimental HNS browser capsule path. Keep the TXT capsule compact and update the TLSA value before rotating the HTTPS key."
             nameserverCandidates == null || nameserverCandidates.length() == 0 ->
-                "Add usable HNS address data: either SYNTH4/SYNTH6 for a direct site, or NS plus GLUE4/GLUE6 for a delegated nameserver."
+                "Add usable HNS address data: either an HNS browser capsule for a direct site, SYNTH4/SYNTH6 for nameserver referral, or NS plus GLUE4/GLUE6 for a delegated nameserver."
             udp53 in setOf("timeout", "transport_error") && tcp53 in setOf("timeout", "transport_error", "not_attempted") ->
                 "Your delegated nameserver candidate did not answer reliably. Ensure authoritative DNS is reachable on UDP 53 and TCP 53."
             dnssec == "bogus" ->
@@ -138,7 +141,7 @@ class HnsResolverTraceActivity : ComponentActivity() {
             tlsaBlockedBy in setOf("delegated_dnssec_validation_failed", "insecure_resolution") ->
                 "Fix delegated DNSSEC first. TLSA/DANE was not evaluated because secure resolution failed before the TLSA lookup."
             trace.optString("originAddress") == "missing" ->
-                "Serve A/AAAA for the requested host, or add direct HNS SYNTH/GLUE address records where appropriate."
+                "Serve A/AAAA for the requested host from delegated DNS, or add an explicit HNS browser capsule for a direct site."
             fallback?.optBoolean("used", false) == true ->
                 "Compatibility DoH fallback was used. Enable Strict HNS mode to verify whether the site works fully without third-party DoH."
             else ->

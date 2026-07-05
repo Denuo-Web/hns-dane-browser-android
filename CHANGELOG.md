@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Added an experimental HNS browser TXT capsule path that synthesizes verified A/AAAA, HTTPS, and TLSA answers from explicit `hnsb=1` HNS resource TXT data before delegated DNS.
+- Added resolver trace and Android diagnostics labels for `hns_resource_capsule` answers and malformed capsule failures.
+
 ## 0.2.8 - 2026-07-04
 
 ### Added
