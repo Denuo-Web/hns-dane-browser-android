@@ -9,9 +9,9 @@ fi
 package_name="${PLAY_PACKAGE:-com.handshake.browser}"
 track_name="${PLAY_TRACK:-alpha}"
 release_status="${PLAY_RELEASE_STATUS:-completed}"
-aab_path="${1:-dist/play-store/hns-browser-v0.2.7-play-upload-signed.aab}"
-release_name="${PLAY_RELEASE_NAME:-HNS Browser 0.2.7}"
-release_notes="${PLAY_RELEASE_NOTES:-HNS directory refresh and HNS WebSocket stability fixes for closed testing.}"
+aab_path="${1:-dist/play-store/hns-browser-v0.2.8-play-upload-signed.aab}"
+release_name="${PLAY_RELEASE_NAME:-HNS Browser 0.2.8}"
+release_notes="${PLAY_RELEASE_NOTES:-Portable DoH-backed HNS validation with local DNSSEC and DANE verification fixes for closed testing.}"
 
 if [[ ! -f "$aab_path" ]]; then
   echo "AAB not found: $aab_path" >&2

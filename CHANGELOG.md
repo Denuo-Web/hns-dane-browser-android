@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.2.8 - 2026-07-04
+
+### Added
+
+- Added a configurable compatibility DoH resolver setting for portable HNS resolution across arbitrary networks.
+
+### Fixed
+
+- Validated delegated HNS DNSSEC over DoH transport locally against HNS DS records instead of relying on resolver AD bits.
+- Accepted DoH responses with compressed RRSIG signer names.
+- Validated inline child-zone signed answers and no-data proofs for delegated HNS zones.
+- Kept optional HTTPS/SVCB policy lookup failures from blocking secure A/TLSA/DANE validation.
+
 ## 0.2.7 - 2026-06-30
 
 ### Changed
