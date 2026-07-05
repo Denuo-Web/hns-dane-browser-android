@@ -143,12 +143,14 @@ class MainActivity : ComponentActivity() {
             dataDir = filesDir,
             activeMainFrameUrl = { activeMainFrameUrl },
             strictHnsMode = { HnsResolutionPreferences.strictHnsMode(this) },
+            dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
             callbackHandler = mainHandler,
         )
         webViewGatewayInterceptor = HnsWebViewGatewayInterceptor(
             dataDir = filesDir,
             allowProxyFallbackForBodyRequests = { proxyAvailable },
             strictHnsMode = { HnsResolutionPreferences.strictHnsMode(this) },
+            dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
             reportAllHnsStatuses = true,
             onMainFrameHnsStatus = { statusCode, tlsPolicy, resolverPolicy, traceJson ->
                 runOnUiThread {
@@ -330,6 +332,7 @@ class MainActivity : ComponentActivity() {
             EPHEMERAL_GATEWAY_PORT,
             filesDir,
             strictHnsMode = { HnsResolutionPreferences.strictHnsMode(this) },
+            dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
             enforceHnsHostScope = true,
             scopedHnsHost = { currentHnsProxyHost() },
             onHnsStatus = { host, statusCode, tlsPolicy, resolverPolicy, traceJson ->

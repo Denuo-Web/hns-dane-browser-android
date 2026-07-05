@@ -164,6 +164,32 @@ class HnsWebViewGatewayInterceptorTest {
     }
 
     @Test
+    fun dohResolverAddsInternalGatewayHeaderAndStripsSpoofedValue() {
+        val bridge = RecordingGatewayBridge(
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+                .toByteArray(StandardCharsets.ISO_8859_1),
+        )
+        val dataDir = createTempDirectory("hns-webview-doh-resolver-test").toFile()
+        val interceptor = HnsWebViewGatewayInterceptor(
+            dataDir = dataDir,
+            hnsGatewayBridge = bridge,
+            dohResolverUrl = { "https://resolver.example/dns-query" },
+        )
+
+        interceptor.intercept(
+            method = "GET",
+            url = "https://welcome/",
+            requestHeaders = mapOf(HNS_GATEWAY_DOH_RESOLVER_HEADER to "https://spoofed.example/dns-query"),
+        )
+
+        assertEquals(
+            listOf(HNS_GATEWAY_DOH_RESOLVER_HEADER to "https://resolver.example/dns-query"),
+            bridge.calls.single().headers,
+        )
+        dataDir.deleteRecursively()
+    }
+
+    @Test
     fun dottedHnsFetchUsesNativeGatewayWhenTldIsNotCommonIcann() {
         val bridge = RecordingGatewayBridge(
             "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"

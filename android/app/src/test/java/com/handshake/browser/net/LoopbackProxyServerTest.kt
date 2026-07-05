@@ -607,6 +607,47 @@ class LoopbackProxyServerTest {
     }
 
     @Test
+    fun dohResolverAddsInternalGatewayHeaderAndStripsSpoofedValue() {
+        val bridge = RecordingGatewayBridge(
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                .toByteArray(StandardCharsets.ISO_8859_1),
+        )
+        val dataDir = createTempDirectory("hns-proxy-doh-resolver-test").toFile()
+        LoopbackProxyServer(
+            0,
+            dataDir = dataDir,
+            hnsGatewayBridge = bridge,
+            dohResolverUrl = { "https://resolver.example/dns-query" },
+        ).use { proxy ->
+            assertTrue(proxy.start())
+            val port = requireNotNull(proxy.boundPort())
+
+            Socket(InetAddress.getByName("127.0.0.1"), port).use { socket ->
+                socket.getOutputStream().write(
+                    (
+                        "GET http://welcome/path HTTP/1.1\r\n" +
+                            "Host: welcome\r\n" +
+                            "$HNS_GATEWAY_DOH_RESOLVER_HEADER: https://spoofed.example/dns-query\r\n\r\n"
+                        ).toByteArray(StandardCharsets.ISO_8859_1),
+                )
+                socket.getOutputStream().flush()
+
+                val response = socket.getInputStream().readBytes().toString(StandardCharsets.ISO_8859_1)
+                assertTrue(response.startsWith("HTTP/1.1 200 OK\r\n"))
+            }
+        }
+
+        assertEquals(
+            listOf(
+                "Host" to "welcome",
+                HNS_GATEWAY_DOH_RESOLVER_HEADER to "https://resolver.example/dns-query",
+            ),
+            bridge.calls.single().headers,
+        )
+        dataDir.deleteRecursively()
+    }
+
+    @Test
     fun hnsConnectRejectsTunneledHostHeaderMismatchBeforeNativeGateway() {
         val bridge = RecordingGatewayBridge(
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"

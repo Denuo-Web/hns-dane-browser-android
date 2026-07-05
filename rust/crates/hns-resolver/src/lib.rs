@@ -8,7 +8,7 @@ use hns_core::{Hash, Height, NameHash, NameHashError};
 use hns_dnssec::{
     DnssecChainLink, DnssecChainValidationInput, DnssecStatus, DnssecTime,
     Nsec3NameErrorValidationInput, Nsec3NoDataValidationInput, NsecNameErrorValidationInput,
-    NsecNoDataValidationInput, SignedRrsetValidationInput, validate_dnssec_chain,
+    NsecNoDataValidationInput, RrsigRecord, SignedRrsetValidationInput, validate_dnssec_chain,
     validate_nsec_name_error, validate_nsec_no_data, validate_nsec3_name_error,
     validate_nsec3_no_data, validate_rrset_signature, validate_signed_rrset,
 };
@@ -1765,9 +1765,54 @@ where
             },
         );
     }
+    let target_rrsig_rrset = records_for(&target_response.answers, request_name, RecordType::Rrsig);
+    if let Some(child_owner) = inline_child_answer_signer(
+        delegation,
+        request_name,
+        &target_rrset,
+        &target_rrsig_rrset,
+        qtype,
+    ) {
+        return resolve_secure_inline_child_answer(
+            transport,
+            verifier,
+            InlineChildAnswerResolutionInput {
+                parent_delegation: delegation,
+                child_owner,
+                server,
+                request_name,
+                parent_ds_rrset: ds_rrset,
+                parent_dnskey_rrset: &dnskey_rrset,
+                parent_dnskey_rrsig_rrset: &dnskey_rrsig_rrset,
+                target_rrset: &target_rrset,
+                target_rrsig_rrset: &target_rrsig_rrset,
+            },
+        );
+    }
     if target_rrset.is_empty()
         && records_for(&target_response.answers, request_name, RecordType::Cname).is_empty()
     {
+        let proof_records = combined_response_records(&target_response);
+        if let Some(child_owner) =
+            inline_child_denial_signer(delegation, request_name, &proof_records)
+        {
+            return resolve_secure_inline_child_no_data(
+                transport,
+                verifier,
+                InlineChildNoDataResolutionInput {
+                    parent_delegation: delegation,
+                    child_owner,
+                    server,
+                    request_name,
+                    qtype,
+                    parent_ds_rrset: ds_rrset,
+                    parent_dnskey_rrset: &dnskey_rrset,
+                    parent_dnskey_rrsig_rrset: &dnskey_rrsig_rrset,
+                    response: &target_response,
+                    prefix_records: &[],
+                },
+            );
+        }
         return resolve_secure_no_data(
             verifier,
             NoDataResolutionInput {
@@ -1819,6 +1864,38 @@ struct ChildReferralResolutionInput<'a> {
     parent_dnskey_rrsig_rrset: &'a [ResourceRecord],
 }
 
+struct InlineChildAnswerResolutionInput<'a> {
+    parent_delegation: &'a HnsDelegation,
+    child_owner: DnsName,
+    server: SocketAddr,
+    request_name: &'a DnsName,
+    parent_ds_rrset: &'a [ResourceRecord],
+    parent_dnskey_rrset: &'a [ResourceRecord],
+    parent_dnskey_rrsig_rrset: &'a [ResourceRecord],
+    target_rrset: &'a [ResourceRecord],
+    target_rrsig_rrset: &'a [ResourceRecord],
+}
+
+struct InlineChildNoDataResolutionInput<'a> {
+    parent_delegation: &'a HnsDelegation,
+    child_owner: DnsName,
+    server: SocketAddr,
+    request_name: &'a DnsName,
+    qtype: RecordType,
+    parent_ds_rrset: &'a [ResourceRecord],
+    parent_dnskey_rrset: &'a [ResourceRecord],
+    parent_dnskey_rrsig_rrset: &'a [ResourceRecord],
+    response: &'a DnsMessage,
+    prefix_records: &'a [ResourceRecord],
+}
+
+struct InlineChildDnssecMaterial {
+    child_ds_rrset: Vec<ResourceRecord>,
+    child_ds_rrsig_rrset: Vec<ResourceRecord>,
+    child_dnskey_rrset: Vec<ResourceRecord>,
+    child_dnskey_rrsig_rrset: Vec<ResourceRecord>,
+}
+
 fn resolve_secure_child_referral<T, V>(
     transport: &T,
     verifier: &V,
@@ -1848,6 +1925,138 @@ where
     }
 
     Err(last_error.unwrap_or(ResolverError::NoNameserverAddress))
+}
+
+fn resolve_secure_inline_child_answer<T, V>(
+    transport: &T,
+    verifier: &V,
+    input: InlineChildAnswerResolutionInput<'_>,
+) -> Result<ResolutionAnswer, ResolverError>
+where
+    T: DnsTransport,
+    V: DelegatedDnssecVerifier,
+{
+    if input.parent_dnskey_rrset.is_empty()
+        || input.parent_dnskey_rrsig_rrset.is_empty()
+        || input.target_rrset.is_empty()
+        || input.target_rrsig_rrset.is_empty()
+    {
+        return Err(ResolverError::DnssecFailed);
+    }
+
+    let child_material =
+        fetch_inline_child_dnssec_material(transport, input.server, &input.child_owner)?;
+
+    let secure = verifier.validate_child_positive_rrset(DelegatedChildDnssecValidation {
+        parent_dnskey_owner: &input.parent_delegation.owner,
+        parent_ds_rrset: input.parent_ds_rrset,
+        parent_dnskey_rrset: input.parent_dnskey_rrset,
+        parent_dnskey_rrsig_rrset: input.parent_dnskey_rrsig_rrset,
+        child_dnskey_owner: &input.child_owner,
+        child_ds_rrset: &child_material.child_ds_rrset,
+        child_ds_rrsig_rrset: &child_material.child_ds_rrsig_rrset,
+        child_dnskey_rrset: &child_material.child_dnskey_rrset,
+        child_dnskey_rrsig_rrset: &child_material.child_dnskey_rrsig_rrset,
+        target_rrset: input.target_rrset,
+        target_rrsig_rrset: input.target_rrsig_rrset,
+    })?;
+    if !secure {
+        return Err(ResolverError::DnssecFailed);
+    }
+
+    Ok(ResolutionAnswer {
+        name: input.request_name.clone(),
+        records: input.target_rrset.to_vec(),
+        secure: true,
+    })
+}
+
+fn resolve_secure_inline_child_no_data<T, V>(
+    transport: &T,
+    verifier: &V,
+    input: InlineChildNoDataResolutionInput<'_>,
+) -> Result<ResolutionAnswer, ResolverError>
+where
+    T: DnsTransport,
+    V: DelegatedDnssecVerifier,
+{
+    if input.parent_dnskey_rrset.is_empty() || input.parent_dnskey_rrsig_rrset.is_empty() {
+        return Err(ResolverError::DnssecFailed);
+    }
+
+    let child_material =
+        fetch_inline_child_dnssec_material(transport, input.server, &input.child_owner)?;
+    let proof_records = combined_response_records(input.response);
+    let nsec_rrset = records_for(&proof_records, input.request_name, RecordType::Nsec);
+    let nsec_rrsig_rrset = records_of_type(&proof_records, RecordType::Rrsig);
+    let nsec3_rrset = records_of_type(&proof_records, RecordType::Nsec3);
+    let nsec3_rrsig_rrset = records_of_type(&proof_records, RecordType::Rrsig);
+    let secure = verifier.validate_child_no_data(DelegatedChildDnssecNoDataValidation {
+        parent_dnskey_owner: &input.parent_delegation.owner,
+        parent_ds_rrset: input.parent_ds_rrset,
+        parent_dnskey_rrset: input.parent_dnskey_rrset,
+        parent_dnskey_rrsig_rrset: input.parent_dnskey_rrsig_rrset,
+        child_dnskey_owner: &input.child_owner,
+        child_ds_rrset: &child_material.child_ds_rrset,
+        child_ds_rrsig_rrset: &child_material.child_ds_rrsig_rrset,
+        child_dnskey_rrset: &child_material.child_dnskey_rrset,
+        child_dnskey_rrsig_rrset: &child_material.child_dnskey_rrsig_rrset,
+        query_name: input.request_name,
+        query_type: input.qtype,
+        nsec_rrset: &nsec_rrset,
+        nsec_rrsig_rrset: &nsec_rrsig_rrset,
+        nsec3_rrset: &nsec3_rrset,
+        nsec3_rrsig_rrset: &nsec3_rrsig_rrset,
+    })?;
+    if !secure {
+        return Err(ResolverError::DnssecFailed);
+    }
+
+    Ok(ResolutionAnswer {
+        name: input.request_name.clone(),
+        records: input.prefix_records.to_vec(),
+        secure: true,
+    })
+}
+
+fn fetch_inline_child_dnssec_material<T>(
+    transport: &T,
+    server: SocketAddr,
+    child_owner: &DnsName,
+) -> Result<InlineChildDnssecMaterial, ResolverError>
+where
+    T: DnsTransport,
+{
+    let child_ds_response = dns_query(transport, server, child_owner, RecordType::Ds)?;
+    let child_ds_rrset = records_for(&child_ds_response.answers, child_owner, RecordType::Ds);
+    let child_ds_rrsig_rrset =
+        records_for(&child_ds_response.answers, child_owner, RecordType::Rrsig);
+    let child_dnskey_response = dns_query(transport, server, child_owner, RecordType::Dnskey)?;
+    let child_dnskey_rrset = records_for(
+        &child_dnskey_response.answers,
+        child_owner,
+        RecordType::Dnskey,
+    );
+    let child_dnskey_rrsig_rrset = records_for(
+        &child_dnskey_response.answers,
+        child_owner,
+        RecordType::Rrsig,
+    );
+
+    if child_ds_rrset.is_empty()
+        || child_ds_rrsig_rrset.is_empty()
+        || child_dnskey_rrset.is_empty()
+        || child_dnskey_rrsig_rrset.is_empty()
+    {
+        return Err(ResolverError::DnssecFailed);
+    }
+
+    Ok(InlineChildDnssecMaterial {
+        child_ds_rrset,
+        child_ds_rrsig_rrset,
+        child_dnskey_rrset,
+        child_dnskey_rrsig_rrset,
+    })
 }
 
 fn resolve_secure_child_from_server<T, V>(
@@ -2605,6 +2814,55 @@ fn child_referral(
         ds_rrset,
         ds_rrsig_rrset,
     })
+}
+
+fn inline_child_answer_signer(
+    delegation: &HnsDelegation,
+    request_name: &DnsName,
+    rrset: &[ResourceRecord],
+    rrsig_rrset: &[ResourceRecord],
+    record_type: RecordType,
+) -> Option<DnsName> {
+    let first = rrset.first()?;
+    for record in rrsig_rrset.iter().filter(|record| {
+        record.name == first.name
+            && record.class == first.class
+            && record.record_type == RecordType::Rrsig
+    }) {
+        let rrsig = RrsigRecord::from_record(record).ok()?;
+        if rrsig.type_covered == record_type
+            && rrsig.signer_name != delegation.owner
+            && dns_name_is_subdomain_or_equal(&rrsig.signer_name, &delegation.owner)
+            && dns_name_is_subdomain_or_equal(request_name, &rrsig.signer_name)
+        {
+            return Some(rrsig.signer_name);
+        }
+    }
+
+    None
+}
+
+fn inline_child_denial_signer(
+    delegation: &HnsDelegation,
+    request_name: &DnsName,
+    proof_records: &[ResourceRecord],
+) -> Option<DnsName> {
+    proof_records
+        .iter()
+        .filter(|record| record.record_type == RecordType::Rrsig)
+        .filter_map(|record| {
+            let rrsig = RrsigRecord::from_record(record).ok()?;
+            if matches!(rrsig.type_covered, RecordType::Nsec | RecordType::Nsec3)
+                && rrsig.signer_name != delegation.owner
+                && dns_name_is_subdomain_or_equal(&rrsig.signer_name, &delegation.owner)
+                && dns_name_is_subdomain_or_equal(request_name, &rrsig.signer_name)
+            {
+                Some(rrsig.signer_name)
+            } else {
+                None
+            }
+        })
+        .max_by_key(|owner| owner.labels().len())
 }
 
 fn referral_nameserver_addresses(
@@ -3689,6 +3947,267 @@ mod tests {
             ],
         );
         assert_eq!(*validations.lock().unwrap(), vec![(1, 1, 1, 1, 1)]);
+    }
+
+    #[test]
+    fn authoritative_dnssec_resolver_validates_inline_child_signed_answer() {
+        let server = SocketAddr::from(([127, 0, 0, 1], 53));
+        let child_validations = Arc::new(Mutex::new(Vec::new()));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let resolver = AuthoritativeDnssecResolver::new(
+            ScriptedDnsTransport {
+                responses: dns_responses(vec![
+                    (
+                        "blog.welcome",
+                        RecordType::A,
+                        vec![
+                            record(
+                                DnsName::from_ascii("blog.welcome").unwrap(),
+                                RecordType::A,
+                                vec![127, 0, 0, 1],
+                            ),
+                            rrsig_record_for_signer("blog.welcome", RecordType::A, "blog.welcome"),
+                        ],
+                    ),
+                    (
+                        "welcome",
+                        RecordType::Dnskey,
+                        vec![
+                            record(
+                                DnsName::from_ascii("welcome").unwrap(),
+                                RecordType::Dnskey,
+                                vec![1, 2, 3, 4],
+                            ),
+                            rrsig_record_for_signer("welcome", RecordType::Dnskey, "welcome"),
+                        ],
+                    ),
+                    (
+                        "blog.welcome",
+                        RecordType::Ds,
+                        vec![
+                            ds_record("blog.welcome"),
+                            rrsig_record_for_signer("blog.welcome", RecordType::Ds, "welcome"),
+                        ],
+                    ),
+                    (
+                        "blog.welcome",
+                        RecordType::Dnskey,
+                        vec![
+                            record(
+                                DnsName::from_ascii("blog.welcome").unwrap(),
+                                RecordType::Dnskey,
+                                vec![5, 6, 7, 8],
+                            ),
+                            rrsig_record_for_signer(
+                                "blog.welcome",
+                                RecordType::Dnskey,
+                                "blog.welcome",
+                            ),
+                        ],
+                    ),
+                ]),
+                server_responses: HashMap::new(),
+                requests: Arc::clone(&requests),
+                udp_behavior: ScriptedUdpBehavior::Normal,
+            },
+            StaticDnssecVerifier {
+                positive_valid: false,
+                no_data_valid: false,
+                name_error_valid: false,
+                child_positive_valid: true,
+                child_no_data_valid: false,
+                child_name_error_valid: false,
+                validations: Arc::new(Mutex::new(Vec::new())),
+                no_data_validations: Arc::new(Mutex::new(Vec::new())),
+                name_error_validations: Arc::new(Mutex::new(Vec::new())),
+                child_validations: Arc::clone(&child_validations),
+                child_no_data_validations: Arc::new(Mutex::new(Vec::new())),
+                child_name_error_validations: Arc::new(Mutex::new(Vec::new())),
+            },
+        );
+
+        let answer = resolver
+            .resolve_delegated(
+                &ResolutionRequest {
+                    qname: "blog.welcome".to_owned(),
+                    qtype: RecordType::A.code(),
+                },
+                &delegation_with_records(vec![
+                    ns_record("welcome", "ns1.welcome"),
+                    record(
+                        DnsName::from_ascii("ns1.welcome").unwrap(),
+                        RecordType::A,
+                        vec![127, 0, 0, 1],
+                    ),
+                    ds_record("welcome"),
+                ]),
+            )
+            .unwrap();
+
+        assert!(answer.secure);
+        assert_eq!(answer.records.len(), 1);
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![
+                (
+                    server,
+                    "blog.welcome".to_owned(),
+                    RecordType::A.code(),
+                    false
+                ),
+                (
+                    server,
+                    "welcome".to_owned(),
+                    RecordType::Dnskey.code(),
+                    false
+                ),
+                (
+                    server,
+                    "blog.welcome".to_owned(),
+                    RecordType::Ds.code(),
+                    false
+                ),
+                (
+                    server,
+                    "blog.welcome".to_owned(),
+                    RecordType::Dnskey.code(),
+                    false
+                ),
+            ],
+        );
+        assert_eq!(
+            *child_validations.lock().unwrap(),
+            vec![(1usize, 1usize, 1usize, 1usize, 1usize)]
+        );
+    }
+
+    #[test]
+    fn authoritative_dnssec_resolver_validates_inline_child_nsec_no_data() {
+        let server = SocketAddr::from(([127, 0, 0, 1], 53));
+        let child_no_data_validations = Arc::new(Mutex::new(Vec::new()));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut responses = dns_responses(vec![
+            (
+                "welcome",
+                RecordType::Dnskey,
+                vec![
+                    record(
+                        DnsName::from_ascii("welcome").unwrap(),
+                        RecordType::Dnskey,
+                        vec![1, 2, 3, 4],
+                    ),
+                    rrsig_record_for_signer("welcome", RecordType::Dnskey, "welcome"),
+                ],
+            ),
+            (
+                "blog.welcome",
+                RecordType::Ds,
+                vec![
+                    ds_record("blog.welcome"),
+                    rrsig_record_for_signer("blog.welcome", RecordType::Ds, "welcome"),
+                ],
+            ),
+            (
+                "blog.welcome",
+                RecordType::Dnskey,
+                vec![
+                    record(
+                        DnsName::from_ascii("blog.welcome").unwrap(),
+                        RecordType::Dnskey,
+                        vec![5, 6, 7, 8],
+                    ),
+                    rrsig_record_for_signer("blog.welcome", RecordType::Dnskey, "blog.welcome"),
+                ],
+            ),
+        ]);
+        responses.insert(
+            ("blog.welcome".to_owned(), RecordType::Https.code()),
+            DnsResponseFixture {
+                rcode: DNS_RCODE_NOERROR,
+                answers: Vec::new(),
+                authorities: vec![
+                    nsec_record("blog.welcome"),
+                    rrsig_record_for_signer("blog.welcome", RecordType::Nsec, "blog.welcome"),
+                ],
+                additionals: Vec::new(),
+            },
+        );
+        let resolver = AuthoritativeDnssecResolver::new(
+            ScriptedDnsTransport {
+                responses,
+                server_responses: HashMap::new(),
+                requests: Arc::clone(&requests),
+                udp_behavior: ScriptedUdpBehavior::Normal,
+            },
+            StaticDnssecVerifier {
+                positive_valid: false,
+                no_data_valid: false,
+                name_error_valid: false,
+                child_positive_valid: false,
+                child_no_data_valid: true,
+                child_name_error_valid: false,
+                validations: Arc::new(Mutex::new(Vec::new())),
+                no_data_validations: Arc::new(Mutex::new(Vec::new())),
+                name_error_validations: Arc::new(Mutex::new(Vec::new())),
+                child_validations: Arc::new(Mutex::new(Vec::new())),
+                child_no_data_validations: Arc::clone(&child_no_data_validations),
+                child_name_error_validations: Arc::new(Mutex::new(Vec::new())),
+            },
+        );
+
+        let answer = resolver
+            .resolve_delegated(
+                &ResolutionRequest {
+                    qname: "blog.welcome".to_owned(),
+                    qtype: RecordType::Https.code(),
+                },
+                &delegation_with_records(vec![
+                    ns_record("welcome", "ns1.welcome"),
+                    record(
+                        DnsName::from_ascii("ns1.welcome").unwrap(),
+                        RecordType::A,
+                        vec![127, 0, 0, 1],
+                    ),
+                    ds_record("welcome"),
+                ]),
+            )
+            .unwrap();
+
+        assert!(answer.secure);
+        assert!(answer.records.is_empty());
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![
+                (
+                    server,
+                    "blog.welcome".to_owned(),
+                    RecordType::Https.code(),
+                    false
+                ),
+                (
+                    server,
+                    "welcome".to_owned(),
+                    RecordType::Dnskey.code(),
+                    false
+                ),
+                (
+                    server,
+                    "blog.welcome".to_owned(),
+                    RecordType::Ds.code(),
+                    false
+                ),
+                (
+                    server,
+                    "blog.welcome".to_owned(),
+                    RecordType::Dnskey.code(),
+                    false
+                ),
+            ],
+        );
+        assert_eq!(
+            *child_no_data_validations.lock().unwrap(),
+            vec![(1usize, 1usize, 1usize, 1usize, 2usize)]
+        );
     }
 
     #[test]
@@ -4949,6 +5468,31 @@ mod tests {
             DnsName::from_ascii(owner).unwrap(),
             RecordType::Rrsig,
             vec![0, 1, 8, 1],
+        )
+    }
+
+    fn rrsig_record_for_signer(
+        owner: &str,
+        type_covered: RecordType,
+        signer: &str,
+    ) -> ResourceRecord {
+        let mut rdata = Vec::new();
+        rdata.extend(type_covered.code().to_be_bytes());
+        rdata.push(8);
+        rdata.push(DnsName::from_ascii(owner).unwrap().labels().len() as u8);
+        rdata.extend(300u32.to_be_bytes());
+        rdata.extend(2_000_000_000u32.to_be_bytes());
+        rdata.extend(1u32.to_be_bytes());
+        rdata.extend(0x1234u16.to_be_bytes());
+        DnsName::from_ascii(signer)
+            .unwrap()
+            .encode_wire(&mut rdata)
+            .unwrap();
+        rdata.push(0xaa);
+        record(
+            DnsName::from_ascii(owner).unwrap(),
+            RecordType::Rrsig,
+            rdata,
         )
     }
 

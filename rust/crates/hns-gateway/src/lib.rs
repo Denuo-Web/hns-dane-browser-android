@@ -205,7 +205,13 @@ where
                 &mut origin_request,
                 supported_origin_protocols,
             )? {
-                self.resolve_https_service_policy(&mut origin_request, supported_origin_protocols)?;
+                match self
+                    .resolve_https_service_policy(&mut origin_request, supported_origin_protocols)
+                {
+                    Ok(()) => {}
+                    Err(error) if optional_https_service_policy_error(&error) => {}
+                    Err(error) => return Err(error),
+                }
             }
             let (tlsa_secure, tlsa_records) =
                 self.resolve_tlsa_records(&origin_request.host, origin_request.port)?;
@@ -268,6 +274,10 @@ where
         apply_https_service_policy(&answer.records, request, supported_origin_protocols)?;
         Ok(())
     }
+}
+
+fn optional_https_service_policy_error(error: &GatewayError) -> bool {
+    matches!(error, GatewayError::Resolver(_))
 }
 
 impl HnsHttpsMode {
@@ -960,6 +970,77 @@ mod tests {
                 },
                 ResolutionRequest {
                     qname: "_8443._tcp.www.name".to_owned(),
+                    qtype: RecordType::Tlsa.code(),
+                },
+            ],
+        );
+    }
+
+    #[test]
+    fn ignores_https_service_policy_resolver_failure_and_still_checks_tlsa() {
+        struct HttpsPolicyErrorResolver {
+            requests: Arc<Mutex<Vec<ResolutionRequest>>>,
+        }
+
+        impl Resolver for HttpsPolicyErrorResolver {
+            fn resolve(
+                &self,
+                request: &ResolutionRequest,
+            ) -> Result<ResolutionAnswer, ResolverError> {
+                self.requests.lock().unwrap().push(request.clone());
+                match RecordType::from_code(request.qtype) {
+                    RecordType::A => Ok(ResolutionAnswer {
+                        name: DnsName::from_ascii(&request.qname).unwrap(),
+                        records: vec![address_record_for(&request.qname)],
+                        secure: true,
+                    }),
+                    RecordType::Https => Err(ResolverError::DnssecFailed),
+                    RecordType::Tlsa => Ok(ResolutionAnswer {
+                        name: DnsName::from_ascii(&request.qname).unwrap(),
+                        records: vec![tlsa_record(&request.qname, vec![3, 1, 0, 0xaa])],
+                        secure: true,
+                    }),
+                    _ => Err(ResolverError::ProofUnavailable),
+                }
+            }
+        }
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let gateway = Gateway::new(
+            gateway_config_with_protocols(vec![OriginProtocol::Http11, OriginProtocol::Http2]),
+            HttpsPolicyErrorResolver {
+                requests: Arc::clone(&requests),
+            },
+            CapturingTransport::default(),
+        )
+        .unwrap();
+
+        gateway.handle(&request("name", "name")).unwrap();
+
+        let captured = gateway
+            .transport()
+            .last_request
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap();
+        assert_eq!(captured.protocol, OriginProtocol::Http11);
+        assert_eq!(captured.port, 443);
+        assert!(captured.tls.dnssec_secure);
+        assert_eq!(captured.tls.tlsa_records.len(), 1);
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![
+                ResolutionRequest {
+                    qname: "name".to_owned(),
+                    qtype: RecordType::A.code(),
+                },
+                ResolutionRequest {
+                    qname: "name".to_owned(),
+                    qtype: RecordType::Https.code(),
+                },
+                ResolutionRequest {
+                    qname: "_443._tcp.name".to_owned(),
                     qtype: RecordType::Tlsa.code(),
                 },
             ],

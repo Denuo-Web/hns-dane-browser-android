@@ -1,10 +1,15 @@
 package com.handshake.browser.ui
 
 import android.content.Context
+import java.net.URI
+import java.util.Locale
 
 internal object HnsResolutionPreferences {
+    const val DEFAULT_DOH_RESOLVER_URL = "https://hnsdoh.com/dns-query"
+
     private const val PREFS = "hns_resolution_preferences"
     private const val KEY_STRICT_HNS_MODE = "strict_hns_mode"
+    private const val KEY_DOH_RESOLVER_URL = "doh_resolver_url"
 
     fun strictHnsMode(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -15,5 +20,46 @@ internal object HnsResolutionPreferences {
             .edit()
             .putBoolean(KEY_STRICT_HNS_MODE, enabled)
             .apply()
+    }
+
+    fun dohResolverUrl(context: Context): String =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_DOH_RESOLVER_URL, DEFAULT_DOH_RESOLVER_URL)
+            ?.let(::normalizeDohResolverUrl)
+            ?: DEFAULT_DOH_RESOLVER_URL
+
+    fun setDohResolverUrl(context: Context, input: String): String? {
+        val normalized = normalizeDohResolverUrl(input) ?: return null
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_DOH_RESOLVER_URL, normalized)
+            .apply()
+        return normalized
+    }
+
+    fun resetDohResolverUrl(context: Context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .remove(KEY_DOH_RESOLVER_URL)
+            .apply()
+    }
+
+    fun normalizeDohResolverUrl(input: String): String? {
+        val trimmed = input.trim()
+        if (trimmed.isBlank()) {
+            return DEFAULT_DOH_RESOLVER_URL
+        }
+        val uri = runCatching { URI(trimmed) }.getOrNull() ?: return null
+        if (!uri.scheme.equals("https", ignoreCase = true) ||
+            uri.host.isNullOrBlank() ||
+            uri.userInfo != null ||
+            uri.fragment != null
+        ) {
+            return null
+        }
+        val path = uri.rawPath?.takeIf { it.isNotBlank() } ?: "/dns-query"
+        val query = uri.rawQuery?.let { "?$it" }.orEmpty()
+        val port = if (uri.port >= 0 && uri.port != 443) ":${uri.port}" else ""
+        return "https://${uri.host.lowercase(Locale.US)}$port$path$query"
     }
 }

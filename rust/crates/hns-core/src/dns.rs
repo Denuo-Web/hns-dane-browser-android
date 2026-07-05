@@ -334,10 +334,9 @@ impl ResourceRecord {
         let end = cursor
             .checked_add(rdlength)
             .ok_or(ParseError::LengthLimit)?;
-        let rdata = message
-            .get(cursor..end)
-            .ok_or(ParseError::UnexpectedEof)?
-            .to_vec();
+        let rdata_start = cursor;
+        let raw_rdata = message.get(cursor..end).ok_or(ParseError::UnexpectedEof)?;
+        let rdata = normalize_record_rdata(message, rdata_start, end, record_type, raw_rdata)?;
 
         Ok((
             Self {
@@ -595,6 +594,49 @@ fn parse_records(
     Ok((records, cursor))
 }
 
+fn normalize_record_rdata(
+    message: &[u8],
+    start: usize,
+    end: usize,
+    record_type: RecordType,
+    rdata: &[u8],
+) -> Result<Vec<u8>, ParseError> {
+    match record_type {
+        RecordType::Rrsig if rdata.get(18).is_some_and(|byte| byte & 0xc0 == 0xc0) => {
+            normalize_prefixed_name_rdata(message, start, end, 18)
+        }
+        _ => Ok(rdata.to_vec()),
+    }
+}
+
+fn normalize_prefixed_name_rdata(
+    message: &[u8],
+    start: usize,
+    end: usize,
+    prefix_len: usize,
+) -> Result<Vec<u8>, ParseError> {
+    let name_start = start
+        .checked_add(prefix_len)
+        .ok_or(ParseError::LengthLimit)?;
+    if name_start >= end {
+        return Err(ParseError::UnexpectedEof);
+    }
+    let (name, next) = DnsName::parse_wire(message, name_start)?;
+    if next > end {
+        return Err(ParseError::UnexpectedEof);
+    }
+
+    let mut out = Vec::new();
+    out.extend(
+        message
+            .get(start..name_start)
+            .ok_or(ParseError::UnexpectedEof)?,
+    );
+    name.encode_wire(&mut out)?;
+    out.extend(message.get(next..end).ok_or(ParseError::UnexpectedEof)?);
+    Ok(out)
+}
+
 fn validate_svc_param_value(key: u16, value: &[u8]) -> Result<(), ParseError> {
     match key {
         SVCB_PARAM_MANDATORY => {
@@ -778,6 +820,19 @@ mod tests {
         assert_eq!(parsed.answers[0].name.to_string(), "example.com");
         assert_eq!(parsed.answers[0].ttl, 60);
         assert_eq!(parsed.answers[0].rdata, vec![127, 0, 0, 1]);
+    }
+
+    #[test]
+    fn expands_compressed_rrsig_signer_name_in_rdata() {
+        let message = b"\x12\x34\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00\x04alee\x01g\x00\x00\x01\x00\x01\xc0\x0c\x00\x2e\x00\x01\x00\x00\x00\x14\x00\x17\x00\x01\x0d\x02\x00\x00\x00\x14\x6a\x58\x1f\x00\x6a\x3c\x6f\x80\xa6\x75\xc0\x0c\x01\x02\x03";
+        let parsed = DnsMessage::parse(message).unwrap();
+
+        assert_eq!(parsed.answers.len(), 1);
+        assert_eq!(parsed.answers[0].record_type, RecordType::Rrsig);
+        assert_eq!(
+            parsed.answers[0].rdata,
+            b"\x00\x01\x0d\x02\x00\x00\x00\x14\x6a\x58\x1f\x00\x6a\x3c\x6f\x80\xa6\x75\x04alee\x01g\x00\x01\x02\x03".to_vec(),
+        );
     }
 
     #[test]

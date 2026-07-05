@@ -27,6 +27,7 @@ class HnsWebSocketBridge(
     private val dataDir: File,
     private val activeMainFrameUrl: () -> String?,
     private val strictHnsMode: () -> Boolean = { false },
+    private val dohResolverUrl: () -> String = { "" },
     private val hnsGatewayBridge: HnsGatewayBridge = NativeBridge,
     private val callbackHandler: Handler = Handler(Looper.getMainLooper()),
     private val executor: ExecutorService = Executors.newCachedThreadPool(),
@@ -98,6 +99,7 @@ class HnsWebSocketBridge(
             protocols = payload.optJSONArray("protocols").stringValues(),
             dataDir = dataDir,
             strictHnsMode = strictHnsMode,
+            dohResolverUrl = dohResolverUrl,
             hnsGatewayBridge = hnsGatewayBridge,
             executor = executor,
             emit = { event -> emit(webView, event) },
@@ -183,6 +185,7 @@ private class NativeHnsWebSocketSession(
     private val protocols: List<String>,
     private val dataDir: File,
     private val strictHnsMode: () -> Boolean,
+    private val dohResolverUrl: () -> String,
     private val hnsGatewayBridge: HnsGatewayBridge,
     private val executor: ExecutorService,
     private val emit: (JSONObject) -> Unit,
@@ -378,6 +381,9 @@ private class NativeHnsWebSocketSession(
         }
         if (strictHnsMode()) {
             headers += HNS_GATEWAY_STRICT_MODE_HEADER to "1"
+        }
+        dohResolverUrl().takeIf { it.isNotBlank() }?.let { resolver ->
+            headers += HNS_GATEWAY_DOH_RESOLVER_HEADER to resolver
         }
         return headers
     }

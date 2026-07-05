@@ -28,6 +28,7 @@ class LoopbackProxyServer(
     private val hnsGatewayBridge: HnsGatewayBridge = NativeBridge,
     private val hnsConnectTerminator: HnsConnectTerminator = LocalTlsHnsConnectTerminator(),
     private val strictHnsMode: () -> Boolean = { false },
+    private val dohResolverUrl: () -> String = { "" },
     private val enforceHnsHostScope: Boolean = false,
     private val scopedHnsHost: () -> String? = { null },
     private val onHnsStatus: (String, Int, HnsPageTlsPolicy?, HnsPageResolverPolicy?, String?) -> Unit = { _, _, _, _, _ -> },
@@ -177,7 +178,7 @@ class LoopbackProxyServer(
                 throw ProxyHttpException(429, "Too Many Requests")
             }
             val body = readHnsRequestBody(client.getInputStream(), request)
-            val gatewayHeaders = request.headersForGateway(strictHnsMode())
+            val gatewayHeaders = request.headersForGateway(strictHnsMode(), dohResolverUrl())
             val fileResponse = hnsGatewayBridge.httpResponseBodyFile(
                 dataDir = dataDir.absolutePath,
                 method = request.line.method,
@@ -230,7 +231,7 @@ class LoopbackProxyServer(
             host = target.host,
             port = target.port,
             pathAndQuery = target.pathAndQuery,
-            headers = request.headersForGateway(strictHnsMode()),
+            headers = request.headersForGateway(strictHnsMode(), dohResolverUrl()),
             clientInput = client.getInputStream(),
             clientOutput = client.getOutputStream(),
         )
@@ -648,17 +649,24 @@ internal data class ProxyRequest(
         }
     }
 
-    fun headersForGateway(strictHnsMode: Boolean = false): List<Pair<String, String>> {
+    fun headersForGateway(
+        strictHnsMode: Boolean = false,
+        dohResolverUrl: String = "",
+    ): List<Pair<String, String>> {
         val sanitized = headers
             .filterNot { it.first.equals("Transfer-Encoding", ignoreCase = true) }
             .filterNot { it.first.equals("Trailer", ignoreCase = true) }
             .filterNot { hasTransferEncoding() && it.first.equals("Content-Length", ignoreCase = true) }
             .filterNot { it.first.equals(HNS_GATEWAY_STRICT_MODE_HEADER, ignoreCase = true) }
-        return if (strictHnsMode) {
-            sanitized + (HNS_GATEWAY_STRICT_MODE_HEADER to "1")
-        } else {
-            sanitized
+            .filterNot { it.first.equals(HNS_GATEWAY_DOH_RESOLVER_HEADER, ignoreCase = true) }
+            .toMutableList()
+        if (strictHnsMode) {
+            sanitized += HNS_GATEWAY_STRICT_MODE_HEADER to "1"
         }
+        dohResolverUrl.takeIf { it.isNotBlank() }?.let { resolver ->
+            sanitized += HNS_GATEWAY_DOH_RESOLVER_HEADER to resolver
+        }
+        return sanitized
     }
 
     fun toOriginBytes(target: HttpTarget): ByteArray {

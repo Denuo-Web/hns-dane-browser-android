@@ -29,6 +29,7 @@ class SettingsActivity : ComponentActivity() {
     private lateinit var homepageStatus: TextView
     private lateinit var cookieStatus: TextView
     private lateinit var hnsModeStatus: TextView
+    private lateinit var dohResolverStatus: TextView
     private lateinit var resolverCacheStatus: TextView
     private lateinit var historyStatus: TextView
     private lateinit var downloadStatus: TextView
@@ -39,6 +40,7 @@ class SettingsActivity : ComponentActivity() {
         homepageStatus = preferenceSummary(BrowserPreferences.homepage(this))
         cookieStatus = preferenceSummary(cookieSummary())
         hnsModeStatus = preferenceSummary(hnsModeText())
+        dohResolverStatus = preferenceSummary(HnsResolutionPreferences.dohResolverUrl(this))
         resolverCacheStatus = preferenceSummary("Ready to clear cached resolver values.")
         historyStatus = preferenceSummary(historySummary())
         downloadStatus = preferenceSummary(downloadSummary())
@@ -119,6 +121,13 @@ class SettingsActivity : ComponentActivity() {
 
             addView(section("HNS resolution") {
                 addPreference(strictHnsModeOption())
+                addPreference(preferenceRow(
+                    title = "Compatibility DoH resolver",
+                    summaryView = dohResolverStatus,
+                    actionLabel = "Edit",
+                ) {
+                    showEditDohResolverDialog()
+                })
                 addPreference(preferenceRow(
                     title = "Diagnostics",
                     summary = "Sync status, resolver state, and native core details.",
@@ -428,6 +437,43 @@ class SettingsActivity : ComponentActivity() {
         dialog.show()
     }
 
+    private fun showEditDohResolverDialog() {
+        val input = EditText(this).apply {
+            setText(HnsResolutionPreferences.dohResolverUrl(this@SettingsActivity))
+            setSingleLine(true)
+            setSelection(0, text.length)
+            imeOptions = EditorInfo.IME_ACTION_DONE
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Edit DoH resolver")
+            .setMessage("Enter an HTTPS DNS-over-HTTPS endpoint. Leave blank to use the default.")
+            .setView(input)
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Reset", null)
+            .setPositiveButton("Save", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val saved = HnsResolutionPreferences.setDohResolverUrl(this, input.text.toString())
+                if (saved == null) {
+                    input.error = "Enter a valid HTTPS DoH URL"
+                    return@setOnClickListener
+                }
+                refreshDohResolverStatus()
+                Toast.makeText(this, "DoH resolver saved", Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                HnsResolutionPreferences.resetDohResolverUrl(this)
+                refreshDohResolverStatus()
+                Toast.makeText(this, "DoH resolver reset", Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
     private fun useCurrentPageAsHomepage(currentUrl: String) {
         val saved = BrowserPreferences.setHomepage(this, currentUrl)
         if (saved == null) {
@@ -526,6 +572,10 @@ class SettingsActivity : ComponentActivity() {
 
     private fun refreshHnsModeStatus() {
         hnsModeStatus.text = hnsModeText()
+    }
+
+    private fun refreshDohResolverStatus() {
+        dohResolverStatus.text = HnsResolutionPreferences.dohResolverUrl(this)
     }
 
     private fun refreshHistoryStatus() {

@@ -18,6 +18,7 @@ class HnsWebViewGatewayInterceptor(
     private val hnsGatewayBridge: HnsGatewayBridge = NativeBridge,
     private val allowProxyFallbackForBodyRequests: () -> Boolean = { false },
     private val strictHnsMode: () -> Boolean = { false },
+    private val dohResolverUrl: () -> String = { "" },
     private val reportAllHnsStatuses: Boolean = false,
     private val onMainFrameHnsStatus: (Int, HnsPageTlsPolicy?, HnsPageResolverPolicy?, String?) -> Unit = { _, _, _, _ -> },
 ) {
@@ -138,11 +139,15 @@ class HnsWebViewGatewayInterceptor(
             .filterKeys { name -> !isHopByHopOrSyntheticHeader(name) }
             .map { (name, value) -> name to value }
             .filterNot { it.first.equals(HNS_GATEWAY_STRICT_MODE_HEADER, ignoreCase = true) }
-        return if (strictHnsMode()) {
-            headers + (HNS_GATEWAY_STRICT_MODE_HEADER to "1")
-        } else {
-            headers
+            .filterNot { it.first.equals(HNS_GATEWAY_DOH_RESOLVER_HEADER, ignoreCase = true) }
+            .toMutableList()
+        if (strictHnsMode()) {
+            headers += HNS_GATEWAY_STRICT_MODE_HEADER to "1"
         }
+        dohResolverUrl().takeIf { it.isNotBlank() }?.let { resolver ->
+            headers += HNS_GATEWAY_DOH_RESOLVER_HEADER to resolver
+        }
+        return headers
     }
 
     private fun HnsInterceptedResponse.followHnsRedirects(
