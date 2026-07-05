@@ -1670,6 +1670,9 @@ fn tls_trace_json(
     }
 
     let owner = tlsa_owner_name(input.host, input.port);
+    let tlsa_evaluated = tls_validation.is_some();
+    let tlsa_status = tlsa_status_name(tls_validation);
+    let tlsa_blocked_by = tlsa_blocked_by_json(tls_validation, error);
     let records = tls_validation
         .map(|tls| tlsa_records_json(&tls.tlsa_records))
         .unwrap_or_else(|| "[]".to_owned());
@@ -1693,9 +1696,12 @@ fn tls_trace_json(
     let fallback = matches!(dane_decision, Some(DaneDecision::WebPkiFallback));
 
     format!(
-        r#"{{"mode":{},"tlsaOwner":"{}","tlsaFound":{},"dnssecSecure":{},"records":{},"certificate":{},"dane":{{"decision":"{}","matchedUsage":{},"certificateMatch":"{}","webPkiFallback":{}}}}}"#,
+        r#"{{"mode":{},"tlsaOwner":"{}","tlsaEvaluated":{},"tlsaStatus":"{}","tlsaBlockedBy":{},"tlsaFound":{},"dnssecSecure":{},"records":{},"certificate":{},"dane":{{"decision":"{}","matchedUsage":{},"certificateMatch":"{}","webPkiFallback":{}}}}}"#,
         mode,
         json_escape(&owner),
+        tlsa_evaluated,
+        tlsa_status,
+        tlsa_blocked_by,
         records_found,
         dnssec_secure,
         records,
@@ -1741,6 +1747,85 @@ fn sha256_hex(value: &[u8]) -> String {
 
 fn tlsa_owner_name(host: &str, port: u16) -> String {
     format!("_{}._tcp.{}", port, host.trim_end_matches('.'))
+}
+
+fn tlsa_status_name(tls_validation: Option<&TlsValidation>) -> &'static str {
+    match tls_validation {
+        Some(tls) if tls.tlsa_records.is_empty() => "absent",
+        Some(_) => "present",
+        None => "not_evaluated",
+    }
+}
+
+fn tlsa_blocked_by_json(
+    tls_validation: Option<&TlsValidation>,
+    error: Option<&GatewayError>,
+) -> String {
+    if tls_validation.is_some() {
+        return "null".to_owned();
+    }
+    tlsa_blocked_by(error)
+        .map(|reason| format!(r#""{}""#, json_escape(reason)))
+        .unwrap_or_else(|| "null".to_owned())
+}
+
+fn tlsa_blocked_by(error: Option<&GatewayError>) -> Option<&'static str> {
+    match error {
+        Some(GatewayError::Resolver(ResolverError::ProofUnavailable)) => {
+            Some("local_hns_proof_unavailable")
+        }
+        Some(GatewayError::Resolver(ResolverError::LocalChainNotCurrent)) => {
+            Some("local_chain_not_current")
+        }
+        Some(GatewayError::Resolver(ResolverError::NoNameserverAddress)) => {
+            Some("no_verified_nameserver_address")
+        }
+        Some(GatewayError::Resolver(ResolverError::DnsTransport(_))) => {
+            Some("authoritative_nameserver_transport_failed")
+        }
+        Some(GatewayError::Resolver(ResolverError::InvalidDnsResponse)) => {
+            Some("authoritative_nameserver_invalid_response")
+        }
+        Some(GatewayError::Resolver(ResolverError::DnssecFailed)) => {
+            Some("delegated_dnssec_validation_failed")
+        }
+        Some(GatewayError::Resolver(ResolverError::InvalidResource(_))) => {
+            Some("hns_resource_invalid")
+        }
+        Some(GatewayError::Resolver(ResolverError::ProofNameMismatch)) => {
+            Some("hns_proof_validation_failed")
+        }
+        Some(GatewayError::Resolver(ResolverError::UnsupportedBackend)) => {
+            Some("resolver_backend_unsupported")
+        }
+        Some(GatewayError::Resolver(ResolverError::CachePoisoned))
+        | Some(GatewayError::Resolver(ResolverError::Storage(_))) => {
+            Some("resolver_storage_failed")
+        }
+        Some(GatewayError::NonLoopbackBind) => Some("gateway_bind_invalid"),
+        Some(GatewayError::InsecureResolution) => Some("insecure_resolution"),
+        Some(GatewayError::NoResolvedAddress) => Some("origin_address_missing"),
+        Some(GatewayError::InvalidSvcb(_)) | Some(GatewayError::UnsupportedSvcb) => {
+            Some("https_service_unsupported")
+        }
+        Some(GatewayError::HostResolutionMismatch) => Some("hns_request_mismatch"),
+        Some(GatewayError::Transport(TransportError::UnsupportedTransport)) => {
+            Some("transport_unsupported")
+        }
+        Some(GatewayError::Transport(TransportError::UnsupportedScheme)) => {
+            Some("scheme_unsupported")
+        }
+        Some(GatewayError::Transport(TransportError::Tls(_))) => Some("tls_failed"),
+        Some(GatewayError::Transport(TransportError::Io(_))) => Some("origin_transport_failed"),
+        Some(GatewayError::Transport(TransportError::Http3(_))) => Some("http3_failed"),
+        Some(GatewayError::Transport(TransportError::Quic(_))) => Some("quic_failed"),
+        Some(GatewayError::Transport(TransportError::DaneFailed))
+        | Some(GatewayError::InvalidTlsa(_)) => Some("dane_validation_failed"),
+        Some(GatewayError::Transport(_)) => Some("origin_transport_failed"),
+        Some(GatewayError::Resolver(ResolverError::NameNotFound))
+        | Some(GatewayError::Resolver(ResolverError::InvalidName(_)))
+        | None => None,
+    }
 }
 
 fn tls_mode_name(tls: &TlsValidation) -> &'static str {
@@ -4408,6 +4493,9 @@ mod tests {
         );
 
         assert!(trace.contains(r#""tlsaOwner":"_443._tcp.nathan.woodburn""#));
+        assert!(trace.contains(r#""tlsaEvaluated":true"#));
+        assert!(trace.contains(r#""tlsaStatus":"present""#));
+        assert!(trace.contains(r#""tlsaBlockedBy":null"#));
         assert!(trace.contains(r#""tlsaFound":true"#));
         assert!(trace.contains(r#""dnssecSecure":true"#));
         assert!(trace.contains(
@@ -4420,6 +4508,35 @@ mod tests {
         assert!(trace.contains(
             r#""dane":{"decision":"verified","matchedUsage":"DANE-EE","certificateMatch":"pass","webPkiFallback":false}"#
         ));
+    }
+
+    #[test]
+    fn resolution_trace_marks_tlsa_not_evaluated_when_dnssec_fails_first() {
+        let trace = resolution_trace_json(
+            &GatewayHttpRequestInput {
+                data_dir: "/tmp",
+                method: "GET",
+                scheme: "https",
+                host: "namecity",
+                port: 443,
+                path_and_query: "/",
+                header_text: "",
+                body: &[],
+            },
+            GatewayResolutionMode::Compatibility,
+            None,
+            TlsTraceInput::default(),
+            Some(&GatewayError::Resolver(ResolverError::DnssecFailed)),
+            &FallbackMarker::default(),
+            &DnsTraceRecorder::default(),
+        );
+
+        assert!(trace.contains(r#""tlsaOwner":"_443._tcp.namecity""#));
+        assert!(trace.contains(r#""tlsaEvaluated":false"#));
+        assert!(trace.contains(r#""tlsaStatus":"not_evaluated""#));
+        assert!(trace.contains(r#""tlsaBlockedBy":"delegated_dnssec_validation_failed""#));
+        assert!(trace.contains(r#""tlsaFound":false"#));
+        assert!(trace.contains(r#""dane":{"decision":"not_evaluated""#));
     }
 
     #[test]

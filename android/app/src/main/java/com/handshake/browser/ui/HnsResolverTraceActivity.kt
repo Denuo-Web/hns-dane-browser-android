@@ -58,7 +58,6 @@ class HnsResolverTraceActivity : ComponentActivity() {
         val fallback = trace.optJSONObject("fallback")
         val authoritativeDns = trace.optJSONObject("authoritativeDns")
         val tls = trace.optJSONObject("tls")
-        val dane = tls?.optJSONObject("dane")
         return buildString {
             appendLine("URL: ${url.ifBlank { trace.optString("url", "unknown") }}")
             appendLine("Host: ${trace.optString("host", "unknown")}")
@@ -78,7 +77,8 @@ class HnsResolverTraceActivity : ComponentActivity() {
             appendLine("DNSSEC: ${trace.optString("dnssec", "unknown")}")
             appendLine("Origin address: ${trace.optString("originAddress", "unknown")}")
             appendLine("TLSA owner: ${tls?.optString("tlsaOwner")?.takeIf { it.isNotBlank() } ?: "none"}")
-            appendLine("DANE: ${dane?.optString("decision")?.takeIf { it.isNotBlank() } ?: "not_evaluated"}")
+            appendLine("TLSA status: ${HnsTlsaTraceFormat.tlsaStatus(tls)}")
+            appendLine("DANE: ${HnsTlsaTraceFormat.daneDecision(tls)}")
             appendLine("DoH fallback: ${if (fallback?.optBoolean("used", false) == true) "yes" else "no"}")
             appendLine("Fallback reason: ${fallback?.optString("reason")?.takeIf { it.isNotBlank() } ?: "none"}")
             appendLine("Final error: ${trace.optString("finalError", "none").takeIf { it != "null" } ?: "none"}")
@@ -122,6 +122,8 @@ class HnsResolverTraceActivity : ComponentActivity() {
         val dnssec = trace.optString("dnssec")
         val fallback = trace.optJSONObject("fallback")
         val nameserverCandidates = trace.optJSONArray("nameserverCandidates")
+        val tls = trace.optJSONObject("tls")
+        val tlsaBlockedBy = HnsTlsaTraceFormat.tlsaBlockedBy(tls)
         return when {
             hnsProof == "stale" || trace.optBoolean("localChainStale", false) ->
                 "Let HNS sync catch up, then retry. The local proof is valid for its historical block, but not current enough to decide whether the name exists now."
@@ -133,6 +135,8 @@ class HnsResolverTraceActivity : ComponentActivity() {
                 "Your delegated nameserver candidate did not answer reliably. Ensure authoritative DNS is reachable on UDP 53 and TCP 53."
             dnssec == "bogus" ->
                 "Fix the delegated DNSSEC chain: HNS DS must match child DNSKEY, signatures must be current, and denial data must be valid."
+            tlsaBlockedBy in setOf("delegated_dnssec_validation_failed", "insecure_resolution") ->
+                "Fix delegated DNSSEC first. TLSA/DANE was not evaluated because secure resolution failed before the TLSA lookup."
             trace.optString("originAddress") == "missing" ->
                 "Serve A/AAAA for the requested host, or add direct HNS SYNTH/GLUE address records where appropriate."
             fallback?.optBoolean("used", false) == true ->
