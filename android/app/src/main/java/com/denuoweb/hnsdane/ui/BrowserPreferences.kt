@@ -6,7 +6,7 @@ import com.denuoweb.hnsdane.core.BrowserUrlClassifier
 import java.util.Locale
 
 internal object BrowserPreferences {
-    const val DEFAULT_HOME = "https://appassets.androidplatform.net/assets/hns_directory.html"
+    const val DEFAULT_HOME = "https://denuoweb/homepage"
 
     private const val PREFS = "browser_preferences"
     private const val KEY_HOMEPAGE = "homepage_url"

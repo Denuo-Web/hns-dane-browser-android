@@ -71,7 +71,7 @@ class SettingsActivity : ComponentActivity() {
                 }
                 addPreference(preferenceRow(
                     title = "Reset homepage",
-                    summary = "Restore the built-in HNS browser start page.",
+                    summary = "Restore the default Denuo Web homepage.",
                     actionLabel = "Reset",
                     destructive = true,
                 ) {
@@ -487,7 +487,7 @@ class SettingsActivity : ComponentActivity() {
     private fun confirmResetHomepage() {
         AlertDialog.Builder(this)
             .setTitle("Reset homepage?")
-            .setMessage("This restores the built-in HNS browser start page.")
+            .setMessage("This restores the default Denuo Web homepage.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Reset") { _, _ ->
                 BrowserPreferences.resetHomepage(this)

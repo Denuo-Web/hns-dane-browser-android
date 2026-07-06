@@ -111,21 +111,21 @@ class BrowserUrlClassifierTest {
     }
 
     @Test
-    fun bundledAppAssetPageLoadsAsExactUrl() {
+    fun appAssetHttpsUrlsLoadAsExactUrls() {
         val target = classifier.classify(
-            "https://appassets.androidplatform.net/assets/hns_directory.html",
+            "https://appassets.androidplatform.net/assets/example.txt",
         )
 
         assertEquals(BrowserTargetKind.ExactUrl, target.kind)
         assertEquals(
-            "https://appassets.androidplatform.net/assets/hns_directory.html",
+            "https://appassets.androidplatform.net/assets/example.txt",
             target.url,
         )
     }
 
     @Test
     fun fileUrlsDoNotLoadAsExactUrls() {
-        val target = classifier.classify("file:///android_asset/hns_directory.html")
+        val target = classifier.classify("file:///android_asset/example.txt")
 
         assertEquals(BrowserTargetKind.Search, target.kind)
     }
