@@ -1009,7 +1009,7 @@ class MainActivity : ComponentActivity() {
         val fileName = URLUtil.guessFileName(downloadUrl, contentDisposition, mimeType)
         val request = DownloadManager.Request(Uri.parse(downloadUrl))
             .setTitle(fileName)
-            .setDescription(downloadUrl)
+            .setDescription(getString(R.string.app_name))
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
         if (!mimeType.isNullOrBlank()) {

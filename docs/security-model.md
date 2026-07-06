@@ -43,6 +43,19 @@ Applied WebView controls:
 - Cleartext network policy is denied except for the explicit loopback gateway allowance in Android Network Security Config; the gateway binds only to randomized `127.0.0.1` ports while an HNS page needs proxy support, refuses WebView proxy override when host-scoped reverse-bypass support is unavailable, rejects non-HNS proxy traffic, enforces the active HNS host/subdomain scope, closes when the main browser activity leaves the foreground, and applies bounded active-client and HNS request admission limits.
 - App asset loads should use HTTPS-style app-asset origins or native interception instead of broad `file://` access.
 
+## Android Platform Checklist
+
+The app follows the Android security checklist as a platform baseline:
+
+- Permissions are limited to network access, notification posting, and the foreground data-sync service needed for visible HNS header/proof sync. The manifest does not request contacts, location, SMS, camera, microphone, account, package-visibility, or broad file permissions.
+- Only the launcher activity is exported. Settings, diagnostics, history, downloads, proof/TLSA views, resolver trace, and the sync foreground service are explicitly non-exported.
+- App backup and device-transfer extraction are disabled for files, databases, shared preferences, root storage, and external app data. Browser history, download records, diagnostics, resolver cache, and sync/cache state remain app-local unless the user explicitly exports or shares data.
+- Normal browsing does not enable `file://` or `content://` WebView access. User-initiated downloads use Android DownloadManager into public Downloads, but the system-visible download description does not include the full URL.
+- Network Security Config denies cleartext by default and allows cleartext only for the loopback gateway. The gateway binds randomized `127.0.0.1` ports only while scoped HNS proxy support is needed.
+- WebView JavaScript is enabled for browser compatibility, but no `addJavascriptInterface` bridge is exposed to untrusted content. The HNS WebSocket `WebMessageListener` path validates main-frame origin, active HNS page scope, target HNS host scope, and cleartext downgrade policy before opening a native tunnel.
+- Gateway diagnostic persistence is bounded and stores sanitized stage, host, status, and reason fields only; URL paths, query strings, headers, and bodies are not persisted in default diagnostics.
+- Release builds are non-debuggable, minified, resource-shrunk, and require upload-signing configuration before Play release bundle verification can pass.
+
 ## Review Checklist
 
 - Parsers are bounded and return structured errors.
