@@ -2274,6 +2274,11 @@ fn tlsa_blocked_by(error: Option<&GatewayError>) -> Option<&'static str> {
         Some(GatewayError::Transport(TransportError::UnsupportedScheme)) => {
             Some("scheme_unsupported")
         }
+        Some(GatewayError::Transport(error))
+            if transport_certificate_failure_reason(error).is_some() =>
+        {
+            transport_certificate_failure_reason(error)
+        }
         Some(GatewayError::Transport(TransportError::Tls(_))) => Some("tls_failed"),
         Some(GatewayError::Transport(TransportError::Io(_))) => Some("origin_transport_failed"),
         Some(GatewayError::Transport(TransportError::Http3(_))) => Some("http3_failed"),
@@ -2286,6 +2291,43 @@ fn tlsa_blocked_by(error: Option<&GatewayError>) -> Option<&'static str> {
         | Some(GatewayError::Resolver(ResolverError::InvalidName(_)))
         | None => None,
     }
+}
+
+fn transport_certificate_failure_reason(error: &TransportError) -> Option<&'static str> {
+    let message = transport_error_message(error)?;
+    if transport_certificate_message_is_expired(message) {
+        return Some("origin_certificate_expired");
+    }
+    if message
+        .to_ascii_lowercase()
+        .contains("invalid peer certificate")
+    {
+        return Some("origin_certificate_invalid");
+    }
+    None
+}
+
+fn transport_certificate_expired(error: &TransportError) -> bool {
+    transport_certificate_failure_reason(error) == Some("origin_certificate_expired")
+}
+
+fn transport_error_message(error: &TransportError) -> Option<&str> {
+    match error {
+        TransportError::Io(message)
+        | TransportError::Tls(message)
+        | TransportError::Http2(message)
+        | TransportError::Http3(message)
+        | TransportError::Quic(message) => Some(message),
+        _ => None,
+    }
+}
+
+fn transport_certificate_message_is_expired(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("certificate expired")
+        || message.contains("certificate has expired")
+        || message.contains("cert has expired")
+        || message.contains("not valid after")
 }
 
 fn tls_mode_name(tls: &TlsValidation) -> &'static str {
@@ -2884,6 +2926,11 @@ fn map_gateway_error_for_host(
                 "ICANN Scheme Unsupported",
                 "Requested ICANN origin scheme is not available.",
             ),
+            GatewayError::Transport(error) if transport_certificate_expired(error) => (
+                502,
+                "ICANN Origin Certificate Expired",
+                "Origin HTTPS certificate is expired; renew the certificate and retry.",
+            ),
             GatewayError::Transport(TransportError::Tls(_)) => (
                 502,
                 "ICANN TLS Failed",
@@ -3043,6 +3090,11 @@ fn map_gateway_error(error: &GatewayError) -> (u16, &'static str, &'static str) 
             501,
             "HNS Scheme Unsupported",
             "Requested HNS origin scheme is not available.",
+        ),
+        GatewayError::Transport(error) if transport_certificate_expired(error) => (
+            502,
+            "HNS Origin Certificate Expired",
+            "Origin HTTPS certificate is expired; renew the certificate and retry.",
         ),
         GatewayError::Transport(TransportError::Tls(_)) => (
             502,
@@ -5239,6 +5291,36 @@ mod tests {
     }
 
     #[test]
+    fn resolution_trace_marks_expired_origin_certificate() {
+        let trace = resolution_trace_json(
+            &GatewayHttpRequestInput {
+                data_dir: "/tmp",
+                method: "GET",
+                scheme: "https",
+                host: "mercenary",
+                port: 443,
+                path_and_query: "/",
+                header_text: "",
+                body: &[],
+            },
+            GatewayResolutionMode::Compatibility,
+            None,
+            TlsTraceInput::default(),
+            Some(&GatewayError::Transport(TransportError::Io(
+                "invalid peer certificate: certificate expired: verification time 1783324451, but certificate is not valid after 1680922072".to_owned(),
+            ))),
+            &FallbackMarker::default(),
+            &DnsTraceRecorder::default(),
+        );
+
+        assert!(trace.contains(r#""tlsaStatus":"not_evaluated""#));
+        assert!(trace.contains(r#""tlsaBlockedBy":"origin_certificate_expired""#));
+        assert!(trace.contains(
+            r#""finalError":"transport error: origin I/O error: invalid peer certificate: certificate expired:"#
+        ));
+    }
+
+    #[test]
     fn fallback_delegated_resolver_uses_doh_transport_on_nameserver_transport_error() {
         let answer = ResolutionAnswer {
             name: DnsName::from_ascii("nathan.woodburn").unwrap(),
@@ -5830,6 +5912,16 @@ mod tests {
                 502,
                 "HNS Origin Transport Failed",
                 "Origin connection failed closed.",
+            ),
+        );
+        assert_eq!(
+            map_gateway_error(&GatewayError::Transport(TransportError::Io(
+                "invalid peer certificate: certificate expired: verification time 1783324451, but certificate is not valid after 1680922072".to_owned(),
+            ))),
+            (
+                502,
+                "HNS Origin Certificate Expired",
+                "Origin HTTPS certificate is expired; renew the certificate and retry.",
             ),
         );
         assert_eq!(

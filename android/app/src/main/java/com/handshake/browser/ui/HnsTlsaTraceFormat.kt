@@ -133,6 +133,8 @@ internal object HnsTlsaTraceFormat {
             "hns_request_mismatch" -> "HNS request mismatch"
             "transport_unsupported" -> "transport unsupported"
             "scheme_unsupported" -> "scheme unsupported"
+            "origin_certificate_expired" -> "origin certificate expired"
+            "origin_certificate_invalid" -> "origin certificate invalid"
             "tls_failed" -> "TLS failed"
             "origin_transport_failed" -> "origin transport failed"
             "http3_failed" -> "HTTP/3 failed"

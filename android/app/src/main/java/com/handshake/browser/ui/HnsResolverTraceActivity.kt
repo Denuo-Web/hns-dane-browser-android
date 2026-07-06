@@ -172,6 +172,8 @@ class HnsResolverTraceActivity : ComponentActivity() {
                 "Fix the delegated DNSSEC chain: HNS DS must match child DNSKEY, signatures must be current, and denial data must be valid."
             tlsaBlockedBy in setOf("delegated_dnssec_validation_failed", "insecure_resolution") ->
                 "Fix delegated DNSSEC first. TLSA/DANE was not evaluated because secure resolution failed before the TLSA lookup."
+            originCertificateExpired(trace, tls) ->
+                "Renew the origin HTTPS certificate. The gateway reached an HTTPS origin, but TLS failed because the certificate is past its validity window."
             trace.optString("originAddress") == "missing" ->
                 "Serve A/AAAA for the requested host from delegated DNS, or add an explicit HNS browser capsule for a direct site."
             fallback?.optBoolean("used", false) == true ->
@@ -187,6 +189,8 @@ class HnsResolverTraceActivity : ComponentActivity() {
         return when {
             trace.optString("dnssec") == "bogus" ->
                 "Fix the ICANN DNSSEC chain: DS, DNSKEY, signatures, and denial records must validate."
+            originCertificateExpired(trace, tls) ->
+                "Renew the origin HTTPS certificate. TLS failed because the certificate is past its validity window."
             trace.optString("originAddress") == "missing" ->
                 "Publish a DNSSEC-validated A or AAAA record for this host."
             tlsaBlockedBy in setOf("delegated_dnssec_validation_failed", "insecure_resolution") ->
@@ -196,6 +200,17 @@ class HnsResolverTraceActivity : ComponentActivity() {
             else ->
                 "No obvious fix from this trace. Check TLSA/DANE details if HTTPS validation fails."
         }
+    }
+
+    private fun originCertificateExpired(trace: JSONObject, tls: JSONObject?): Boolean {
+        if (HnsTlsaTraceFormat.tlsaBlockedBy(tls) == "origin_certificate_expired") {
+            return true
+        }
+        val finalError = trace.optString("finalError", "").lowercase()
+        return finalError.contains("certificate expired") ||
+            finalError.contains("certificate has expired") ||
+            finalError.contains("cert has expired") ||
+            finalError.contains("not valid after")
     }
 
     private fun markdownReport(): String =
