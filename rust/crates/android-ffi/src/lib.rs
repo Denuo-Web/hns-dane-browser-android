@@ -38,7 +38,7 @@ use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -77,7 +77,7 @@ const HNS_RESOLUTION_TRACE_HEADER: &str = "X-HNS-Resolution-Trace";
 const HNS_RESOLVER_MODE_HEADER: &str = "X-HNS-Resolver-Mode";
 const HNS_DOH_FALLBACK_HEADER: &str = "X-HNS-DoH-Fallback";
 const TUNNEL_COPY_BUFFER_BYTES: usize = 16 * 1024;
-static DOH_QUERY_ID: AtomicU16 = AtomicU16::new(0x484e);
+const DOH_DNS_ID: u16 = 0;
 
 pub struct GatewayHttpRequestInput<'a> {
     pub data_dir: &'a str,
@@ -632,6 +632,7 @@ fn dns_trace_error_status(error: &ResolverError) -> &'static str {
             "timeout"
         }
         ResolverError::DnsTransport(_) => "transport_error",
+        ResolverError::DnsResponseCode(_) => "response_code",
         ResolverError::InvalidDnsResponse => "invalid_response",
         ResolverError::DnssecFailed => "dnssec_failed",
         _ => "error",
@@ -808,7 +809,7 @@ impl HnsDohDnsTransport {
     }
 
     fn exchange_doh(&self, _server: SocketAddr, query: &[u8]) -> Result<Vec<u8>, ResolverError> {
-        let query = recursive_doh_query(query)?;
+        let (query, original_id) = recursive_doh_query(query)?;
         let started = Instant::now();
         let response = fetch_doh_message(&self.endpoint, query);
         self.trace.push(doh_trace_event(
@@ -820,13 +821,16 @@ impl HnsDohDnsTransport {
         let response = response.map_err(|error| {
             ResolverError::DnsTransport(format!("HNS DoH DNS transport failed: {error}"))
         })?;
-        if response.status != 200 {
+        if !doh_http_status_success(response.status) {
             return Err(ResolverError::DnsTransport(format!(
                 "HNS DoH DNS transport returned HTTP {}",
                 response.status
             )));
         }
-        Ok(response.body)
+        if !doh_response_has_dns_message_content_type(&response) {
+            return Err(ResolverError::InvalidDnsResponse);
+        }
+        restore_doh_response_id(&response.body, original_id)
     }
 }
 
@@ -863,7 +867,7 @@ impl Resolver for HnsDohResolver {
         let qname =
             DnsName::from_ascii(&request.qname).map_err(|_| ResolverError::UnsupportedBackend)?;
         let qtype = RecordType::from_code(request.qtype);
-        let id = next_doh_query_id();
+        let id = DOH_DNS_ID;
         let query = build_doh_query(id, &qname, qtype)?;
         let started = Instant::now();
         let response = fetch_doh_message(&self.endpoint, query);
@@ -876,11 +880,14 @@ impl Resolver for HnsDohResolver {
         let response = response.map_err(|error| {
             ResolverError::DnsTransport(format!("HNS DoH compatibility resolver failed: {error}"))
         })?;
-        if response.status != 200 {
+        if !doh_http_status_success(response.status) {
             return Err(ResolverError::DnsTransport(format!(
                 "HNS DoH compatibility resolver returned HTTP {}",
                 response.status
             )));
+        }
+        if !doh_response_has_dns_message_content_type(&response) {
+            return Err(ResolverError::InvalidDnsResponse);
         }
 
         doh_answer_from_body(id, &qname, qtype, &response.body)
@@ -907,7 +914,7 @@ impl Resolver for IcannDohResolver {
         let qname =
             DnsName::from_ascii(&request.qname).map_err(|_| ResolverError::UnsupportedBackend)?;
         let qtype = RecordType::from_code(request.qtype);
-        let id = next_doh_query_id();
+        let id = DOH_DNS_ID;
         let query = build_doh_query(id, &qname, qtype)?;
         let started = Instant::now();
         let response = fetch_doh_message(&self.endpoint, query);
@@ -920,11 +927,14 @@ impl Resolver for IcannDohResolver {
         let response = response.map_err(|error| {
             ResolverError::DnsTransport(format!("ICANN DoH resolver failed: {error}"))
         })?;
-        if response.status != 200 {
+        if !doh_http_status_success(response.status) {
             return Err(ResolverError::DnsTransport(format!(
                 "ICANN DoH resolver returned HTTP {}",
                 response.status
             )));
+        }
+        if !doh_response_has_dns_message_content_type(&response) {
+            return Err(ResolverError::InvalidDnsResponse);
         }
 
         doh_answer_from_body(id, &qname, qtype, &response.body)
@@ -951,6 +961,7 @@ fn doh_fallback_reason(error: &ResolverError) -> Option<&'static str> {
 fn delegated_doh_transport_fallback_reason(error: &ResolverError) -> Option<&'static str> {
     match error {
         ResolverError::DnsTransport(_) => Some("authoritative_nameserver_transport_failed"),
+        ResolverError::DnsResponseCode(_) => Some("authoritative_nameserver_response_code"),
         ResolverError::InvalidDnsResponse => Some("authoritative_nameserver_invalid_response"),
         ResolverError::DnssecFailed => Some("delegated_dnssec_validation_failed"),
         _ => None,
@@ -981,17 +992,45 @@ fn fetch_doh_message(
     })
 }
 
-fn recursive_doh_query(query: &[u8]) -> Result<Vec<u8>, ResolverError> {
+fn doh_http_status_success(status: u16) -> bool {
+    (200..300).contains(&status)
+}
+
+fn doh_response_has_dns_message_content_type(response: &OriginResponse) -> bool {
+    response
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        .any(|(_, value)| {
+            value
+                .split(';')
+                .next()
+                .map(str::trim)
+                .is_some_and(|media_type| {
+                    media_type.eq_ignore_ascii_case("application/dns-message")
+                })
+        })
+}
+
+fn recursive_doh_query(query: &[u8]) -> Result<(Vec<u8>, u16), ResolverError> {
     if query.len() < 4 {
         return Err(ResolverError::InvalidDnsResponse);
     }
+    let original_id = u16::from_be_bytes([query[0], query[1]]);
     let mut query = query.to_vec();
+    query[0] = 0;
+    query[1] = 0;
     query[2] |= 0x01;
-    Ok(query)
+    Ok((query, original_id))
 }
 
-fn next_doh_query_id() -> u16 {
-    DOH_QUERY_ID.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
+fn restore_doh_response_id(body: &[u8], original_id: u16) -> Result<Vec<u8>, ResolverError> {
+    if body.len() < 2 || body[0] != 0 || body[1] != 0 {
+        return Err(ResolverError::InvalidDnsResponse);
+    }
+    let mut body = body.to_vec();
+    body[..2].copy_from_slice(&original_id.to_be_bytes());
+    Ok(body)
 }
 
 fn build_doh_query(id: u16, qname: &DnsName, qtype: RecordType) -> Result<Vec<u8>, ResolverError> {
@@ -1038,13 +1077,15 @@ fn doh_answer_from_body(
     if message.header.id != id
         || !message.header.flags.is_response()
         || message.header.flags.opcode() != 0
-        || !matches!(rcode, DNS_RCODE_NOERROR | DNS_RCODE_NXDOMAIN)
         || message.questions.len() != 1
         || message.questions[0].name != *qname
         || message.questions[0].record_type != qtype
         || message.questions[0].class != DNS_CLASS_IN
     {
         return Err(ResolverError::InvalidDnsResponse);
+    }
+    if !matches!(rcode, DNS_RCODE_NOERROR | DNS_RCODE_NXDOMAIN) {
+        return Err(ResolverError::DnsResponseCode(rcode));
     }
 
     Ok(ResolutionAnswer {
@@ -1870,8 +1911,13 @@ fn resolution_trace_json(
         .unwrap_or_else(|| "null".to_owned());
     let authoritative_dns = authoritative_dns_trace_json(&dns_events);
     let dns_attempts = dns_trace_attempts_json(&dns_events);
-    let resolution_source =
-        resolution_source_name(name_class, resolution, authoritative_dns_used, error, &dns_events);
+    let resolution_source = resolution_source_name(
+        name_class,
+        resolution,
+        authoritative_dns_used,
+        error,
+        &dns_events,
+    );
     let local_currentness = local_chain_currentness_for_trace(input.data_dir);
     let local_best_height =
         optional_u32_json(local_currentness.and_then(|value| value.best_height));
@@ -1945,6 +1991,7 @@ fn resolution_source_name(
     if matches!(
         error,
         Some(GatewayError::Resolver(ResolverError::DnsTransport(_)))
+            | Some(GatewayError::Resolver(ResolverError::DnsResponseCode(_)))
             | Some(GatewayError::Resolver(ResolverError::InvalidDnsResponse))
             | Some(GatewayError::Resolver(ResolverError::DnssecFailed))
     ) {
@@ -2188,6 +2235,9 @@ fn tlsa_blocked_by(error: Option<&GatewayError>) -> Option<&'static str> {
         }
         Some(GatewayError::Resolver(ResolverError::DnsTransport(_))) => {
             Some("authoritative_nameserver_transport_failed")
+        }
+        Some(GatewayError::Resolver(ResolverError::DnsResponseCode(_))) => {
+            Some("authoritative_nameserver_response_code")
         }
         Some(GatewayError::Resolver(ResolverError::InvalidDnsResponse)) => {
             Some("authoritative_nameserver_invalid_response")
@@ -2786,6 +2836,11 @@ fn map_gateway_error_for_host(
                 "ICANN DNS Unavailable",
                 "Trusted ICANN DNS resolver transport failed closed.",
             ),
+            GatewayError::Resolver(ResolverError::DnsResponseCode(_)) => (
+                502,
+                "ICANN DNS Response Code",
+                "Trusted ICANN DNS resolver returned a DNS failure response code.",
+            ),
             GatewayError::Resolver(ResolverError::InvalidDnsResponse) => (
                 502,
                 "ICANN DNS Response Invalid",
@@ -2918,6 +2973,11 @@ fn map_gateway_error(error: &GatewayError) -> (u16, &'static str, &'static str) 
             502,
             "HNS Nameserver Unavailable",
             "Delegated HNS nameserver transport failed closed.",
+        ),
+        GatewayError::Resolver(ResolverError::DnsResponseCode(_)) => (
+            502,
+            "HNS Nameserver Response Code",
+            "Delegated HNS nameserver returned a DNS failure response code.",
         ),
         GatewayError::Resolver(ResolverError::InvalidDnsResponse) => (
             502,
@@ -4949,7 +5009,10 @@ mod tests {
             GatewayResolutionMode::Compatibility,
             Some(&ResolutionAnswer {
                 name: DnsName::from_ascii("dane-test.denuoweb.com").unwrap(),
-                records: vec![address_record("dane-test.denuoweb.com", [35, 212, 156, 128])],
+                records: vec![address_record(
+                    "dane-test.denuoweb.com",
+                    [35, 212, 156, 128],
+                )],
                 secure: true,
             }),
             TlsTraceInput::default(),
@@ -5496,6 +5559,106 @@ mod tests {
 
         assert!(answer.secure);
         assert_eq!(answer.records, vec![answer_record]);
+    }
+
+    #[test]
+    fn doh_response_parser_returns_response_code_for_servfail() {
+        let qname = DnsName::from_ascii("servfail.example").unwrap();
+        let message = DnsMessage {
+            header: DnsHeader {
+                id: DOH_DNS_ID,
+                flags: DnsFlags::new(0x8182),
+                question_count: 1,
+                answer_count: 0,
+                authority_count: 0,
+                additional_count: 0,
+            },
+            questions: vec![DnsQuestion {
+                name: qname.clone(),
+                record_type: RecordType::A,
+                class: DNS_CLASS_IN,
+            }],
+            answers: Vec::new(),
+            authorities: Vec::new(),
+            additionals: Vec::new(),
+        };
+        let body = message
+            .encode(&DnsEncodeConfig {
+                max_message_len: 4096,
+            })
+            .unwrap();
+
+        assert_eq!(
+            doh_answer_from_body(DOH_DNS_ID, &qname, RecordType::A, &body).unwrap_err(),
+            ResolverError::DnsResponseCode(2),
+        );
+    }
+
+    #[test]
+    fn doh_http_status_allows_any_successful_2xx() {
+        assert!(!doh_http_status_success(199));
+        assert!(doh_http_status_success(200));
+        assert!(doh_http_status_success(204));
+        assert!(doh_http_status_success(299));
+        assert!(!doh_http_status_success(300));
+    }
+
+    #[test]
+    fn doh_response_requires_dns_message_content_type() {
+        let mut response = OriginResponse {
+            status: 200,
+            headers: vec![(
+                "Content-Type".to_owned(),
+                "Application/DNS-Message".to_owned(),
+            )],
+            body: Vec::new(),
+            dane_decision: DaneDecision::NoTlsa,
+            tls_inspection: None,
+        };
+
+        assert!(doh_response_has_dns_message_content_type(&response));
+
+        response.headers = vec![("Content-Type".to_owned(), "application/json".to_owned())];
+        assert!(!doh_response_has_dns_message_content_type(&response));
+
+        response.headers.clear();
+        assert!(!doh_response_has_dns_message_content_type(&response));
+    }
+
+    #[test]
+    fn recursive_doh_query_uses_zero_dns_id_on_wire() {
+        let qname = DnsName::from_ascii("dane-test.denuoweb.com").unwrap();
+        let query = build_doh_query(0x1234, &qname, RecordType::A).unwrap();
+
+        let (wire_query, original_id) = recursive_doh_query(&query).unwrap();
+        let wire_message = DnsMessage::parse(&wire_query).unwrap();
+
+        assert_eq!(original_id, 0x1234);
+        assert_eq!(wire_message.header.id, DOH_DNS_ID);
+        assert!(wire_message.header.flags.recursion_desired());
+
+        let response = DnsMessage {
+            header: DnsHeader {
+                id: DOH_DNS_ID,
+                flags: DnsFlags::new(0x8180),
+                question_count: 1,
+                answer_count: 0,
+                authority_count: 0,
+                additional_count: 0,
+            },
+            questions: wire_message.questions,
+            answers: Vec::new(),
+            authorities: Vec::new(),
+            additionals: Vec::new(),
+        }
+        .encode(&DnsEncodeConfig {
+            max_message_len: 4096,
+        })
+        .unwrap();
+
+        let restored = restore_doh_response_id(&response, original_id).unwrap();
+        let restored_message = DnsMessage::parse(&restored).unwrap();
+        assert_eq!(restored_message.header.id, 0x1234);
     }
 
     #[test]

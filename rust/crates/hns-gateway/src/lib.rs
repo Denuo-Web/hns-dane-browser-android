@@ -418,6 +418,7 @@ fn native_tlsa_shadow_fallback_error(error: &ResolverError) -> bool {
             | ResolverError::UnsupportedBackend
             | ResolverError::NoNameserverAddress
             | ResolverError::DnsTransport(_)
+            | ResolverError::DnsResponseCode(_)
             | ResolverError::InvalidDnsResponse
     )
 }
@@ -430,6 +431,7 @@ fn txt_shadow_lookup_optional_error(error: &ResolverError) -> bool {
             | ResolverError::UnsupportedBackend
             | ResolverError::NoNameserverAddress
             | ResolverError::DnsTransport(_)
+            | ResolverError::DnsResponseCode(_)
             | ResolverError::InvalidDnsResponse
     )
 }

@@ -101,6 +101,8 @@ pub enum ResolverError {
     NoNameserverAddress,
     #[error("DNS transport failed: {0}")]
     DnsTransport(String),
+    #[error("DNS response returned rcode {0}")]
+    DnsResponseCode(u8),
     #[error("DNS response is invalid")]
     InvalidDnsResponse,
     #[error("HNS browser capsule is invalid")]
@@ -3127,13 +3129,15 @@ fn parse_dns_response(
     if message.header.id != id
         || !message.header.flags.is_response()
         || message.header.flags.opcode() != 0
-        || !matches!(rcode, DNS_RCODE_NOERROR | DNS_RCODE_NXDOMAIN)
         || message.questions.len() != 1
         || message.questions[0].name != *qname
         || message.questions[0].record_type != qtype
         || message.questions[0].class != DNS_CLASS_IN
     {
         return Err(ResolverError::InvalidDnsResponse);
+    }
+    if !matches!(rcode, DNS_RCODE_NOERROR | DNS_RCODE_NXDOMAIN) {
+        return Err(ResolverError::DnsResponseCode(rcode));
     }
 
     Ok(message)
@@ -5827,6 +5831,29 @@ mod tests {
 
         assert!(answer.secure);
         assert_welcome_a_retried_over_tcp(&requests);
+    }
+
+    #[test]
+    fn dns_response_parser_returns_response_code_for_servfail() {
+        let qname = DnsName::from_ascii("welcome").unwrap();
+        let id = 0x1234;
+        let query =
+            DnsMessage::parse(&build_dns_query(id, &qname, RecordType::A).unwrap()).unwrap();
+        let response = dns_response(
+            &query,
+            DnsResponseFixture {
+                rcode: 2,
+                answers: Vec::new(),
+                authorities: Vec::new(),
+                additionals: Vec::new(),
+            },
+            false,
+        );
+
+        assert_eq!(
+            parse_dns_response(id, &qname, RecordType::A, &response).unwrap_err(),
+            ResolverError::DnsResponseCode(2),
+        );
     }
 
     #[test]

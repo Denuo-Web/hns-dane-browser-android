@@ -1216,10 +1216,12 @@ fn build_http2_request(request: &OriginRequest) -> Result<Http2Request<()>, Tran
             HeaderName::from_static("user-agent"),
             HeaderValue::from_static("hns-browser/0.2.8"),
         );
-        headers.insert(
-            HeaderName::from_static("accept"),
-            HeaderValue::from_static("*/*"),
-        );
+        if !has_header(&request.headers, "accept") {
+            headers.insert(
+                HeaderName::from_static("accept"),
+                HeaderValue::from_static("*/*"),
+            );
+        }
         for (name, value) in &request.headers {
             if is_hop_by_hop_header(name)
                 || name.eq_ignore_ascii_case("host")
@@ -1376,12 +1378,15 @@ fn build_http_request(
     let mut out = Vec::new();
     write!(
         out,
-        "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: hns-browser/0.2.8\r\nAccept: */*\r\n",
+        "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: hns-browser/0.2.8\r\n",
         request.method.to_ascii_uppercase(),
         request.path_and_query,
         host_header(&request.host, request.port, &request.scheme),
     )
     .map_err(io_error)?;
+    if !has_header(&request.headers, "accept") {
+        out.extend(b"Accept: */*\r\n");
+    }
 
     for (name, value) in &request.headers {
         if is_hop_by_hop_header(name)
@@ -1413,12 +1418,15 @@ fn build_http_upgrade_request(request: &OriginRequest) -> Result<Vec<u8>, Transp
     let mut out = Vec::new();
     write!(
         out,
-        "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: hns-browser/0.2.8\r\nAccept: */*\r\n",
+        "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: hns-browser/0.2.8\r\n",
         request.method.to_ascii_uppercase(),
         request.path_and_query,
         host_header(&request.host, request.port, &request.scheme),
     )
     .map_err(io_error)?;
+    if !has_header(&request.headers, "accept") {
+        out.extend(b"Accept: */*\r\n");
+    }
 
     let mut has_connection_upgrade = false;
     let mut has_upgrade = false;
@@ -1755,6 +1763,12 @@ fn connection_close(headers: &[(String, String)]) -> bool {
     headers.iter().any(|(name, value)| {
         name.eq_ignore_ascii_case("connection") && has_header_token(value, "close")
     })
+}
+
+fn has_header(headers: &[(String, String)], expected: &str) -> bool {
+    headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case(expected))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2264,6 +2278,41 @@ mod tests {
 
         assert!(text.contains("Range: bytes=10-19\r\n"));
         assert!(text.contains("If-Range: \"abc\"\r\n"));
+    }
+
+    #[test]
+    fn caller_accept_header_replaces_default_http11_accept() {
+        let mut request = request(SocketAddr::from((Ipv4Addr::LOCALHOST, 80)));
+        request
+            .headers
+            .push(("Accept".to_owned(), "application/dns-message".to_owned()));
+
+        let text = String::from_utf8(build_http_request(&request, false).unwrap()).unwrap();
+
+        assert_eq!(text.matches("Accept:").count(), 1);
+        assert!(text.contains("Accept: application/dns-message\r\n"));
+        assert!(!text.contains("Accept: */*\r\n"));
+    }
+
+    #[test]
+    fn caller_accept_header_replaces_default_http2_accept() {
+        let mut request = request(SocketAddr::from((Ipv4Addr::LOCALHOST, 80)));
+        request.scheme = "https".to_owned();
+        request.port = 443;
+        request.connect_host = None;
+        request
+            .headers
+            .push(("Accept".to_owned(), "application/dns-message".to_owned()));
+
+        let h2_request = build_http2_request(&request).unwrap();
+        let accept_values = h2_request
+            .headers()
+            .get_all("accept")
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(accept_values, vec!["application/dns-message"]);
     }
 
     #[test]
