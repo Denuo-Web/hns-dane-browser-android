@@ -21,7 +21,7 @@ The default proof-backed path does not trust a single peer, external HNS resolve
 - Browser-visible HNS gateway errors must identify the failing stage without exposing private request bodies.
 - Gateway diagnostics must persist only bounded, sanitized stage/host/status/reason events in app-private storage; paths, query strings, request headers, and response/request bodies stay out of default logs.
 - Verified HNS non-inclusion must surface as name-not-found instead of origin-address-missing.
-- `hnsdns=1` HNS TXT declarations may add only RFC 8484 authoritative DoH transport endpoints for HNS-proven nameservers. They do not synthesize origin A/AAAA, HTTPS, or TLSA answers; malformed matching declarations fail closed.
+- RFC 9461 `_dns.<nameserver>` SVCB records may add only RFC 8484 authoritative DoH transport endpoints for HNS-proven nameservers. They do not synthesize origin A/AAAA, HTTPS, or TLSA answers; malformed matching discovery records fail closed.
 
 ## Hardened WebView Profile
 
@@ -70,7 +70,7 @@ Applied WebView controls:
 - No proven HNS answer should be returned if the proof name hash or root name mismatches the request.
 - No verified HNS non-inclusion should be treated as an existing name with an empty record set.
 - No HNS origin connect address should be selected from NS glue or another owner name unless that owner is reached through a DNSSEC-validated CNAME chain from the requested origin owner.
-- No HNS origin connect address should be inferred from GLUE, SYNTH, or `hnsdns=1` TXT data. GLUE/SYNTH and HNS-declared DoH endpoints only bootstrap nameserver transport; origin A/AAAA selection still requires DNSSEC-secure delegated answers.
+- No HNS origin connect address should be inferred from GLUE, SYNTH, or DNS-server SVCB DoH discovery data. GLUE/SYNTH and RFC 9461 authoritative DoH endpoints only bootstrap nameserver transport; origin A/AAAA selection still requires DNSSEC-secure delegated answers.
 - No HNS origin request that starts from root delegation records should be treated as complete until a secure delegated A/AAAA lookup has been attempted.
 - No dotted HNS host should be routed to Chromium DNS when its final label is treated as an HNS root by browser policy.
 - No out-of-zone HNS nameserver address should be used unless it comes from a separate verified HNS root proof for that nameserver owner.
@@ -84,7 +84,7 @@ Applied WebView controls:
 - No RRSIG should be evaluated against non-canonical RRset bytes or outside its validity window.
 - No RRset should be treated as DNSSEC-secure unless the delegation link and a covering RRSIG both validate.
 - No delegated HNS DNS answer should be treated as secure unless it comes from HNS-proven nameserver glue or synth addresses and validates against the HNS-proven DS RRset.
-- No HNS-declared authoritative DoH endpoint should be used unless its `ns` owner has a matching HNS-proven NS address and the endpoint uses RFC 8484 HTTPS transport with DNS wire messages.
+- No RFC 9461 authoritative DoH endpoint should be used unless its DNS-server SVCB owner has a matching HNS-proven NS address and the endpoint uses RFC 8484 HTTPS transport with DNS wire messages.
 - No delegated NXDOMAIN response should be treated as malformed solely because its RCODE is NXDOMAIN; it must either validate as secure NSEC/NSEC3 name-error denial or fail closed.
 - No empty delegated HNS DNS answer should be treated as secure unless an NSEC or NSEC3 no-data proof validates under the delegated zone DNSKEY.
 - No delegated CNAME chain should be followed outside the HNS-proven delegated zone or beyond the bounded CNAME-chain limit.

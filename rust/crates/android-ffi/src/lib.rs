@@ -1032,7 +1032,7 @@ fn fetch_authoritative_doh_message(
         connect_host: Some(endpoint.connect_addr.to_string()),
         port: endpoint.port,
         path_and_query: endpoint.path_and_query.clone(),
-        protocol: OriginProtocol::Http11,
+        protocol: OriginProtocol::Http2,
         tls: TlsValidation::default(),
         headers: vec![
             ("Accept".to_owned(), "application/dns-message".to_owned()),
@@ -3098,7 +3098,7 @@ fn map_gateway_error(error: &GatewayError) -> (u16, &'static str, &'static str) 
         GatewayError::Resolver(ResolverError::InvalidAuthoritativeDoh) => (
             502,
             "HNS Authoritative DoH Invalid",
-            "Verified HNS authoritative DoH transport data is malformed or unsupported.",
+            "Verified HNS authoritative DoH discovery data is malformed or unsupported.",
         ),
         GatewayError::Resolver(ResolverError::ProofNameMismatch) => (
             502,

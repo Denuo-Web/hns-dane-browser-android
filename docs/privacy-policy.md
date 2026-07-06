@@ -29,7 +29,7 @@ To provide browser functionality, HNS DANE Browser may connect to:
 - Websites and web services that you choose to open.
 - Handshake peers and DNS seed hosts for header sync, peer discovery, and proof retrieval.
 - Authoritative DNS nameservers for delegated HNS names.
-- HNS-declared RFC 8484 authoritative DoH endpoints for delegated HNS names when direct DNS transport is unavailable or invalid.
+- RFC 9461-discovered RFC 8484 authoritative DoH endpoints for delegated HNS names when direct DNS transport is unavailable or invalid.
 - The configured HNS DNS-over-HTTPS compatibility resolver when compatibility mode is enabled and local or direct delegated resolution fails.
 - Android DownloadManager destinations when you choose to download a file.
 

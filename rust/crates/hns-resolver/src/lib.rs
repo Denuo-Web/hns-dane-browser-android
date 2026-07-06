@@ -1,7 +1,8 @@
 use hns_cache::TtlCache;
 use hns_core::dns::{
     DnsEncodeConfig, DnsFlags, DnsHeader, DnsMessage, DnsName, DnsQuestion, RecordType,
-    ResourceRecord,
+    ResourceRecord, SVCB_PARAM_ALPN, SVCB_PARAM_DOHPATH, SVCB_PARAM_IPV4HINT, SVCB_PARAM_IPV6HINT,
+    SVCB_PARAM_MANDATORY, SVCB_PARAM_PORT, SvcbRecord,
 };
 use hns_core::resource::{ResourceError, decode_handshake_resource_records};
 use hns_core::{Hash, Height, NameHash, NameHashError};
@@ -29,10 +30,7 @@ const DNS_RCODE_NOERROR: u8 = 0;
 const DNS_RCODE_NXDOMAIN: u8 = 3;
 const DEFAULT_DNS_UDP_PAYLOAD: usize = 1232;
 const DEFAULT_DNS_TCP_MAX_MESSAGE_LEN: usize = 65_535;
-const HNSDNS_VERSION: &str = "1";
-const HNSDNS_MAX_TEXT_BYTES: usize = 255;
 const DEFAULT_DOH_PORT: u16 = 443;
-const DEFAULT_DOH_PATH: &str = "/dns-query";
 const DOH_URI_TEMPLATE_DNS_VARIABLE: &str = "{?dns}";
 const MAX_CNAME_CHAIN_LEN: usize = 8;
 static DNS_QUERY_ID: AtomicU16 = AtomicU16::new(0x4d00);
@@ -107,7 +105,7 @@ pub enum ResolverError {
     DnsResponseCode(u8),
     #[error("DNS response is invalid")]
     InvalidDnsResponse,
-    #[error("HNS authoritative DoH declaration is invalid")]
+    #[error("HNS authoritative DoH discovery record is invalid")]
     InvalidAuthoritativeDoh,
     #[error("resolver cache lock is poisoned")]
     CachePoisoned,
@@ -946,7 +944,7 @@ where
             }
         }
 
-        for endpoint in authoritative_doh_endpoints(delegation)? {
+        for endpoint in authoritative_doh_endpoints(&self.transport, delegation)? {
             match resolve_delegated_from_doh_endpoint(
                 &self.transport,
                 &self.verifier,
@@ -1773,223 +1771,6 @@ struct AuthoritativeDohTemplate {
     path_and_query: String,
 }
 
-fn key_value_part(part: &str) -> Option<(&str, &str)> {
-    let (key, value) = part.trim().split_once('=')?;
-    let key = key.trim();
-    let value = value.trim();
-    if key.is_empty() || value.is_empty() {
-        None
-    } else {
-        Some((key, value))
-    }
-}
-
-fn txt_rdata_strings(rdata: &[u8]) -> Result<Vec<String>, ResolverError> {
-    let mut cursor = 0usize;
-    let mut strings = Vec::new();
-    while cursor < rdata.len() {
-        let len = *rdata
-            .get(cursor)
-            .ok_or(ResolverError::InvalidAuthoritativeDoh)? as usize;
-        cursor += 1;
-        let end = cursor
-            .checked_add(len)
-            .ok_or(ResolverError::InvalidAuthoritativeDoh)?;
-        let bytes = rdata
-            .get(cursor..end)
-            .ok_or(ResolverError::InvalidAuthoritativeDoh)?;
-        strings.push(
-            std::str::from_utf8(bytes)
-                .map_err(|_| ResolverError::InvalidAuthoritativeDoh)?
-                .to_owned(),
-        );
-        cursor = end;
-    }
-    Ok(strings)
-}
-
-fn hnsdns_is_declared(text: &str) -> bool {
-    text.split(';').any(|part| {
-        let Some((key, value)) = key_value_part(part) else {
-            return false;
-        };
-        key.eq_ignore_ascii_case("hnsdns") && value == HNSDNS_VERSION
-    })
-}
-
-fn authoritative_doh_templates(
-    delegation: &HnsDelegation,
-) -> Result<Vec<AuthoritativeDohTemplate>, ResolverError> {
-    let mut templates = Vec::new();
-    for record in delegation
-        .records
-        .iter()
-        .filter(|record| record.name == delegation.owner && record.record_type == RecordType::Txt)
-    {
-        for text in txt_rdata_strings(&record.rdata)? {
-            let Some(template) = parse_hnsdns_declaration(&text, &delegation.owner)? else {
-                continue;
-            };
-            if !templates.contains(&template) {
-                templates.push(template);
-            }
-        }
-    }
-    Ok(templates)
-}
-
-fn parse_hnsdns_declaration(
-    text: &str,
-    root_owner: &DnsName,
-) -> Result<Option<AuthoritativeDohTemplate>, ResolverError> {
-    if text.len() > HNSDNS_MAX_TEXT_BYTES {
-        return Err(ResolverError::InvalidAuthoritativeDoh);
-    }
-    if !hnsdns_is_declared(text) {
-        return Ok(None);
-    }
-
-    let mut saw_version = false;
-    let mut ns = None;
-    let mut transport = None;
-    let mut doh_uri = None;
-    let mut explicit_port = None;
-    let mut explicit_path = None;
-
-    for part in text.split(';') {
-        let Some((key, value)) = key_value_part(part) else {
-            return Err(ResolverError::InvalidAuthoritativeDoh);
-        };
-        match key.to_ascii_lowercase().as_str() {
-            "hnsdns" if value == HNSDNS_VERSION => saw_version = true,
-            "hnsdns" => return Err(ResolverError::InvalidAuthoritativeDoh),
-            "ns" => {
-                if ns.is_some() {
-                    return Err(ResolverError::InvalidAuthoritativeDoh);
-                }
-                ns = Some(hnsdns_ns_name(root_owner, value)?);
-            }
-            "transport" => {
-                if transport.is_some() {
-                    return Err(ResolverError::InvalidAuthoritativeDoh);
-                }
-                transport = Some(value.to_ascii_lowercase());
-            }
-            "doh" => {
-                if doh_uri.is_some() {
-                    return Err(ResolverError::InvalidAuthoritativeDoh);
-                }
-                doh_uri = Some(parse_doh_uri_template(value)?);
-            }
-            "port" => {
-                if explicit_port.is_some() {
-                    return Err(ResolverError::InvalidAuthoritativeDoh);
-                }
-                explicit_port = Some(
-                    value
-                        .parse::<u16>()
-                        .map_err(|_| ResolverError::InvalidAuthoritativeDoh)?,
-                );
-            }
-            "path" => {
-                if explicit_path.is_some() {
-                    return Err(ResolverError::InvalidAuthoritativeDoh);
-                }
-                explicit_path = Some(normalize_doh_path(value)?);
-            }
-            _ => {}
-        }
-    }
-
-    if !saw_version {
-        return Err(ResolverError::InvalidAuthoritativeDoh);
-    }
-    if let Some(transport) = transport.as_deref()
-        && transport != "doh"
-    {
-        return Err(ResolverError::InvalidAuthoritativeDoh);
-    }
-    let ns = ns.ok_or(ResolverError::InvalidAuthoritativeDoh)?;
-    let (host, port, path_and_query) = if let Some(uri) = doh_uri {
-        uri
-    } else {
-        (
-            ns.to_string().trim_end_matches('.').to_ascii_lowercase(),
-            DEFAULT_DOH_PORT,
-            DEFAULT_DOH_PATH.to_owned(),
-        )
-    };
-
-    Ok(Some(AuthoritativeDohTemplate {
-        ns,
-        host,
-        port: explicit_port.unwrap_or(port),
-        path_and_query: explicit_path.unwrap_or(path_and_query),
-    }))
-}
-
-fn hnsdns_ns_name(root_owner: &DnsName, value: &str) -> Result<DnsName, ResolverError> {
-    let value = value.trim().trim_end_matches('.').to_ascii_lowercase();
-    if value.is_empty() || value == "@" || value.contains('*') {
-        return Err(ResolverError::InvalidAuthoritativeDoh);
-    }
-    let name = DnsName::from_ascii(&value).map_err(|_| ResolverError::InvalidAuthoritativeDoh)?;
-    if name.labels().len() == 1 {
-        DnsName::from_ascii(&format!("{name}.{root_owner}"))
-            .map_err(|_| ResolverError::InvalidAuthoritativeDoh)
-    } else {
-        Ok(name)
-    }
-}
-
-fn parse_doh_uri_template(value: &str) -> Result<(String, u16, String), ResolverError> {
-    let trimmed = value.trim();
-    let rest = trimmed
-        .get(..8)
-        .filter(|scheme| scheme.eq_ignore_ascii_case("https://"))
-        .and_then(|_| trimmed.get(8..))
-        .ok_or(ResolverError::InvalidAuthoritativeDoh)?;
-    if rest.contains('#')
-        || rest
-            .bytes()
-            .any(|byte| byte.is_ascii_control() || byte == b' ')
-    {
-        return Err(ResolverError::InvalidAuthoritativeDoh);
-    }
-    let (authority, raw_path) = rest
-        .split_once('/')
-        .unwrap_or((rest, DEFAULT_DOH_PATH.trim_start_matches('/')));
-    if authority.is_empty() || authority.contains('@') {
-        return Err(ResolverError::InvalidAuthoritativeDoh);
-    }
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((host, port)) if !host.contains(':') => {
-            let port = port
-                .parse::<u16>()
-                .map_err(|_| ResolverError::InvalidAuthoritativeDoh)?;
-            (host, port)
-        }
-        Some(_) if authority.contains(':') => return Err(ResolverError::InvalidAuthoritativeDoh),
-        _ => (authority, DEFAULT_DOH_PORT),
-    };
-    let host = normalize_doh_host(host)?;
-    let path_and_query = normalize_doh_path(&format!("/{raw_path}"))?;
-    Ok((host, port, path_and_query))
-}
-
-fn normalize_doh_host(host: &str) -> Result<String, ResolverError> {
-    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    if host.is_empty()
-        || host.len() > 253
-        || host
-            .bytes()
-            .any(|byte| byte.is_ascii_control() || matches!(byte, b'/' | b'?' | b'#' | b'@' | b' '))
-    {
-        return Err(ResolverError::InvalidAuthoritativeDoh);
-    }
-    Ok(host)
-}
-
 fn normalize_doh_path(path: &str) -> Result<String, ResolverError> {
     let mut path = path.trim();
     if let Some(stripped) = path.strip_suffix(DOH_URI_TEMPLATE_DNS_VARIABLE) {
@@ -2009,33 +1790,111 @@ fn normalize_doh_path(path: &str) -> Result<String, ResolverError> {
     Ok(path.to_owned())
 }
 
-fn authoritative_doh_endpoints(
+fn authoritative_doh_endpoints<T: DnsTransport>(
+    transport: &T,
     delegation: &HnsDelegation,
 ) -> Result<Vec<AuthoritativeDohEndpoint>, ResolverError> {
-    let templates = authoritative_doh_templates(delegation)?;
-    if templates.is_empty() {
-        return Ok(Vec::new());
-    }
-    let address_map = nameserver_ip_addresses(delegation);
     let mut endpoints = Vec::new();
-    for template in templates {
-        for (ns, address) in &address_map {
-            if *ns != template.ns {
+
+    for (ns, address) in nameserver_ip_addresses(delegation) {
+        let server = SocketAddr::new(address, 53);
+        let service_name = dns_service_binding_name(&ns)?;
+        let response = match dns_query(transport, server, &service_name, RecordType::Svcb) {
+            Ok(response) => response,
+            Err(_) => continue,
+        };
+
+        for record in records_for(&response.answers, &service_name, RecordType::Svcb) {
+            let Some(template) = authoritative_doh_template_from_svcb(&ns, &record)? else {
                 continue;
-            }
+            };
             let endpoint = AuthoritativeDohEndpoint {
-                ns: template.ns.clone(),
-                host: template.host.clone(),
-                connect_addr: *address,
+                ns: template.ns,
+                host: template.host,
+                connect_addr: address,
                 port: template.port,
-                path_and_query: template.path_and_query.clone(),
+                path_and_query: template.path_and_query,
             };
             if !endpoints.contains(&endpoint) {
                 endpoints.push(endpoint);
             }
         }
     }
+
     Ok(endpoints)
+}
+
+fn dns_service_binding_name(ns: &DnsName) -> Result<DnsName, ResolverError> {
+    DnsName::from_ascii(&format!("_dns.{ns}")).map_err(|_| ResolverError::InvalidAuthoritativeDoh)
+}
+
+fn authoritative_doh_template_from_svcb(
+    ns: &DnsName,
+    record: &ResourceRecord,
+) -> Result<Option<AuthoritativeDohTemplate>, ResolverError> {
+    let svcb =
+        SvcbRecord::from_record(record).map_err(|_| ResolverError::InvalidAuthoritativeDoh)?;
+    if svcb.is_alias_mode() || !svcb_mandatory_keys_supported(&svcb) {
+        return Ok(None);
+    }
+
+    let target = if svcb.target_name == DnsName::root() {
+        ns.clone()
+    } else {
+        svcb.target_name.clone()
+    };
+    if target != *ns {
+        return Ok(None);
+    }
+
+    let alpn_ids = svcb
+        .alpn_ids()
+        .map_err(|_| ResolverError::InvalidAuthoritativeDoh)?;
+    if !alpn_ids.iter().any(|id| id.as_slice() == b"h2") {
+        return Ok(None);
+    }
+
+    let Some(dohpath) = svcb.param(SVCB_PARAM_DOHPATH) else {
+        return Ok(None);
+    };
+    let path_and_query = doh_path_from_svcb_param(dohpath)?;
+    let port = svcb
+        .port()
+        .map_err(|_| ResolverError::InvalidAuthoritativeDoh)?
+        .unwrap_or(DEFAULT_DOH_PORT);
+
+    Ok(Some(AuthoritativeDohTemplate {
+        ns: ns.clone(),
+        host: target.to_string(),
+        port,
+        path_and_query,
+    }))
+}
+
+fn svcb_mandatory_keys_supported(svcb: &SvcbRecord) -> bool {
+    let Some(value) = svcb.param(SVCB_PARAM_MANDATORY) else {
+        return true;
+    };
+    value.chunks_exact(2).all(|chunk| {
+        let key = u16::from_be_bytes([chunk[0], chunk[1]]);
+        matches!(
+            key,
+            SVCB_PARAM_ALPN
+                | SVCB_PARAM_PORT
+                | SVCB_PARAM_IPV4HINT
+                | SVCB_PARAM_IPV6HINT
+                | SVCB_PARAM_DOHPATH
+        )
+    })
+}
+
+fn doh_path_from_svcb_param(value: &[u8]) -> Result<String, ResolverError> {
+    let template =
+        std::str::from_utf8(value).map_err(|_| ResolverError::InvalidAuthoritativeDoh)?;
+    if !template.contains("dns") {
+        return Err(ResolverError::InvalidAuthoritativeDoh);
+    }
+    normalize_doh_path(template)
 }
 
 fn has_owner_record(records: &[ResourceRecord], owner: &DnsName, record_type: RecordType) -> bool {
@@ -4309,7 +4168,7 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_doh_endpoint_is_hydrated_from_hnsdns_txt_and_glue() {
+    fn authoritative_doh_endpoint_ignores_hnsdns_txt() {
         let delegation = HnsDelegation {
             root_name: "welcome".to_owned(),
             owner: DnsName::from_ascii("welcome").unwrap(),
@@ -4322,9 +4181,48 @@ mod tests {
                 ),
             ],
         };
+        let transport = ScriptedDnsTransport {
+            responses: HashMap::new(),
+            server_responses: HashMap::new(),
+            requests: Arc::new(Mutex::new(Vec::new())),
+            udp_behavior: ScriptedUdpBehavior::Normal,
+        };
+
+        assert!(
+            authoritative_doh_endpoints(&transport, &delegation)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn authoritative_doh_endpoint_is_discovered_from_rfc9461_svcb() {
+        let delegation = HnsDelegation {
+            root_name: "welcome".to_owned(),
+            owner: DnsName::from_ascii("welcome").unwrap(),
+            records: vec![
+                ns_record("welcome", "ns1.welcome"),
+                glue4_record("ns1.welcome", [203, 0, 113, 53]),
+            ],
+        };
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let transport = ScriptedDnsTransport {
+            responses: dns_responses(vec![(
+                "_dns.ns1.welcome",
+                RecordType::Svcb,
+                vec![svcb_doh_record(
+                    "_dns.ns1.welcome",
+                    "ns1.welcome",
+                    "/dns-query{?dns}",
+                )],
+            )]),
+            server_responses: HashMap::new(),
+            requests: Arc::clone(&requests),
+            udp_behavior: ScriptedUdpBehavior::Normal,
+        };
 
         assert_eq!(
-            authoritative_doh_endpoints(&delegation).unwrap(),
+            authoritative_doh_endpoints(&transport, &delegation).unwrap(),
             vec![AuthoritativeDohEndpoint {
                 ns: DnsName::from_ascii("ns1.welcome").unwrap(),
                 host: "ns1.welcome".to_owned(),
@@ -4332,6 +4230,15 @@ mod tests {
                 port: 443,
                 path_and_query: "/dns-query".to_owned(),
             }]
+        );
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![(
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 53)), 53),
+                "_dns.ns1.welcome".to_owned(),
+                RecordType::Svcb.code(),
+                false,
+            )]
         );
     }
 
@@ -6145,6 +6052,19 @@ mod tests {
         rdata.push(text.len() as u8);
         rdata.extend(text.as_bytes());
         record(DnsName::from_ascii(owner).unwrap(), RecordType::Txt, rdata)
+    }
+
+    fn svcb_doh_record(owner: &str, target: &str, dohpath: &str) -> ResourceRecord {
+        let mut rdata = Vec::new();
+        rdata.extend(1u16.to_be_bytes());
+        encode_name(&mut rdata, target);
+        rdata.extend(SVCB_PARAM_ALPN.to_be_bytes());
+        rdata.extend(3u16.to_be_bytes());
+        rdata.extend([2, b'h', b'2']);
+        rdata.extend(SVCB_PARAM_DOHPATH.to_be_bytes());
+        rdata.extend((dohpath.len() as u16).to_be_bytes());
+        rdata.extend(dohpath.as_bytes());
+        record(DnsName::from_ascii(owner).unwrap(), RecordType::Svcb, rdata)
     }
 
     fn rrsig_record(owner: &str) -> ResourceRecord {

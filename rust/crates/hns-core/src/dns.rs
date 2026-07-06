@@ -13,6 +13,7 @@ pub const SVCB_PARAM_PORT: u16 = 3;
 pub const SVCB_PARAM_IPV4HINT: u16 = 4;
 pub const SVCB_PARAM_ECH: u16 = 5;
 pub const SVCB_PARAM_IPV6HINT: u16 = 6;
+pub const SVCB_PARAM_DOHPATH: u16 = 7;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DnsName(Vec<String>);

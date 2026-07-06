@@ -11,7 +11,7 @@ internal object BrowserAppInfo {
     const val PRIVACY_POLICY_URL =
         "https://denuoweb.com/work/hns-dane-browser/privacy"
     const val PRIVACY_POLICY_SUMMARY =
-        "HNS DANE Browser does not include ads, analytics SDKs, or developer-operated accounts. It stores browsing history, cookies, download records, settings, diagnostics, and HNS sync/cache data locally on the device. It sends network requests needed for browser functionality to websites you visit, HNS peers, DNS seeds, authoritative nameservers, HNS-declared authoritative DoH endpoints, and, in compatibility mode only, an HNS DoH resolver after local/direct resolution fails. Strict HNS mode disables the third-party HNS DoH fallback. Local browsing data can be cleared from Settings."
+        "HNS DANE Browser does not include ads, analytics SDKs, or developer-operated accounts. It stores browsing history, cookies, download records, settings, diagnostics, and HNS sync/cache data locally on the device. It sends network requests needed for browser functionality to websites you visit, HNS peers, DNS seeds, authoritative nameservers, RFC 9461-discovered authoritative DoH endpoints, and, in compatibility mode only, an HNS DoH resolver after local/direct resolution fails. Strict HNS mode disables the third-party HNS DoH fallback. Local browsing data can be cleared from Settings."
     const val HNS_DONATION_ADDRESS = "hs1q5997733eq7f4yyk2vq2z8gz3yqyvpz422ypggh"
     const val HNS_DONATION_URI =
         "handshake:hs1q5997733eq7f4yyk2vq2z8gz3yqyvpz422ypggh?label=Denuo%20Web%20HNS%20DANE%20Browser&message=HNS%20DANE%20Browser%20donation"

@@ -165,13 +165,13 @@ class HnsResolverTraceActivity : ComponentActivity() {
             hnsProof == "unavailable" || hnsProof == "unknown" ->
                 "Sync headers/proofs first, then retry. No verified HNS proof was available."
             nameserverCandidates == null || nameserverCandidates.length() == 0 ->
-                "Add usable HNS delegation data: NS plus GLUE4/GLUE6 or SYNTH4/SYNTH6, with an optional hnsdns=1 authoritative DoH endpoint for networks that block port 53."
+                "Add usable HNS delegation data: NS plus GLUE4/GLUE6 or SYNTH4/SYNTH6. For networks that block port 53, publish an RFC 9461 _dns nameserver SVCB record in the signed zone."
             udp53 in setOf("timeout", "transport_error") &&
                 tcp53 in setOf("timeout", "transport_error", "not_attempted") &&
                 doh == "ok" ->
-                "Direct authoritative DNS on port 53 failed, but the HNS-declared authoritative DoH endpoint answered and validated. Keep UDP/TCP 53 reachable where possible."
+                "Direct authoritative DNS on port 53 failed, but the RFC 9461-discovered authoritative DoH endpoint answered and validated. Keep UDP/TCP 53 reachable where possible."
             udp53 in setOf("timeout", "transport_error") && tcp53 in setOf("timeout", "transport_error", "not_attempted") && doh.isBlank() ->
-                "Your delegated nameserver candidate did not answer reliably. Ensure authoritative DNS is reachable on UDP/TCP 53 or publish an hnsdns=1 RFC 8484 DoH endpoint in the HNS resource."
+                "Your delegated nameserver candidate did not answer reliably. Ensure authoritative DNS is reachable on UDP/TCP 53 or publish an RFC 9461 _dns SVCB record for an RFC 8484 DoH endpoint in the signed zone."
             udp53 in setOf("timeout", "transport_error") && tcp53 in setOf("timeout", "transport_error", "not_attempted") ->
                 "Your delegated nameserver candidate did not answer reliably. Ensure authoritative DNS is reachable on UDP 53 and TCP 53."
             dnssec == "bogus" ->

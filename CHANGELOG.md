@@ -8,8 +8,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Added `hnsdns=1` HNS TXT discovery for RFC 8484 authoritative DoH endpoints on delegated nameservers, used after direct UDP/TCP 53 and validated against the HNS-proven DS chain.
-- Added resolver trace and Android diagnostics labels for authoritative DoH attempts and malformed HNS DoH declarations.
+- Replaced `hnsdns=1` HNS TXT discovery with RFC 9461 `_dns.<nameserver>` SVCB discovery for RFC 8484 authoritative DoH endpoints on delegated nameservers, used after direct UDP/TCP 53 and validated against the HNS-proven DS chain.
+- Added resolver trace and Android diagnostics labels for authoritative DoH attempts and malformed RFC 9461 DoH discovery records.
 
 ### Changed
 

@@ -266,7 +266,7 @@
             <div class="entry-title">
               <span class="entry-name">Check delegated authoritative DNS</span>
             </div>
-            <div class="meta">For names with NS/DS records, confirm the app found usable GLUE/SYNTH or hydrated nameserver addresses, attempted authoritative UDP/TCP 53, tried any HNS-declared RFC 8484 DoH endpoint, and accepted only DNSSEC-secure answers.</div>
+            <div class="meta">For names with NS/DS records, confirm the app found usable GLUE/SYNTH or hydrated nameserver addresses, attempted authoritative UDP/TCP 53, tried any RFC 9461-discovered RFC 8484 DoH endpoint, and accepted only DNSSEC-secure answers.</div>
           </div>
 
           <h3>Compatibility / Strict Mode Checks</h3>
@@ -288,7 +288,7 @@
             Common fixes:
             <ul>
               <li>Delegated site: add <code>NS</code> plus usable <code>GLUE4/GLUE6</code>, then serve authoritative DNS on UDP/TCP 53.</li>
-              <li>Blocked port 53: add <code>TXT "hnsdns=1;ns=ns1.name.;doh=https://ns1.name/dns-query"</code> and serve RFC 8484 DoH from that nameserver host.</li>
+              <li>Blocked port 53: publish <code>_dns.ns1 IN SVCB 1 ns1 alpn=h2 dohpath=/dns-query{?dns}</code> in the signed zone and serve RFC 8484 DoH from that nameserver host.</li>
               <li>Strict DANE: add HNS <code>DS</code>, DNSSEC-signed zone data, and <code>TLSA</code> for <code>_443._tcp.name.</code></li>
             </ul>
           </div>
