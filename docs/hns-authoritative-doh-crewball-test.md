@@ -50,8 +50,6 @@ Publish DoH discovery in the signed authoritative zone:
 _dns.ns1.crewball. 3600 IN SVCB 1 ns1.crewball. alpn=h2 dohpath=/dns-query{?dns}
 ```
 
-RFC 9539 is a separate experimental mechanism for opportunistic recursive-to-authoritative DoT/DoQ on port 853. It is not the DoH discovery format used in this runbook.
-
 ## Endpoint Checks
 
 The endpoint is RFC 8484 DoH: HTTPS, path `/dns-query`, DNS wire-format request/response bodies, and `Content-Type: application/dns-message`.
