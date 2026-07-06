@@ -56,6 +56,18 @@ The app follows the Android security checklist as a platform baseline:
 - Gateway diagnostic persistence is bounded and stores sanitized stage, host, status, and reason fields only; URL paths, query strings, headers, and bodies are not persisted in default diagnostics.
 - Release builds are non-debuggable, minified, resource-shrunk, and require upload-signing configuration before Play release bundle verification can pass.
 
+## Android Privacy Checklist
+
+The app follows the Android privacy checklist as a platform baseline:
+
+- Runtime permission use is limited to `POST_NOTIFICATIONS` for the visible HNS sync foreground service. The permission prompt is preceded by an in-app rationale, shown after the browser UI is available, and recorded as shown so declined prompts are not repeated every launch.
+- The app does not request location, nearby device, camera, microphone, contacts, SMS, call log, account, advertising ID, all-files storage, or package-visibility permissions.
+- The app does not use background location, location foreground services, device serial numbers, IMEI, SSAID, Advertising ID, or an app-generated cross-install tracking identifier.
+- External storage use is limited to user-initiated downloads through Android DownloadManager into public Downloads; app metadata stays in private shared preferences or app-private files and is excluded from backup and device transfer.
+- Sensitive app-to-app sharing uses explicit user actions such as Android share/copy flows or DownloadManager. Internal diagnostics and sync broadcasts are package-scoped or non-exported.
+- Production Logcat output avoids browsing URLs, user-entered content, request/response bodies, and resolver secrets; default persisted diagnostics remain bounded and sanitized.
+- The Google Play Data safety and privacy policy drafts disclose local browsing data, user-initiated downloads, HNS peer/DNS/web requests, optional compatibility DoH, and local deletion controls.
+
 ## Review Checklist
 
 - Parsers are bounded and return structured errors.

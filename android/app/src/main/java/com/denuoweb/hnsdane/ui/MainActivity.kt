@@ -2,6 +2,7 @@ package com.denuoweb.hnsdane.ui
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.app.DownloadManager
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
@@ -165,7 +166,6 @@ class MainActivity : ComponentActivity() {
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
         configureServiceWorkerInterception()
-        requestNotificationPermissionIfNeeded()
 
         omnibox = EditText(this).apply {
             hint = getString(R.string.omnibox_hint)
@@ -285,6 +285,7 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) {
             loadInitialPage(intent)
         }
+        root.post { requestNotificationPermissionIfNeeded() }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -584,11 +585,29 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestNotificationPermissionIfNeeded() {
+        if (isFinishing || isDestroyed) {
+            return
+        }
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
             return
         }
+        val prefs = getSharedPreferences(PRIVACY_PROMPTS_PREFS, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_NOTIFICATION_PERMISSION_PROMPT_SHOWN, false)) {
+            return
+        }
 
-        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+        prefs.edit()
+            .putBoolean(KEY_NOTIFICATION_PERMISSION_PROMPT_SHOWN, true)
+            .apply()
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.notification_permission_rationale_title)
+            .setMessage(R.string.notification_permission_rationale_message)
+            .setNegativeButton(R.string.notification_permission_rationale_not_now, null)
+            .setPositiveButton(R.string.notification_permission_rationale_continue) { _, _ ->
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+            }
+            .show()
     }
 
     private fun menuButton(): TextView =
@@ -1108,6 +1127,8 @@ class MainActivity : ComponentActivity() {
         private const val PAGE_PROGRESS_MAX = 100
         private const val SYNC_STATUS_POLL_MS = 2_000L
         private const val REQUEST_NOTIFICATIONS = 1002
+        private const val PRIVACY_PROMPTS_PREFS = "privacy_prompts"
+        private const val KEY_NOTIFICATION_PERMISSION_PROMPT_SHOWN = "notification_permission_prompt_shown"
         private const val MENU_BACK = 1
         private const val MENU_FORWARD = 2
         private const val MENU_REFRESH = 3

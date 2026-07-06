@@ -38,7 +38,7 @@ This audit treats the app as a Play Store closed-testing candidate and checks th
 
 ## Watch Items
 
-- First-launch notification permission is requested because sync runs as a visible data-sync foreground service. If tester feedback shows the prompt is confusing, add an in-app rationale screen before requesting the permission.
+- Notification permission is requested with an in-app rationale because sync runs as a visible data-sync foreground service. If users decline it, keep the in-app sync progress clear enough to understand sync state without relying on system notification visibility.
 - General-purpose browsing can reach arbitrary third-party web content; keep target audience and content rating conservative.
 - HNS WebSocket / HTTP Upgrade for HNS origins now uses native stream tunneling after HNS resolution, HTTPS/SVCB policy, and DANE validation; keep regression coverage around bridge-unavailable and validation-failure fail-closed behavior.
 - Parallel/ranged header sync remains bounded by Handshake header-chain validation order and peer/protocol pacing; performance work should avoid weakening canonical-header validation.
