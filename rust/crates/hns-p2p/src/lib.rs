@@ -245,7 +245,7 @@ impl Default for VersionPacket {
             time: 0,
             remote: NetAddress::default(),
             nonce: ZERO_NONCE,
-            agent: "/hns-dane-browser:0.2.9/".to_owned(),
+            agent: "/hns-dane-browser:0.3.0/".to_owned(),
             height: Height(0),
             no_relay: true,
         }

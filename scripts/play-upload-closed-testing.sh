@@ -9,8 +9,8 @@ fi
 package_name="${PLAY_PACKAGE:-com.denuoweb.hnsdane}"
 track_name="${PLAY_TRACK:-alpha}"
 release_status="${PLAY_RELEASE_STATUS:-completed}"
-aab_path="${1:-dist/play-store/hns-dane-browser-v0.2.9-play-upload-signed.aab}"
-release_name="${PLAY_RELEASE_NAME:-HNS DANE Browser 0.2.9}"
+aab_path="${1:-dist/play-store/hns-dane-browser-v0.3.0-play-upload-signed.aab}"
+release_name="${PLAY_RELEASE_NAME:-HNS DANE Browser 0.3.0}"
 release_notes="${PLAY_RELEASE_NOTES:-Handshake-first browsing with local HNS proofs, RFC 8484 DoH transport, DNSSEC, and DANE diagnostics for closed testing.}"
 
 if [[ ! -f "$aab_path" ]]; then

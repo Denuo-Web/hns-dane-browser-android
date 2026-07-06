@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.3.0 - 2026-07-06
+
+### Changed
+
+- Bumped the Android app, Rust core, network user-agent strings, and Play upload defaults for the 0.3.0 release.
+
 ## 0.2.9 - 2026-07-06
 
 ### Added

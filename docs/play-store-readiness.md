@@ -9,7 +9,7 @@ This checklist maps HNS DANE Browser to current Google Play release requirements
 | Area | Status | Evidence / Action |
 | --- | --- | --- |
 | Target API level | Ready | `targetSdk = 37`, above the current Google Play requirement of Android 15 / API 35 for new apps and updates. |
-| Android App Bundle | Rebuild required | Package identity changed to `com.denuoweb.hnsdane`; create a new upload AAB such as `dist/play-store/hns-dane-browser-v0.2.9-play-upload-signed.aab`. |
+| Android App Bundle | Rebuild required | Package identity changed to `com.denuoweb.hnsdane`; create a new upload AAB such as `dist/play-store/hns-dane-browser-v0.3.0-play-upload-signed.aab`. |
 | 64-bit native code | Ready | Release bundle includes `arm64-v8a` and `x86_64` `libhns_dane_browser_ffi.so`; no 32-bit ABI is shipped. |
 | Restricted permissions | Ready | Manifest does not request location, contacts, SMS, call logs, camera, microphone, all-files, package visibility, or account permissions. |
 | Foreground service | Play Console declaration required | App uses `dataSync` foreground service for visible HNS header/proof sync. Complete the Foreground service declaration and provide a short demo video. |
@@ -62,7 +62,7 @@ Closed testing upload helper:
 ```sh
 PLAY_TRACK=alpha \
   scripts/play-upload-closed-testing.sh \
-  dist/play-store/hns-dane-browser-v0.2.9-play-upload-signed.aab
+  dist/play-store/hns-dane-browser-v0.3.0-play-upload-signed.aab
 ```
 
 `alpha` is the default Play API track used for the standard closed testing track. If the Play Console app uses a custom closed testing track, set `PLAY_TRACK` to that track ID from Play Console. On 2026-06-29, the local `gcloud` user token could not upload because it lacked the `https://www.googleapis.com/auth/androidpublisher` OAuth scope. Fix that by using a Play-linked service account, setting `PLAY_ACCESS_TOKEN` from a correctly scoped token, or re-authenticating gcloud with the Android Publisher scope.
