@@ -25,6 +25,10 @@ pub const DS_DIGEST_SHA384: u8 = 4;
 pub const NSEC3_HASH_SHA1: u8 = 1;
 pub const NSEC3_OPT_OUT_FLAG: u8 = 0x01;
 pub const NSEC3_MAX_ITERATIONS: u16 = 2_500;
+const RSA_PKCS1_V1_5_MIN_PADDING_LEN: usize = 8;
+const SHA1_DIGEST_INFO_PREFIX: [u8; 15] = [
+    0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14,
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DnssecTime(pub u64);
@@ -1167,22 +1171,21 @@ fn verify_rsa(
 ) -> Result<bool, DnssecError> {
     let (exponent, modulus) = parse_rsa_public_key(&dnskey.public_key)?;
     let data = signed_data(rrset, rrsig, now)?;
-    if hash == RsaHash::Sha1 {
-        return Ok(verify_rsa_sha1_pkcs1_v15(
-            &exponent,
-            &modulus,
-            &data,
-            &rrsig.signature,
-        ));
-    }
+    let algorithm = match hash {
+        RsaHash::Sha1 => {
+            return Ok(verify_rsa_sha1_pkcs1_v15(
+                &exponent,
+                &modulus,
+                &data,
+                &rrsig.signature,
+            ));
+        }
+        RsaHash::Sha256 => &RSA_PKCS1_2048_8192_SHA256,
+        RsaHash::Sha512 => &RSA_PKCS1_2048_8192_SHA512,
+    };
     let public_key = RsaPublicKeyComponents {
         n: &modulus,
         e: &exponent,
-    };
-    let algorithm = match hash {
-        RsaHash::Sha1 => unreachable!("RSA/SHA-1 is handled before ring verification"),
-        RsaHash::Sha256 => &RSA_PKCS1_2048_8192_SHA256,
-        RsaHash::Sha512 => &RSA_PKCS1_2048_8192_SHA512,
     };
 
     Ok(public_key
@@ -1196,7 +1199,7 @@ fn verify_rsa_sha1_pkcs1_v15(
     data: &[u8],
     signature: &[u8],
 ) -> bool {
-    if exponent.is_empty() || modulus.is_empty() || signature.len() > modulus.len() {
+    if exponent.is_empty() || modulus.is_empty() || signature.len() != modulus.len() {
         return false;
     }
     let n = BigUint::from_bytes_be(modulus);
@@ -1214,20 +1217,26 @@ fn verify_rsa_sha1_pkcs1_v15(
     let offset = encoded.len() - recovered_bytes.len();
     encoded[offset..].copy_from_slice(&recovered_bytes);
 
-    let digest = Sha1::digest(data);
-    let mut expected_suffix = Vec::with_capacity(15 + digest.len());
-    expected_suffix.extend([
-        0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14,
-    ]);
-    expected_suffix.extend_from_slice(&digest);
-
-    if encoded.len() < 3 + 8 + 1 + expected_suffix.len() || encoded[0] != 0 || encoded[1] != 1 {
+    let expected_suffix = rsa_sha1_digest_info(data);
+    if encoded.len() < 3 + RSA_PKCS1_V1_5_MIN_PADDING_LEN + expected_suffix.len()
+        || encoded[0] != 0
+        || encoded[1] != 1
+    {
         return false;
     }
     let separator = encoded.len() - expected_suffix.len() - 1;
-    encoded[2..separator].iter().all(|byte| *byte == 0xff)
+    separator >= 2 + RSA_PKCS1_V1_5_MIN_PADDING_LEN
+        && encoded[2..separator].iter().all(|byte| *byte == 0xff)
         && encoded[separator] == 0
         && encoded[(separator + 1)..] == expected_suffix[..]
+}
+
+fn rsa_sha1_digest_info(data: &[u8]) -> Vec<u8> {
+    let digest = Sha1::digest(data);
+    let mut output = Vec::with_capacity(SHA1_DIGEST_INFO_PREFIX.len() + digest.len());
+    output.extend_from_slice(&SHA1_DIGEST_INFO_PREFIX);
+    output.extend_from_slice(&digest);
+    output
 }
 
 fn parse_rsa_public_key(public_key: &[u8]) -> Result<(Vec<u8>, Vec<u8>), DnssecError> {
@@ -3476,6 +3485,33 @@ mod tests {
             assert_eq!(dnskey.key_tag(), expected_key_tag);
             assert!(verify_rrsig(&rrset, &rrsig, &dnskey, DnssecTime(1_500)).unwrap());
         }
+    }
+
+    #[test]
+    fn rejects_short_rsa_sha1_signature_encoding() {
+        let owner = DnsName::from_ascii("example").unwrap();
+        let rrset = vec![record(owner, RecordType::A, vec![1, 1, 1, 1])];
+        let dnskey = rsa_sha1_dnskey(DNSSEC_ALGORITHM_RSASHA1);
+        let rrsig = RrsigRecord::parse_rdata(&rrsig_rdata_for_key(
+            RecordType::A,
+            1,
+            60,
+            DNSSEC_ALGORITHM_RSASHA1,
+            dnskey.key_tag(),
+            &rsa_sha1_signature(),
+        ))
+        .unwrap();
+        let data = signed_data(&rrset, &rrsig, DnssecTime(1_500)).unwrap();
+        let (exponent, modulus) = parse_rsa_public_key(&dnskey.public_key).unwrap();
+        let signature = rsa_sha1_signature();
+
+        assert_eq!(signature.len(), modulus.len());
+        assert!(!verify_rsa_sha1_pkcs1_v15(
+            &exponent,
+            &modulus,
+            &data,
+            &signature[1..],
+        ));
     }
 
     #[test]
