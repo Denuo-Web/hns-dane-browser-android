@@ -23,6 +23,7 @@ class HnsNativeDownloadFetcherTest {
             hnsGatewayBridge = bridge,
             strictHnsMode = { true },
             dohResolverUrl = { "https://resolver.example/dns-query" },
+            statelessDaneCertificates = { true },
         )
 
         val response = fetcher.fetch("https://welcome/file.txt", "agent/1")
@@ -43,6 +44,7 @@ class HnsNativeDownloadFetcherTest {
                     "User-Agent" to "agent/1",
                     HNS_GATEWAY_STRICT_MODE_HEADER to "1",
                     HNS_GATEWAY_DOH_RESOLVER_HEADER to "https://resolver.example/dns-query",
+                    HNS_GATEWAY_STATELESS_DANE_HEADER to "1",
                 ),
             ),
             bridge.calls.single(),

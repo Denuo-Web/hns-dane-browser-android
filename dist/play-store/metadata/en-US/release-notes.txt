@@ -1,1 +1,1 @@
-0.3.3 adds bounded HNS WebSocket bridge buffering, native-gateway-backed HNS downloads, and updated Play release declarations while keeping local HNS proof verification, RFC 8484 authoritative DoH, DNSSEC, and DANE diagnostics for closed testing.
+0.3.4 adds an off-by-default experimental stateless HNS DANE certificate mode using certificate-carried Urkel proof and DNSSEC-chain evidence against recent local HNS tree roots.

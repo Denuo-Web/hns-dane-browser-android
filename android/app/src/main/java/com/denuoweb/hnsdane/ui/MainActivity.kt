@@ -152,6 +152,7 @@ class MainActivity : ComponentActivity() {
             activeMainFrameUrl = { activeMainFrameUrl },
             strictHnsMode = { HnsResolutionPreferences.strictHnsMode(this) },
             dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
+            statelessDaneCertificates = { HnsResolutionPreferences.statelessDaneCertificates(this) },
             callbackHandler = mainHandler,
         )
         webViewGatewayInterceptor = HnsWebViewGatewayInterceptor(
@@ -159,6 +160,7 @@ class MainActivity : ComponentActivity() {
             allowProxyFallbackForBodyRequests = { proxyAvailable },
             strictHnsMode = { HnsResolutionPreferences.strictHnsMode(this) },
             dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
+            statelessDaneCertificates = { HnsResolutionPreferences.statelessDaneCertificates(this) },
             onMainFrameHnsStatus = { statusCode, tlsPolicy, resolverPolicy, traceJson ->
                 runOnUiThread {
                     if (mainFrameHnsStatusCode == null) {
@@ -340,6 +342,7 @@ class MainActivity : ComponentActivity() {
             filesDir,
             strictHnsMode = { HnsResolutionPreferences.strictHnsMode(this) },
             dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
+            statelessDaneCertificates = { HnsResolutionPreferences.statelessDaneCertificates(this) },
             enforceHnsHostScope = true,
             scopedHnsHost = { currentHnsProxyHost() },
             onHnsStatus = { host, statusCode, tlsPolicy, resolverPolicy, traceJson ->
@@ -1085,6 +1088,7 @@ class MainActivity : ComponentActivity() {
     ) {
         val strictMode = HnsResolutionPreferences.strictHnsMode(this)
         val dohResolver = HnsResolutionPreferences.dohResolverUrl(this)
+        val statelessDane = HnsResolutionPreferences.statelessDaneCertificates(this)
         Toast.makeText(this, getString(R.string.toast_download_started), Toast.LENGTH_SHORT).show()
         downloadExecutor.execute {
             val result = runCatching {
@@ -1092,6 +1096,7 @@ class MainActivity : ComponentActivity() {
                     dataDir = filesDir,
                     strictHnsMode = { strictMode },
                     dohResolverUrl = { dohResolver },
+                    statelessDaneCertificates = { statelessDane },
                 )
                 val response = fetcher.fetch(downloadUrl, userAgent)
                 try {

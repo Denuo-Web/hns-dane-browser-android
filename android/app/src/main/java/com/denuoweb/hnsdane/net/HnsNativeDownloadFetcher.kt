@@ -12,6 +12,7 @@ internal class HnsNativeDownloadFetcher(
     private val hnsGatewayBridge: HnsGatewayBridge = NativeBridge,
     private val strictHnsMode: () -> Boolean = { false },
     private val dohResolverUrl: () -> String = { "" },
+    private val statelessDaneCertificates: () -> Boolean = { false },
 ) {
     @Throws(IOException::class)
     fun fetch(
@@ -124,6 +125,9 @@ internal class HnsNativeDownloadFetcher(
         }
         dohResolverUrl().takeIf { it.isNotBlank() }?.let { resolver ->
             headers += HNS_GATEWAY_DOH_RESOLVER_HEADER to resolver
+        }
+        if (statelessDaneCertificates()) {
+            headers += HNS_GATEWAY_STATELESS_DANE_HEADER to "1"
         }
         return headers
     }

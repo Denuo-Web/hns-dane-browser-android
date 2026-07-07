@@ -1,7 +1,9 @@
 use bytes::{Buf, Bytes};
 use hns_dane::{
-    DaneCertificateChainValidationInput, DaneDecision, DaneError, DomainTrustMode, TlsaRecord,
-    WebPkiStatus, evaluate_policy_with_certificate_chain, extract_spki_der,
+    DaneCertificateChainValidationInput, DaneDecision, DaneError, DomainTrustMode,
+    StatelessDaneConfig, StatelessDaneEvidence, StatelessDaneValidationInput, TlsaRecord,
+    WebPkiStatus, evaluate_policy_with_certificate_chain, evaluate_stateless_dane_certificate,
+    extract_spki_der,
 };
 use http::{HeaderName, HeaderValue, Request as Http2Request};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -51,6 +53,8 @@ pub struct TlsValidation {
     pub dnssec_secure: bool,
     pub tlsa_records: Vec<TlsaRecord>,
     pub tlsa_source: Option<TlsaRecordSource>,
+    pub service_port: u16,
+    pub stateless_dane: StatelessDaneConfig,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -234,6 +238,8 @@ impl Default for TlsValidation {
             dnssec_secure: false,
             tlsa_records: Vec::new(),
             tlsa_source: None,
+            service_port: 443,
+            stateless_dane: StatelessDaneConfig::default(),
         }
     }
 }
@@ -245,6 +251,8 @@ impl TlsValidation {
             dnssec_secure,
             tlsa_records,
             tlsa_source: None,
+            service_port: 443,
+            stateless_dane: StatelessDaneConfig::default(),
         }
     }
 
@@ -254,6 +262,8 @@ impl TlsValidation {
             dnssec_secure,
             tlsa_records,
             tlsa_source: None,
+            service_port: 443,
+            stateless_dane: StatelessDaneConfig::default(),
         }
     }
 }
@@ -1099,11 +1109,40 @@ impl ServerCertVerifier for DaneServerCertVerifier {
             .iter()
             .map(|certificate| certificate.as_ref())
             .collect::<Vec<_>>();
+        let mut stateless_tlsa_records = None;
+        let mut tlsa_records = self.tls.tlsa_records.as_slice();
+        let mut dnssec_secure = self.tls.dnssec_secure;
+        if self.tls.stateless_dane.enabled
+            && self.tls.mode != DomainTrustMode::IcannWebPki
+            && tlsa_records.is_empty()
+        {
+            match evaluate_stateless_dane_certificate(StatelessDaneValidationInput {
+                cert_der: end_entity.as_ref(),
+                host: &server_name.to_str(),
+                port: self.tls.service_port,
+                accepted_tree_roots: &self.tls.stateless_dane.accepted_tree_roots,
+                now_unix: now.as_secs(),
+            }) {
+                Ok(StatelessDaneEvidence::Missing) => {}
+                Ok(StatelessDaneEvidence::Tlsa { records, .. }) => {
+                    stateless_tlsa_records = Some(records);
+                    dnssec_secure = true;
+                }
+                Err(error) => {
+                    return Err(RustlsError::General(format!(
+                        "stateless DANE certificate evidence rejected: {error}"
+                    )));
+                }
+            }
+        }
+        if let Some(records) = stateless_tlsa_records.as_ref() {
+            tlsa_records = records;
+        }
 
         match evaluate_policy_with_certificate_chain(DaneCertificateChainValidationInput {
             mode: self.tls.mode,
-            dnssec_secure: self.tls.dnssec_secure,
-            tlsa_records: &self.tls.tlsa_records,
+            dnssec_secure,
+            tlsa_records,
             end_entity_der: end_entity.as_ref(),
             intermediate_der: &intermediate_der,
             webpki_status,
@@ -1214,7 +1253,7 @@ fn build_http2_request(request: &OriginRequest) -> Result<Http2Request<()>, Tran
         let headers = h2_request.headers_mut();
         headers.insert(
             HeaderName::from_static("user-agent"),
-            HeaderValue::from_static("hns-dane-browser/0.3.3"),
+            HeaderValue::from_static("hns-dane-browser/0.3.4"),
         );
         if !has_header(&request.headers, "accept") {
             headers.insert(
@@ -1378,7 +1417,7 @@ fn build_http_request(
     let mut out = Vec::new();
     write!(
         out,
-        "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: hns-dane-browser/0.3.3\r\n",
+        "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: hns-dane-browser/0.3.4\r\n",
         request.method.to_ascii_uppercase(),
         request.path_and_query,
         host_header(&request.host, request.port, &request.scheme),
@@ -1418,7 +1457,7 @@ fn build_http_upgrade_request(request: &OriginRequest) -> Result<Vec<u8>, Transp
     let mut out = Vec::new();
     write!(
         out,
-        "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: hns-dane-browser/0.3.3\r\n",
+        "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: hns-dane-browser/0.3.4\r\n",
         request.method.to_ascii_uppercase(),
         request.path_and_query,
         host_header(&request.host, request.port, &request.scheme),
@@ -1910,9 +1949,10 @@ fn protocol_rank(protocol: OriginProtocol) -> u8 {
 
 fn tls_validation_key(tls: &TlsValidation) -> String {
     let mut out = format!(
-        "mode={:?};secure={};records={}",
+        "mode={:?};secure={};port={};records={}",
         tls.mode,
         tls.dnssec_secure,
+        tls.service_port,
         tls.tlsa_records.len(),
     );
     for record in &tls.tlsa_records {
@@ -1921,6 +1961,14 @@ fn tls_validation_key(tls: &TlsValidation) -> String {
             record.usage, record.selector, record.matching,
         ));
         append_hash_hex(&mut out, &record.association_data);
+    }
+    out.push_str(&format!(
+        ";stateless={};roots={}",
+        tls.stateless_dane.enabled,
+        tls.stateless_dane.accepted_tree_roots.len(),
+    ));
+    for root in &tls.stateless_dane.accepted_tree_roots {
+        append_hash_hex(&mut out, root);
     }
     out
 }

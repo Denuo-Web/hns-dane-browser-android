@@ -3,7 +3,7 @@ use hns_core::dns::{
     DnsName, RecordType, ResourceRecord, SVCB_PARAM_ALPN, SVCB_PARAM_MANDATORY,
     SVCB_PARAM_NO_DEFAULT_ALPN, SVCB_PARAM_PORT, SvcbRecord,
 };
-use hns_dane::{DaneError, DomainTrustMode, TlsaRecord};
+use hns_dane::{DaneError, DomainTrustMode, StatelessDaneConfig, TlsaRecord};
 use hns_resolver::{
     NameClass, ResolutionAnswer, ResolutionRequest, Resolver, ResolverError, classify_name,
     hns_root_label,
@@ -27,6 +27,7 @@ pub struct GatewayConfig {
     pub hns_https_mode: HnsHttpsMode,
     pub icann_dane_lookup_mode: IcannDaneLookupMode,
     pub supported_origin_protocols: Vec<OriginProtocol>,
+    pub stateless_dane: StatelessDaneConfig,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,6 +119,7 @@ impl Default for GatewayConfig {
                 OriginProtocol::Http2,
                 OriginProtocol::Http3,
             ],
+            stateless_dane: StatelessDaneConfig::default(),
         }
     }
 }
@@ -223,6 +225,10 @@ where
         if is_tls_origin_scheme(&origin_request.scheme) {
             origin_request.tls.mode =
                 domain_trust_mode_for_host(&origin_request.host, self.config.hns_https_mode);
+            origin_request.tls.service_port = origin_request.port;
+            if origin_request.tls.mode != DomainTrustMode::IcannWebPki {
+                origin_request.tls.stateless_dane = self.config.stateless_dane.clone();
+            }
             if !apply_https_service_policy(
                 &resolution.records,
                 &mut origin_request,

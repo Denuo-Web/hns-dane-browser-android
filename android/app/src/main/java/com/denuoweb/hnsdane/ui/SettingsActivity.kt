@@ -29,6 +29,7 @@ class SettingsActivity : ComponentActivity() {
     private lateinit var homepageStatus: TextView
     private lateinit var cookieStatus: TextView
     private lateinit var hnsModeStatus: TextView
+    private lateinit var statelessDaneStatus: TextView
     private lateinit var dohResolverStatus: TextView
     private lateinit var resolverCacheStatus: TextView
     private lateinit var historyStatus: TextView
@@ -40,6 +41,7 @@ class SettingsActivity : ComponentActivity() {
         homepageStatus = preferenceSummary(BrowserPreferences.homepage(this))
         cookieStatus = preferenceSummary(cookieSummary())
         hnsModeStatus = preferenceSummary(hnsModeText())
+        statelessDaneStatus = preferenceSummary(statelessDaneText())
         dohResolverStatus = preferenceSummary(HnsResolutionPreferences.dohResolverUrl(this))
         resolverCacheStatus = preferenceSummary("Ready to clear cached resolver values.")
         historyStatus = preferenceSummary(historySummary())
@@ -105,6 +107,7 @@ class SettingsActivity : ComponentActivity() {
 
             addView(section("HNS resolution") {
                 addPreference(strictHnsModeOption())
+                addPreference(statelessDaneCertificateOption())
                 addPreference(preferenceRow(
                     title = "Compatibility DoH resolver",
                     summaryView = dohResolverStatus,
@@ -238,6 +241,7 @@ class SettingsActivity : ComponentActivity() {
             refreshHomepageStatus()
             refreshCookieStatus()
             refreshHnsModeStatus()
+            refreshStatelessDaneStatus()
             refreshHistoryStatus()
             refreshDownloadStatus()
         }
@@ -370,6 +374,29 @@ class SettingsActivity : ComponentActivity() {
                 }
             })
             addView(hnsModeStatus, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                leftMargin = dp(36)
+            })
+        }
+
+    private fun statelessDaneCertificateOption(): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, dp(10))
+            addView(CheckBox(this@SettingsActivity).apply {
+                text = "Experimental stateless DANE certificates"
+                textSize = 16f
+                setTextColor(Color.rgb(32, 33, 36))
+                setPadding(0, 0, 0, 0)
+                isChecked = HnsResolutionPreferences.statelessDaneCertificates(this@SettingsActivity)
+                setOnCheckedChangeListener { _, checked ->
+                    HnsResolutionPreferences.setStatelessDaneCertificates(this@SettingsActivity, checked)
+                    refreshStatelessDaneStatus()
+                }
+            })
+            addView(statelessDaneStatus, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ).apply {
@@ -534,6 +561,10 @@ class SettingsActivity : ComponentActivity() {
         hnsModeStatus.text = hnsModeText()
     }
 
+    private fun refreshStatelessDaneStatus() {
+        statelessDaneStatus.text = statelessDaneText()
+    }
+
     private fun refreshDohResolverStatus() {
         dohResolverStatus.text = HnsResolutionPreferences.dohResolverUrl(this)
     }
@@ -551,6 +582,13 @@ class SettingsActivity : ComponentActivity() {
             "On. Delegated resolution failures fail closed."
         } else {
             "Off. Compatibility fallback may be used after local or direct resolution fails."
+        }
+
+    private fun statelessDaneText(): String =
+        if (HnsResolutionPreferences.statelessDaneCertificates(this)) {
+            "On. Certificate-carried HNS proof evidence may satisfy DANE when valid."
+        } else {
+            "Off. HNS proof and TLSA evidence use the live resolver path."
         }
 
     private fun cookieSummary(): String =

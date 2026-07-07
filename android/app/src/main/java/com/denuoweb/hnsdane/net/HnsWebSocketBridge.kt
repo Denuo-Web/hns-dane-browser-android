@@ -28,6 +28,7 @@ class HnsWebSocketBridge(
     private val activeMainFrameUrl: () -> String?,
     private val strictHnsMode: () -> Boolean = { false },
     private val dohResolverUrl: () -> String = { "" },
+    private val statelessDaneCertificates: () -> Boolean = { false },
     private val hnsGatewayBridge: HnsGatewayBridge = NativeBridge,
     private val callbackHandler: Handler = Handler(Looper.getMainLooper()),
     private val executor: ExecutorService = Executors.newCachedThreadPool(),
@@ -103,6 +104,7 @@ class HnsWebSocketBridge(
             dataDir = dataDir,
             strictHnsMode = strictHnsMode,
             dohResolverUrl = dohResolverUrl,
+            statelessDaneCertificates = statelessDaneCertificates,
             hnsGatewayBridge = hnsGatewayBridge,
             executor = executor,
             emit = { event -> emit(webView, event) },
@@ -199,6 +201,7 @@ private class NativeHnsWebSocketSession(
     private val dataDir: File,
     private val strictHnsMode: () -> Boolean,
     private val dohResolverUrl: () -> String,
+    private val statelessDaneCertificates: () -> Boolean,
     private val hnsGatewayBridge: HnsGatewayBridge,
     private val executor: ExecutorService,
     private val emit: (JSONObject) -> Unit,
@@ -434,6 +437,9 @@ private class NativeHnsWebSocketSession(
         }
         dohResolverUrl().takeIf { it.isNotBlank() }?.let { resolver ->
             headers += HNS_GATEWAY_DOH_RESOLVER_HEADER to resolver
+        }
+        if (statelessDaneCertificates()) {
+            headers += HNS_GATEWAY_STATELESS_DANE_HEADER to "1"
         }
         return headers
     }

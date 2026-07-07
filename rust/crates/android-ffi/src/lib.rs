@@ -10,7 +10,10 @@ use hns_core::dns::{
 };
 use hns_core::network;
 use hns_core::{BlockHeader, Height, NameHash};
-use hns_dane::{DaneDecision, TlsaMatching, TlsaRecord, TlsaSelector, TlsaUsage};
+use hns_dane::{
+    DaneDecision, MAX_STATELESS_DANE_ROOTS, StatelessDaneConfig, TlsaMatching, TlsaRecord,
+    TlsaSelector, TlsaUsage,
+};
 use hns_gateway::{
     Gateway, GatewayConfig, GatewayError, GatewayRequest, HnsHttpsMode, IcannDaneLookupMode,
 };
@@ -78,6 +81,7 @@ const ICANN_DOH_HOST: &str = "cloudflare-dns.com";
 const ICANN_DOH_PATH: &str = "/dns-query";
 const HNS_GATEWAY_STRICT_MODE_HEADER: &str = "X-HNS-Browser-Strict-Mode";
 const HNS_GATEWAY_DOH_RESOLVER_HEADER: &str = "X-HNS-Browser-DoH-Resolver";
+const HNS_GATEWAY_STATELESS_DANE_HEADER: &str = "X-HNS-Browser-Stateless-DANE";
 const HNS_RESOLUTION_TRACE_HEADER: &str = "X-HNS-Resolution-Trace";
 const HNS_RESOLVER_MODE_HEADER: &str = "X-HNS-Resolver-Mode";
 const HNS_DOH_FALLBACK_HEADER: &str = "X-HNS-DoH-Fallback";
@@ -99,6 +103,7 @@ struct ParsedGatewayHeaders {
     headers: Vec<(String, String)>,
     strict_hns_mode: bool,
     doh_endpoint: HnsDohEndpoint,
+    stateless_dane_certificates: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1173,11 +1178,11 @@ fn doh_answer_from_body(
 }
 
 pub fn core_version() -> &'static str {
-    "hns-dane-browser-rust-core/0.3.3"
+    "hns-dane-browser-rust-core/0.3.4"
 }
 
 pub fn diagnostics_json() -> String {
-    r#"{"core":"hns-dane-browser-rust-core","version":"0.3.3","features":["header-hash","header-pow-validation","header-mainnet-difficulty-retarget","header-canonical-height-index","hns-name-hash","hns-dotted-root-label","urkel-proof-verification","urkel-proof-value-handoff","hns-name-state-resource-extraction","hns-resource-decoder","hns-authoritative-doh-rfc8484","hns-resource-provider-adapter","hns-memory-resource-provider","hns-sqlite-resource-provider","hns-negative-cache","hns-ttl-cache-lru","hns-resource-cache-stats","hns-resource-cache-eviction","hns-resource-cache-cap-enforcement","hns-resource-cache-chain-anchors","hns-resource-cache-reorg-invalidation","hns-resource-cache-current-tip","hns-proof-backed-resolver-boundary","hns-delegating-resolver-boundary","hns-proof-backed-ns-address-hydration","hns-authoritative-dnssec-delegated-resolver","android-hns-doh-compat-resolver","dns-wire","dns-svcb-https","dnssec-ds-dnskey-link","dnssec-ds-sha1","dnssec-ds-sha384","dnssec-rrsig-signed-data","dnssec-canonical-name-rdata","dnssec-ecdsa-p256-verify","dnssec-ecdsa-p384-verify","dnssec-rsa-sha1-verify","dnssec-rsa-sha256-sha512-verify","dnssec-ed25519-verify","dnssec-signed-rrset-validation","dnssec-delegated-chain-validation","dnssec-delegated-no-data-validation","dnssec-delegated-name-error-validation","dnssec-delegated-cname-chain","dnssec-child-referral-validation","dnssec-child-cname-chain","dnssec-child-no-data-validation","dnssec-child-name-error-validation","dnssec-nsec-denial-validation","dnssec-nsec3-denial-validation","dnssec-nxdomain-name-error-validation","dane-policy","dane-certificate-chain-policy","x509-spki-extraction","p2p-codec","p2p-tcp-peer-connection","p2p-static-peer-source","p2p-dns-seed-source","p2p-getaddr-peer-discovery","p2p-discovery-rotation","p2p-peer-diversity","p2p-sqlite-peer-store","sync-coordinator","sync-header-runner","sync-multi-batch-header-runner","sync-parallel-peer-probing","sync-ranged-peer-rotation","sync-proof-scheduler","android-native-sync-once","android-sync-status","android-sync-outcome-status","android-sync-progress-heights","android-sync-high-batch-catchup","android-clear-resolver-cache","android-persistent-gateway-resolver","android-gateway-live-proof-fetch","android-gateway-header-forwarding","android-gateway-range-forwarding","android-gateway-body-forwarding","android-gateway-file-body-stream","android-webview-hns-intercept","android-service-worker-hns-intercept","android-hns-redirect-follow","android-actionable-hns-errors","hns-name-not-found-error","gateway-policy","gateway-hns-address-required","gateway-tlsa-service-scope","gateway-delegated-origin-address-lookup","gateway-origin-address-query","gateway-https-service-query","gateway-svcb-alpn-policy","gateway-actionable-nameserver-errors","gateway-cname-address-routing","android-proxy-gateway-hook","android-random-loopback-proxy-port","android-local-hns-connect-certs","hns-websocket-native-tunnel","http-origin-transport","http-origin-connection-pooling","http2-origin-transport","http3-origin-transport","http-origin-response-framing","https-rustls-transport","https-tls-session-resumption","https-alt-svc-promotion","dane-tls-policy"],"securityDefault":"fail-closed"}"#
+    r#"{"core":"hns-dane-browser-rust-core","version":"0.3.4","features":["header-hash","header-pow-validation","header-mainnet-difficulty-retarget","header-canonical-height-index","hns-name-hash","hns-dotted-root-label","urkel-proof-verification","urkel-proof-value-handoff","hns-name-state-resource-extraction","hns-resource-decoder","hns-authoritative-doh-rfc8484","hns-resource-provider-adapter","hns-memory-resource-provider","hns-sqlite-resource-provider","hns-negative-cache","hns-ttl-cache-lru","hns-resource-cache-stats","hns-resource-cache-eviction","hns-resource-cache-cap-enforcement","hns-resource-cache-chain-anchors","hns-resource-cache-reorg-invalidation","hns-resource-cache-current-tip","hns-proof-backed-resolver-boundary","hns-delegating-resolver-boundary","hns-proof-backed-ns-address-hydration","hns-authoritative-dnssec-delegated-resolver","android-hns-doh-compat-resolver","dns-wire","dns-svcb-https","dnssec-ds-dnskey-link","dnssec-ds-sha1","dnssec-ds-sha384","dnssec-rrsig-signed-data","dnssec-canonical-name-rdata","dnssec-ecdsa-p256-verify","dnssec-ecdsa-p384-verify","dnssec-rsa-sha1-verify","dnssec-rsa-sha256-sha512-verify","dnssec-ed25519-verify","dnssec-signed-rrset-validation","dnssec-delegated-chain-validation","dnssec-delegated-no-data-validation","dnssec-delegated-name-error-validation","dnssec-delegated-cname-chain","dnssec-child-referral-validation","dnssec-child-cname-chain","dnssec-child-no-data-validation","dnssec-child-name-error-validation","dnssec-nsec-denial-validation","dnssec-nsec3-denial-validation","dnssec-nxdomain-name-error-validation","dane-policy","dane-certificate-chain-policy","x509-spki-extraction","x509-stateless-dane-evidence","hip17-experimental-urkel-extension","rfc9102-authentication-chain-parser","p2p-codec","p2p-tcp-peer-connection","p2p-static-peer-source","p2p-dns-seed-source","p2p-getaddr-peer-discovery","p2p-discovery-rotation","p2p-peer-diversity","p2p-sqlite-peer-store","sync-coordinator","sync-header-runner","sync-multi-batch-header-runner","sync-parallel-peer-probing","sync-ranged-peer-rotation","sync-proof-scheduler","android-native-sync-once","android-sync-status","android-sync-outcome-status","android-sync-progress-heights","android-sync-high-batch-catchup","android-clear-resolver-cache","android-persistent-gateway-resolver","android-gateway-live-proof-fetch","android-gateway-header-forwarding","android-gateway-range-forwarding","android-gateway-body-forwarding","android-gateway-file-body-stream","android-webview-hns-intercept","android-service-worker-hns-intercept","android-hns-redirect-follow","android-actionable-hns-errors","hns-name-not-found-error","gateway-policy","gateway-hns-address-required","gateway-tlsa-service-scope","gateway-delegated-origin-address-lookup","gateway-origin-address-query","gateway-https-service-query","gateway-svcb-alpn-policy","gateway-actionable-nameserver-errors","gateway-cname-address-routing","android-proxy-gateway-hook","android-random-loopback-proxy-port","android-local-hns-connect-certs","hns-websocket-native-tunnel","http-origin-transport","http-origin-connection-pooling","http2-origin-transport","http3-origin-transport","http-origin-response-framing","https-rustls-transport","https-tls-session-resumption","https-alt-svc-promotion","dane-tls-policy"],"securityDefault":"fail-closed"}"#
         .to_owned()
 }
 
@@ -1310,10 +1315,12 @@ pub fn gateway_http_response(input: GatewayHttpRequestInput<'_>) -> Vec<u8> {
         fallback_marker.clone(),
         dns_trace.clone(),
     );
+    let stateless_dane = stateless_dane_config(&base, parsed_headers.stateless_dane_certificates);
     let gateway = match Gateway::new(
         GatewayConfig {
             hns_https_mode: HnsHttpsMode::Compatibility,
             icann_dane_lookup_mode: IcannDaneLookupMode::NativeTlsaWithTxtShadowFallback,
+            stateless_dane,
             ..GatewayConfig::default()
         },
         resolver,
@@ -1415,10 +1422,12 @@ pub fn gateway_http_response_body_to_file(
         fallback_marker.clone(),
         dns_trace.clone(),
     );
+    let stateless_dane = stateless_dane_config(&base, parsed_headers.stateless_dane_certificates);
     let gateway = match Gateway::new(
         GatewayConfig {
             hns_https_mode: HnsHttpsMode::Compatibility,
             icann_dane_lookup_mode: IcannDaneLookupMode::NativeTlsaWithTxtShadowFallback,
+            stateless_dane,
             ..GatewayConfig::default()
         },
         resolver,
@@ -1535,10 +1544,12 @@ pub fn gateway_http_upgrade_tunnel(
         fallback_marker.clone(),
         dns_trace.clone(),
     );
+    let stateless_dane = stateless_dane_config(&base, parsed_headers.stateless_dane_certificates);
     let gateway = match Gateway::new(
         GatewayConfig {
             hns_https_mode: HnsHttpsMode::Compatibility,
             icann_dane_lookup_mode: IcannDaneLookupMode::NativeTlsaWithTxtShadowFallback,
+            stateless_dane,
             ..GatewayConfig::default()
         },
         resolver,
@@ -1703,6 +1714,46 @@ fn gateway_request(
     }
 }
 
+fn stateless_dane_config(base: &Path, enabled: bool) -> StatelessDaneConfig {
+    if !enabled {
+        return StatelessDaneConfig::default();
+    }
+    StatelessDaneConfig {
+        enabled: true,
+        accepted_tree_roots: recent_stateless_dane_tree_roots(base).unwrap_or_default(),
+    }
+}
+
+fn recent_stateless_dane_tree_roots(base: &Path) -> Result<Vec<[u8; 32]>, ResolverError> {
+    let header_store = SqliteHeaderStore::open(base.join("headers.sqlite"))
+        .map_err(|error| ResolverError::Storage(format!("open header store: {error}")))?;
+    let chain = HeaderChain::new(header_store);
+    let Some(best) = chain
+        .best_header()
+        .map_err(|error| ResolverError::Storage(format!("read best header: {error}")))?
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut roots = Vec::new();
+    let mut height = best.height.0;
+    let mut steps = 0usize;
+    while steps < MAX_STATELESS_DANE_ROOTS {
+        if let Some(header) = chain.canonical_header(Height(height)) {
+            let root = header.header.tree_root.into_bytes();
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+        if height == 0 {
+            break;
+        }
+        height -= 1;
+        steps += 1;
+    }
+    Ok(roots)
+}
+
 fn android_gateway_resolver(
     base: PathBuf,
     values: SqliteResourceValueProvider,
@@ -1767,6 +1818,7 @@ fn parse_gateway_headers(header_text: &str) -> Result<ParsedGatewayHeaders, &'st
     let mut headers = Vec::new();
     let mut strict_hns_mode = false;
     let mut doh_endpoint = HnsDohEndpoint::default();
+    let mut stateless_dane_certificates = false;
     for line in header_text.split("\r\n").filter(|line| !line.is_empty()) {
         let Some(separator) = line.find(':') else {
             return Err("request header is malformed");
@@ -1791,6 +1843,12 @@ fn parse_gateway_headers(header_text: &str) -> Result<ParsedGatewayHeaders, &'st
             doh_endpoint = HnsDohEndpoint::parse(value)?;
             continue;
         }
+        if name.eq_ignore_ascii_case(HNS_GATEWAY_STATELESS_DANE_HEADER) {
+            if value == "1" || value.eq_ignore_ascii_case("true") {
+                stateless_dane_certificates = true;
+            }
+            continue;
+        }
         headers.push((name.to_owned(), value.to_owned()));
     }
 
@@ -1798,6 +1856,7 @@ fn parse_gateway_headers(header_text: &str) -> Result<ParsedGatewayHeaders, &'st
         headers,
         strict_hns_mode,
         doh_endpoint,
+        stateless_dane_certificates,
     })
 }
 
@@ -4403,7 +4462,7 @@ mod tests {
 
     #[test]
     fn version_is_stable() {
-        assert_eq!(core_version(), "hns-dane-browser-rust-core/0.3.3");
+        assert_eq!(core_version(), "hns-dane-browser-rust-core/0.3.4");
     }
 
     #[test]
@@ -4516,6 +4575,7 @@ mod tests {
         assert!(diagnostics_json().contains(r#""http-origin-response-framing""#));
         assert!(diagnostics_json().contains(r#""https-rustls-transport""#));
         assert!(diagnostics_json().contains(r#""dane-certificate-chain-policy""#));
+        assert!(diagnostics_json().contains(r#""x509-stateless-dane-evidence""#));
         assert!(diagnostics_json().contains(r#""dane-tls-policy""#));
     }
 
@@ -4979,11 +5039,13 @@ mod tests {
         let parsed = parse_gateway_headers(
             "Accept: text/html\r\n\
              X-HNS-Browser-Strict-Mode: 1\r\n\
-             X-HNS-Browser-DoH-Resolver: https://resolver.example/dns-query\r\n",
+             X-HNS-Browser-DoH-Resolver: https://resolver.example/dns-query\r\n\
+             X-HNS-Browser-Stateless-DANE: 1\r\n",
         )
         .unwrap();
 
         assert!(parsed.strict_hns_mode);
+        assert!(parsed.stateless_dane_certificates);
         assert_eq!(
             parsed.doh_endpoint,
             HnsDohEndpoint {
@@ -4996,6 +5058,24 @@ mod tests {
             parsed.headers,
             vec![("Accept".to_owned(), "text/html".to_owned())]
         );
+    }
+
+    #[test]
+    fn stateless_dane_roots_only_use_latest_forty_headers() {
+        let base = temp_dir_path("stateless-dane-roots");
+        std::fs::create_dir_all(&base).unwrap();
+        let roots = (1u8..=41u8)
+            .map(|byte| Hash::new([byte; 32]))
+            .collect::<Vec<_>>();
+        store_canonical_headers_with_tree_roots(&base, &roots);
+
+        let recent = recent_stateless_dane_tree_roots(&base).unwrap();
+
+        assert_eq!(recent.len(), MAX_STATELESS_DANE_ROOTS);
+        assert!(!recent.contains(&roots[0].into_bytes()));
+        assert!(recent.contains(&roots[1].into_bytes()));
+        assert!(recent.contains(&roots[40].into_bytes()));
+        cleanup_dir(&base);
     }
 
     #[test]

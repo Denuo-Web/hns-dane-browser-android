@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.3.4 - 2026-07-07
+
+### Added
+
+- Added an off-by-default experimental Settings flag for stateless HNS DANE certificate evidence using certificate-carried Urkel proof and RFC 9102 DNSSEC-chain extensions against recent local tree roots.
+
 ## 0.3.1 - 2026-07-06
 
 ### Changed

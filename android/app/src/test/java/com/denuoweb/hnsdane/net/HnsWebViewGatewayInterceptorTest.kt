@@ -222,6 +222,32 @@ class HnsWebViewGatewayInterceptorTest {
     }
 
     @Test
+    fun statelessDaneModeAddsInternalGatewayHeaderAndStripsSpoofedValue() {
+        val bridge = RecordingGatewayBridge(
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+                .toByteArray(StandardCharsets.ISO_8859_1),
+        )
+        val dataDir = createTempDirectory("hns-webview-stateless-dane-test").toFile()
+        val interceptor = HnsWebViewGatewayInterceptor(
+            dataDir = dataDir,
+            hnsGatewayBridge = bridge,
+            statelessDaneCertificates = { true },
+        )
+
+        interceptor.intercept(
+            method = "GET",
+            url = "https://welcome/",
+            requestHeaders = mapOf(HNS_GATEWAY_STATELESS_DANE_HEADER to "0"),
+        )
+
+        assertEquals(
+            listOf(HNS_GATEWAY_STATELESS_DANE_HEADER to "1"),
+            bridge.calls.single().headers,
+        )
+        dataDir.deleteRecursively()
+    }
+
+    @Test
     fun dottedHnsFetchUsesNativeGatewayWhenTldIsNotCommonIcann() {
         val bridge = RecordingGatewayBridge(
             "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
