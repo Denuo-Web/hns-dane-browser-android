@@ -120,6 +120,13 @@ class SettingsActivity : ComponentActivity() {
                 ) {
                     confirmClearResolverCache()
                 })
+                addPreference(preferenceRow(
+                    title = "HNS sync",
+                    summary = "View sync status and run a manual sync.",
+                    actionLabel = "View",
+                ) {
+                    startActivity(Intent(this@SettingsActivity, HnsSyncActivity::class.java))
+                })
             })
 
             addView(section("Diagnostics and tools") {
@@ -153,10 +160,17 @@ class SettingsActivity : ComponentActivity() {
                 })
                 addPreference(preferenceRow(
                     title = "Diagnostics",
-                    summary = "Sync status, resolver state, and native core details.",
+                    summary = "Build, runtime, and native core details.",
                     actionLabel = "View",
                 ) {
                     startActivity(Intent(this@SettingsActivity, DiagnosticsActivity::class.java))
+                })
+                addPreference(preferenceRow(
+                    title = "Gateway",
+                    summary = "Inspect recent native gateway events.",
+                    actionLabel = "View",
+                ) {
+                    startActivity(Intent(this@SettingsActivity, GatewayActivity::class.java))
                 })
             })
 

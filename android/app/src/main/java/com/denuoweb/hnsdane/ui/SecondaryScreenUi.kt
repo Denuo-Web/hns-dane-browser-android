@@ -4,7 +4,10 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
+import android.text.SpannableString
+import android.text.Spanned
 import android.text.TextUtils
+import android.text.style.StyleSpan
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
@@ -69,6 +72,7 @@ internal fun Context.preferenceRow(
     destructive: Boolean = false,
     selectableSummary: Boolean = false,
     summaryMaxLines: Int = 3,
+    boldSummary: Boolean = false,
     action: (() -> Unit)? = null,
 ): LinearLayout =
     LinearLayout(this).apply {
@@ -92,6 +96,7 @@ internal fun Context.preferenceRow(
                     text = it,
                     selectable = selectableSummary,
                     maxLines = summaryMaxLines,
+                    bold = boldSummary,
                 )
             }
             if (detail != null) {
@@ -138,10 +143,14 @@ internal fun Context.preferenceSummary(
     text: String,
     selectable: Boolean = false,
     maxLines: Int = 3,
+    bold: Boolean = false,
 ): TextView =
     TextView(this).apply {
         this.text = text
         textSize = 14f
+        if (bold) {
+            typeface = Typeface.DEFAULT_BOLD
+        }
         setTextColor(ScreenColors.SECONDARY_TEXT)
         this.maxLines = maxLines
         ellipsize = if (maxLines == Int.MAX_VALUE) null else TextUtils.TruncateAt.END
@@ -152,9 +161,10 @@ internal fun Context.preferenceSummary(
 internal fun Context.reportText(
     text: String,
     monospace: Boolean = false,
+    boldFieldValues: Boolean = false,
 ): TextView =
     TextView(this).apply {
-        this.text = text
+        this.text = if (boldFieldValues) text.withBoldFieldValues() else text
         textSize = 14f
         setTextColor(ScreenColors.PRIMARY_TEXT)
         if (monospace) {
@@ -164,6 +174,9 @@ internal fun Context.reportText(
         setTextIsSelectable(true)
         setPadding(0, uiDp(8), 0, uiDp(12))
     }
+
+internal fun Context.fieldReportText(text: String): TextView =
+    reportText(text, boldFieldValues = true)
 
 internal fun Context.screenHeading(text: String): TextView =
     TextView(this).apply {
@@ -261,6 +274,55 @@ private fun View.installHorizontalSwipeNavigation(
             }
         }
         false
+    }
+}
+
+private fun String.withBoldFieldValues(): SpannableString {
+    val styled = SpannableString(this)
+    var lineStart = 0
+    while (lineStart < length) {
+        val lineEnd = indexOf('\n', lineStart)
+            .takeIf { it >= 0 }
+            ?: length
+        val colon = indexOf(':', lineStart)
+            .takeIf { it >= lineStart && it < lineEnd }
+        if (colon != null) {
+            val valueStart = skipSpaces(colon + 1, lineEnd)
+            styled.bold(valueStart, lineEnd)
+        } else {
+            styled.boldKeyValueData(lineStart, lineEnd, this)
+        }
+        lineStart = lineEnd + 1
+    }
+    return styled
+}
+
+private fun String.skipSpaces(start: Int, end: Int): Int {
+    var index = start
+    while (index < end && this[index].isWhitespace()) {
+        index += 1
+    }
+    return index
+}
+
+private fun SpannableString.boldKeyValueData(lineStart: Int, lineEnd: Int, source: String) {
+    var cursor = lineStart
+    while (cursor < lineEnd) {
+        val equals = source.indexOf('=', cursor)
+            .takeIf { it >= cursor && it < lineEnd }
+            ?: return
+        val valueStart = equals + 1
+        val comma = source.indexOf(',', valueStart)
+            .takeIf { it >= valueStart && it < lineEnd }
+            ?: lineEnd
+        bold(valueStart, comma)
+        cursor = comma + 1
+    }
+}
+
+private fun SpannableString.bold(start: Int, end: Int) {
+    if (start < end) {
+        setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
 }
 

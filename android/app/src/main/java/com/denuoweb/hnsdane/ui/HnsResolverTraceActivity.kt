@@ -28,7 +28,7 @@ class HnsResolverTraceActivity : ComponentActivity() {
         ) {
             addView(hnsDiagnosticTabs(HnsDiagnosticTool.ResolverTrace, url, traceJson))
             addView(screenSection("Summary") {
-                addView(reportText(friendlySummary()))
+                addView(fieldReportText(friendlySummary()))
             })
             addView(screenSection("Export") {
                 addScreenRow(preferenceRow(

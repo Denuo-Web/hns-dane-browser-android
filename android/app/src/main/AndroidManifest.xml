@@ -22,6 +22,12 @@
             android:name=".ui.DiagnosticsActivity"
             android:exported="false" />
         <activity
+            android:name=".ui.GatewayActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ui.HnsSyncActivity"
+            android:exported="false" />
+        <activity
             android:name=".ui.SettingsActivity"
             android:exported="false" />
         <activity

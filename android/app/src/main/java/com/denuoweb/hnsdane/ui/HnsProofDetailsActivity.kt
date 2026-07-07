@@ -43,7 +43,7 @@ class HnsProofDetailsActivity : ComponentActivity() {
         ) {
             addView(hnsDiagnosticTabs(HnsDiagnosticTool.ProofDetails, url, traceJson))
             addView(screenSection("Summary") {
-                addView(reportText(friendlySummary(detailsJson)))
+                addView(fieldReportText(friendlySummary(detailsJson)))
             })
             addView(screenSection("Export") {
                 addScreenRow(preferenceRow(

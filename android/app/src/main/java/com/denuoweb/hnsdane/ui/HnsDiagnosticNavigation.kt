@@ -13,7 +13,9 @@ internal enum class HnsDiagnosticTool(
 ) {
     ResolverTrace("Resolver trace"),
     ProofDetails("HNS proof"),
-    TlsaInspector("TLSA / DANE");
+    TlsaInspector("TLSA / DANE"),
+    Diagnostics("Diagnostics"),
+    Gateway("Gateway");
 
     fun next(): HnsDiagnosticTool =
         entries[(ordinal + 1) % entries.size]
@@ -47,7 +49,7 @@ internal fun ComponentActivity.hnsDiagnosticTabs(
                 uiDp(44),
                 1f,
             ).apply {
-                leftMargin = if (tool.ordinal == 0) 0 else uiDp(6)
+                leftMargin = if (tool.ordinal == 0) 0 else uiDp(4)
             })
         }
     }
@@ -73,11 +75,12 @@ private fun ComponentActivity.hnsDiagnosticTab(
 ): TextView =
     TextView(this).apply {
         text = tool.title(traceJson)
-        textSize = 13f
+        textSize = 11f
         typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         gravity = Gravity.CENTER
         maxLines = 2
-        setPadding(uiDp(6), 0, uiDp(6), 0)
+        includeFontPadding = false
+        setPadding(uiDp(3), 0, uiDp(3), 0)
         setTextColor(if (selected) Color.WHITE else Color.rgb(21, 101, 192))
         setBackgroundColor(if (selected) Color.rgb(21, 101, 192) else Color.rgb(232, 240, 254))
         if (!selected) {
@@ -102,6 +105,12 @@ private fun ComponentActivity.openHnsDiagnosticTool(
         HnsDiagnosticTool.TlsaInspector -> Intent(this, HnsTlsaInspectorActivity::class.java)
             .putExtra(HnsTlsaInspectorActivity.EXTRA_URL, url)
             .putExtra(HnsTlsaInspectorActivity.EXTRA_TRACE_JSON, traceJson)
+        HnsDiagnosticTool.Diagnostics -> Intent(this, DiagnosticsActivity::class.java)
+            .putExtra(DiagnosticsActivity.EXTRA_URL, url)
+            .putExtra(DiagnosticsActivity.EXTRA_TRACE_JSON, traceJson)
+        HnsDiagnosticTool.Gateway -> Intent(this, GatewayActivity::class.java)
+            .putExtra(GatewayActivity.EXTRA_URL, url)
+            .putExtra(GatewayActivity.EXTRA_TRACE_JSON, traceJson)
     }
     startActivity(targetIntent)
     finish()

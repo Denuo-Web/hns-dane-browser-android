@@ -8,147 +8,102 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.webkit.WebViewFeature
 import com.denuoweb.hnsdane.BuildConfig
-import com.denuoweb.hnsdane.net.GatewayEventLog
-import com.denuoweb.hnsdane.net.HnsSyncForegroundService
 import com.denuoweb.hnsdane.net.NativeBridge
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.concurrent.thread
 
 class DiagnosticsActivity : ComponentActivity() {
+    private val url: String
+        get() = intent.getStringExtra(EXTRA_URL).orEmpty()
+
+    private val traceJson: String
+        get() = intent.getStringExtra(EXTRA_TRACE_JSON).orEmpty()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        GatewayEventLog.configureAppStorage(filesDir)
-        HnsSyncForegroundService.start(this)
 
-        var latestSyncStatus = NativeBridge.syncStatus(filesDir.absolutePath)
-        var syncRunInProgress = false
-        val syncStatus = preferenceSummary(
-            text = latestSyncStatus,
-            selectable = true,
-            maxLines = Int.MAX_VALUE,
-        )
-
-        setSecondaryScreen("Diagnostics") {
+        setSecondaryScreen(
+            title = "Diagnostics",
+            onSwipeLeft = {
+                openAdjacentHnsDiagnostic(HnsDiagnosticTool.Diagnostics, forward = true, url, traceJson)
+            },
+            onSwipeRight = {
+                openAdjacentHnsDiagnostic(HnsDiagnosticTool.Diagnostics, forward = false, url, traceJson)
+            },
+        ) {
+            addView(hnsDiagnosticTabs(HnsDiagnosticTool.Diagnostics, url, traceJson))
             addView(screenSection("App and runtime") {
                 addScreenRow(preferenceRow(
                     title = "Build",
                     summary = buildLabel(),
                     selectableSummary = true,
+                    boldSummary = true,
                 ))
                 addScreenRow(preferenceRow(
                     title = "Rust core",
                     summary = NativeBridge.version(),
                     selectableSummary = true,
+                    boldSummary = true,
                 ))
                 addScreenRow(preferenceRow(
                     title = "Rust diagnostics",
                     summary = NativeBridge.diagnostics(),
                     selectableSummary = true,
                     summaryMaxLines = Int.MAX_VALUE,
+                    boldSummary = true,
                 ))
                 addScreenRow(preferenceRow(
                     title = "Proxy override",
                     summary = WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE).toString(),
                     selectableSummary = true,
+                    boldSummary = true,
                 ))
                 addScreenRow(preferenceRow(
                     title = "Third-party cookies blocked",
                     summary = BrowserCookiePreferences.blockThirdPartyCookies(this@DiagnosticsActivity).toString(),
                     selectableSummary = true,
-                ))
-            })
-            addView(screenSection("HNS sync") {
-                addScreenRow(preferenceRow(
-                    title = "Sync status",
-                    summaryView = syncStatus,
-                ))
-                addScreenRow(preferenceRow(
-                    title = "Run sync now",
-                    summary = "Start a foreground HNS sync and watch the status update here.",
-                    actionLabel = "Run",
-                ) {
-                    if (syncRunInProgress) {
-                        Toast.makeText(this@DiagnosticsActivity, "Sync is already running", Toast.LENGTH_SHORT).show()
-                        return@preferenceRow
-                    }
-                    syncRunInProgress = true
-                    HnsSyncForegroundService.start(this@DiagnosticsActivity)
-                    syncStatus.text = "running"
-                    val running = AtomicBoolean(true)
-                    thread(name = "hns-sync-status-poll") {
-                        while (running.get()) {
-                            Thread.sleep(SYNC_STATUS_POLL_MS)
-                            val status = NativeBridge.syncStatus(filesDir.absolutePath)
-                            runOnUiThread {
-                                if (running.get()) {
-                                    latestSyncStatus = status
-                                    syncStatus.text = "running $status"
-                                }
-                            }
-                        }
-                    }
-                    thread(name = "hns-sync-now") {
-                        val status = NativeBridge.syncOnce(filesDir.absolutePath)
-                        running.set(false)
-                        runOnUiThread {
-                            latestSyncStatus = status
-                            syncStatus.text = status
-                            syncRunInProgress = false
-                        }
-                    }
-                })
-            })
-            addView(screenSection("Gateway") {
-                addScreenRow(preferenceRow(
-                    title = "Recent gateway events",
-                    summary = GatewayEventLog.snapshotText(),
-                    selectableSummary = true,
-                    summaryMaxLines = Int.MAX_VALUE,
+                    boldSummary = true,
                 ))
             })
             addView(screenSection("Diagnostic bundle") {
                 addScreenRow(preferenceRow(
                     title = "Copy diagnostic bundle",
-                    summary = "Copy build, sync, runtime, and gateway details.",
+                    summary = "Copy build, runtime, and native core details.",
                     actionLabel = "Copy",
                 ) {
-                    copyDiagnosticBundle(latestSyncStatus)
+                    copyDiagnosticBundle()
                 })
                 addScreenRow(preferenceRow(
                     title = "Share diagnostic bundle",
                     summary = "Send the same diagnostic report through Android sharing.",
                     actionLabel = "Share",
                 ) {
-                    shareDiagnosticBundle(latestSyncStatus)
+                    shareDiagnosticBundle()
                 })
             })
         }
     }
 
-    private fun copyDiagnosticBundle(syncStatus: String) {
+    private fun copyDiagnosticBundle() {
         getSystemService(ClipboardManager::class.java)
-            .setPrimaryClip(ClipData.newPlainText("HNS DANE Browser diagnostic bundle", diagnosticBundle(syncStatus)))
+            .setPrimaryClip(ClipData.newPlainText("HNS DANE Browser diagnostic bundle", diagnosticBundle()))
         Toast.makeText(this, "Diagnostic bundle copied", Toast.LENGTH_SHORT).show()
     }
 
-    private fun shareDiagnosticBundle(syncStatus: String) {
+    private fun shareDiagnosticBundle() {
         val sendIntent = Intent(Intent.ACTION_SEND).apply {
             type = "text/markdown"
             putExtra(Intent.EXTRA_SUBJECT, "HNS DANE Browser diagnostic bundle")
-            putExtra(Intent.EXTRA_TEXT, diagnosticBundle(syncStatus))
+            putExtra(Intent.EXTRA_TEXT, diagnosticBundle())
         }
         startActivity(Intent.createChooser(sendIntent, "Share diagnostic bundle"))
     }
 
-    private fun diagnosticBundle(syncStatus: String): String =
+    private fun diagnosticBundle(): String =
         DiagnosticReport.markdown(
             buildLabel = buildLabel(),
             rustCore = NativeBridge.version(),
             rustDiagnostics = NativeBridge.diagnostics(),
-            syncStatus = syncStatus,
             proxyOverrideSupported = WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE),
             thirdPartyCookiesBlocked = BrowserCookiePreferences.blockThirdPartyCookies(this),
-            gatewayEvents = GatewayEventLog.snapshotText(),
         )
 
     private fun buildLabel(): String {
@@ -156,7 +111,8 @@ class DiagnosticsActivity : ComponentActivity() {
         return "$channel ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
     }
 
-    private companion object {
-        const val SYNC_STATUS_POLL_MS = 2_000L
+    companion object {
+        const val EXTRA_URL = "com.denuoweb.hnsdane.DIAGNOSTICS_URL"
+        const val EXTRA_TRACE_JSON = "com.denuoweb.hnsdane.DIAGNOSTICS_TRACE_JSON"
     }
 }

@@ -29,7 +29,7 @@ class HnsTlsaInspectorActivity : ComponentActivity() {
         ) {
             addView(hnsDiagnosticTabs(HnsDiagnosticTool.TlsaInspector, url, traceJson))
             addView(screenSection("Summary") {
-                addView(reportText(friendlySummary()))
+                addView(fieldReportText(friendlySummary()))
             })
             addView(screenSection("Export") {
                 addScreenRow(preferenceRow(

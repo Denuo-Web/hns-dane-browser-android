@@ -7,10 +7,8 @@ internal object DiagnosticReport {
         buildLabel: String,
         rustCore: String,
         rustDiagnostics: String,
-        syncStatus: String,
         proxyOverrideSupported: Boolean,
         thirdPartyCookiesBlocked: Boolean,
-        gatewayEvents: String,
         generatedAtMillis: Long = System.currentTimeMillis(),
     ): String =
         buildString {
@@ -22,14 +20,8 @@ internal object DiagnosticReport {
             appendLine("Proxy override supported: $proxyOverrideSupported")
             appendLine("Third-party cookies blocked: $thirdPartyCookiesBlocked")
             appendLine()
-            appendLine("## Sync Status")
-            appendCodeBlock(syncStatus)
-            appendLine()
             appendLine("## Rust Diagnostics")
             appendCodeBlock(rustDiagnostics)
-            appendLine()
-            appendLine("## Recent Gateway Events")
-            appendCodeBlock(gatewayEvents.ifBlank { "none" })
         }
 
     private fun StringBuilder.appendCodeBlock(value: String) {

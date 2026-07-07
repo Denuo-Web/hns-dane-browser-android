@@ -642,8 +642,6 @@ class MainActivity : ComponentActivity() {
                 dp(MENU_ICON_BUTTON_SIZE_DP),
             ))
             addView(menuDivider())
-            addView(menuRow(getString(R.string.menu_history), popup) { openHistory() })
-            addView(menuRow(getString(R.string.menu_downloads), popup) { openDownloads() })
             addView(menuRow(getString(R.string.menu_settings), popup) { openSettings() })
         }
 
@@ -995,14 +993,6 @@ class MainActivity : ComponentActivity() {
         val intent = Intent(this, SettingsActivity::class.java)
         currentPageUrl()?.let { intent.putExtra(SettingsActivity.EXTRA_CURRENT_URL, it) }
         startActivity(intent)
-    }
-
-    private fun openHistory() {
-        startActivity(Intent(this, HistoryActivity::class.java))
-    }
-
-    private fun openDownloads() {
-        startActivity(Intent(this, DownloadsActivity::class.java))
     }
 
     private fun handleExternalMainFrameNavigation(uri: Uri): Boolean {

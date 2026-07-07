@@ -11,10 +11,8 @@ class DiagnosticReportTest {
             buildLabel = "debug 0.3.1 (22)",
             rustCore = "hns-dane-browser-rust-core/0.3.1",
             rustDiagnostics = """{"securityDefault":"fail-closed","note":"```"}""",
-            syncStatus = """{"status":"up_to_date","bestHeight":1}""",
             proxyOverrideSupported = true,
             thirdPartyCookiesBlocked = true,
-            gatewayEvents = "123 native_response welcome 502 HNS_Nameserver_Unavailable",
             generatedAtMillis = 0,
         )
 
@@ -23,8 +21,8 @@ class DiagnosticReportTest {
         assertTrue(report.contains("Build: debug 0.3.1 (22)"))
         assertTrue(report.contains("Rust core: hns-dane-browser-rust-core/0.3.1"))
         assertTrue(report.contains("Proxy override supported: true"))
-        assertTrue(report.contains("""{"status":"up_to_date","bestHeight":1}"""))
-        assertTrue(report.contains("123 native_response welcome 502 HNS_Nameserver_Unavailable"))
+        assertFalse(report.contains("## Sync Status"))
+        assertFalse(report.contains("## Recent Gateway Events"))
         assertTrue(report.contains("` ` `"))
         assertFalse(report.contains("\"note\":\"```\""))
     }
