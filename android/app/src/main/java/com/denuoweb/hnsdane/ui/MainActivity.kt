@@ -669,7 +669,7 @@ class MainActivity : ComponentActivity() {
                         true
                     }
                     MENU_REFRESH -> {
-                        webView.reload()
+                        reloadCurrentPage()
                         true
                     }
                     MENU_HOME -> {
@@ -723,6 +723,21 @@ class MainActivity : ComponentActivity() {
         val input = omnibox.text.toString()
         dismissOmniboxKeyboard()
         loadTarget(classifier.classify(input))
+    }
+
+    private fun reloadCurrentPage() {
+        val url = currentPageUrl() ?: activeMainFrameUrl
+        if (url != null) {
+            activeMainFrameUrl = url
+            currentTargetKind = classifier.classify(url).kind
+        }
+        clearMainFrameHnsStatus()
+        pageIsLoading = true
+        pageLoadProgress = 0
+        refreshLoopbackProxyScope()
+        refreshSecurityState()
+        refreshPageProgress()
+        webView.reload()
     }
 
     private fun dismissOmniboxKeyboard() {

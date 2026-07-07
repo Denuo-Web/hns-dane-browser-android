@@ -33,11 +33,13 @@ class HnsSyncForegroundService : Service() {
             return START_NOT_STICKY
         }
 
+        val cachedSnapshot = cachedSnapshot()
         startForeground(
             NOTIFICATION_ID,
-            buildNotification(null),
+            buildNotification(cachedSnapshot),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
         )
+        cachedSnapshot?.let(::publishSnapshot)
         ensureScheduler()
         return START_STICKY
     }
@@ -62,6 +64,13 @@ class HnsSyncForegroundService : Service() {
             }
         }
     }
+
+    private fun cachedSnapshot(): HnsSyncSnapshot? = runCatching {
+        HnsSyncSnapshot(
+            statusJson = NativeBridge.syncStatus(filesDir.absolutePath),
+            updatedAtMillis = System.currentTimeMillis(),
+        )
+    }.getOrNull()
 
     private fun publishSnapshot(snapshot: HnsSyncSnapshot) {
         sendBroadcast(

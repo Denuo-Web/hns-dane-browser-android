@@ -3427,20 +3427,7 @@ fn run_sync_once(
     resource_cache_limit_bytes: usize,
 ) -> Result<NativeSyncStatus, String> {
     let base = Path::new(data_dir).join("hns");
-    fs::create_dir_all(&base).map_err(|error| format!("create sync directory: {error}"))?;
-
-    let header_store = SqliteHeaderStore::open(base.join("headers.sqlite"))
-        .map_err(|error| format!("open header store: {error}"))?;
-    let mut chain = HeaderChain::new(header_store);
-    if chain
-        .best_header()
-        .map_err(|error| format!("read best header: {error}"))?
-        .is_none()
-    {
-        chain
-            .insert_genesis(BlockHeader::mainnet_genesis())
-            .map_err(|error| format!("insert genesis header: {error}"))?;
-    }
+    let chain = open_initialized_header_chain(&base)?;
     let mut coordinator = HeaderSyncCoordinator::new(chain);
 
     let peer_store = SqlitePeerStore::open(base.join("peers.sqlite"))
@@ -3602,6 +3589,23 @@ fn best_peer_height(peers: &hns_p2p::PeerManager) -> Option<u32> {
         .max()
 }
 
+fn open_initialized_header_chain(base: &Path) -> Result<HeaderChain<SqliteHeaderStore>, String> {
+    fs::create_dir_all(base).map_err(|error| format!("create sync directory: {error}"))?;
+    let header_store = SqliteHeaderStore::open(base.join("headers.sqlite"))
+        .map_err(|error| format!("open header store: {error}"))?;
+    let mut chain = HeaderChain::new(header_store);
+    if chain
+        .best_header()
+        .map_err(|error| format!("read best header: {error}"))?
+        .is_none()
+    {
+        chain
+            .insert_genesis(BlockHeader::mainnet_genesis())
+            .map_err(|error| format!("insert genesis header: {error}"))?;
+    }
+    Ok(chain)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct LocalChainCurrentness {
     best_height: Option<u32>,
@@ -3687,9 +3691,7 @@ fn estimated_mainnet_tip_height(now: u64) -> Option<u32> {
 
 fn read_sync_status(data_dir: &str) -> Result<NativeSyncStatus, String> {
     let base = Path::new(data_dir).join("hns");
-    let header_store = SqliteHeaderStore::open(base.join("headers.sqlite"))
-        .map_err(|error| format!("open header store: {error}"))?;
-    let chain = HeaderChain::new(header_store);
+    let chain = open_initialized_header_chain(&base)?;
     let peer_store = SqlitePeerStore::open(base.join("peers.sqlite"))
         .map_err(|error| format!("open peer store: {error}"))?;
     let peers = peer_store
@@ -4594,6 +4596,22 @@ mod tests {
         assert!(json.contains(r#""resourceCacheEntries":0"#));
         assert!(json.contains(r#""resourceCacheBytes":0"#));
         assert!(json.contains(r#""resourceCacheEvicted":0"#));
+
+        cleanup_dir(&path);
+    }
+
+    #[test]
+    fn sync_status_initializes_persistent_stores_without_network() {
+        let path = temp_dir_path("sync-status");
+
+        let json = sync_status(path.to_str().unwrap());
+
+        assert!(json.contains(r#""status":"idle""#));
+        assert!(json.contains(r#""bestHeight":0"#));
+        assert!(json.contains(r#""peerCount":0"#));
+        assert!(json.contains(r#""failures":[]"#));
+        assert!(path.join("hns/headers.sqlite").exists());
+        assert!(path.join("hns/peers.sqlite").exists());
 
         cleanup_dir(&path);
     }

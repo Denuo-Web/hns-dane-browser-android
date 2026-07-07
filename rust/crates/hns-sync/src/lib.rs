@@ -553,6 +553,10 @@ impl HeaderSyncRunner<TcpHeaderPeerConnector> {
                 break;
             }
             let locator = coordinator.locator()?;
+            let local_best_height = coordinator
+                .chain()
+                .best_header()?
+                .map(|header| header.height);
             let batch = race_tcp_header_batch(
                 candidates,
                 self.network.clone(),
@@ -560,6 +564,7 @@ impl HeaderSyncRunner<TcpHeaderPeerConnector> {
                 self.config.timeout,
                 locator,
                 self.config.stop,
+                local_best_height,
             );
             result.attempted = result.attempted.saturating_add(1);
 
@@ -568,11 +573,20 @@ impl HeaderSyncRunner<TcpHeaderPeerConnector> {
                     address,
                     remote_height,
                     headers,
-                } => (address, remote_height, headers),
-                HeaderRaceOutcome::Failure(failures) => {
-                    for failure in failures {
-                        peers.record_transient_failure(failure.address);
-                        result.failures.push(failure);
+                    skipped,
+                    failures,
+                } => {
+                    record_race_skipped_peers(peers, skipped, now);
+                    record_race_failures(peers, failures, &mut result);
+                    persist_peer_manager(Some(store), peers)?;
+                    (address, remote_height, headers)
+                }
+                HeaderRaceOutcome::NoUsefulResponse { skipped, failures } => {
+                    let had_skipped = !skipped.is_empty();
+                    record_race_skipped_peers(peers, skipped, now);
+                    record_race_failures(peers, failures, &mut result);
+                    if had_skipped {
+                        result.successful = result.successful.saturating_add(1);
                     }
                     persist_peer_manager(Some(store), peers)?;
                     break;
@@ -734,8 +748,27 @@ enum HeaderRaceOutcome {
         address: SocketAddr,
         remote_height: Height,
         headers: Vec<BlockHeader>,
+        skipped: Vec<HeaderRaceSkipped>,
+        failures: Vec<HeaderPeerFailure>,
     },
-    Failure(Vec<HeaderPeerFailure>),
+    NoUsefulResponse {
+        skipped: Vec<HeaderRaceSkipped>,
+        failures: Vec<HeaderPeerFailure>,
+    },
+}
+
+struct HeaderRaceSkipped {
+    address: SocketAddr,
+    remote_height: Height,
+}
+
+enum HeaderRacePeerOutcome {
+    Success {
+        address: SocketAddr,
+        remote_height: Height,
+        headers: Vec<BlockHeader>,
+    },
+    Failure(HeaderPeerFailure),
 }
 
 fn race_tcp_header_batch(
@@ -745,6 +778,7 @@ fn race_tcp_header_batch(
     timeout: Duration,
     locator: Vec<Hash>,
     stop: Hash,
+    local_best_height: Option<Height>,
 ) -> HeaderRaceOutcome {
     let count = addresses.len();
     let (sender, receiver) = mpsc::channel();
@@ -767,26 +801,36 @@ fn race_tcp_header_batch(
     drop(sender);
 
     let mut failures = Vec::new();
+    let mut skipped = Vec::new();
     for _ in 0..count {
         match receiver.recv() {
-            Ok(HeaderRaceOutcome::Success {
+            Ok(HeaderRacePeerOutcome::Success {
                 address,
                 remote_height,
                 headers,
             }) => {
+                if local_best_height.is_some_and(|height| remote_height <= height)
+                    || headers.is_empty()
+                {
+                    skipped.push(HeaderRaceSkipped {
+                        address,
+                        remote_height,
+                    });
+                    continue;
+                }
                 return HeaderRaceOutcome::Success {
                     address,
                     remote_height,
                     headers,
+                    skipped,
+                    failures,
                 };
             }
-            Ok(HeaderRaceOutcome::Failure(mut batch_failures)) => {
-                failures.append(&mut batch_failures);
-            }
+            Ok(HeaderRacePeerOutcome::Failure(failure)) => failures.push(failure),
             Err(_) => break,
         }
     }
-    HeaderRaceOutcome::Failure(failures)
+    HeaderRaceOutcome::NoUsefulResponse { skipped, failures }
 }
 
 fn request_tcp_header_batch(
@@ -796,42 +840,59 @@ fn request_tcp_header_batch(
     timeout: Duration,
     locator: Vec<Hash>,
     stop: Hash,
-) -> HeaderRaceOutcome {
+) -> HeaderRacePeerOutcome {
     let mut peer = match PeerConnection::connect(address, network, timeout) {
         Ok(peer) => peer,
         Err(error) => {
-            return HeaderRaceOutcome::Failure(vec![HeaderPeerFailure {
+            return HeaderRacePeerOutcome::Failure(HeaderPeerFailure {
                 address,
                 stage: HeaderPeerFailureStage::Connect,
                 error: error.to_string(),
-            }]);
+            });
         }
     };
     let mut session = HeaderSyncSession::new(local_version);
     let remote = match peer.handshake(&mut session) {
         Ok(remote) => remote,
         Err(error) => {
-            return HeaderRaceOutcome::Failure(vec![HeaderPeerFailure {
+            return HeaderRacePeerOutcome::Failure(HeaderPeerFailure {
                 address,
                 stage: HeaderPeerFailureStage::Handshake,
                 error: error.to_string(),
-            }]);
+            });
         }
     };
     let headers = match peer.request_headers(&mut session, locator, stop) {
         Ok(headers) => headers,
         Err(error) => {
-            return HeaderRaceOutcome::Failure(vec![HeaderPeerFailure {
+            return HeaderRacePeerOutcome::Failure(HeaderPeerFailure {
                 address,
                 stage: HeaderPeerFailureStage::Headers,
                 error: error.to_string(),
-            }]);
+            });
         }
     };
-    HeaderRaceOutcome::Success {
+    HeaderRacePeerOutcome::Success {
         address,
         remote_height: remote.height,
         headers,
+    }
+}
+
+fn record_race_skipped_peers(peers: &mut PeerManager, skipped: Vec<HeaderRaceSkipped>, now: u64) {
+    for peer in skipped {
+        peers.record_success(peer.address, peer.remote_height, now);
+    }
+}
+
+fn record_race_failures(
+    peers: &mut PeerManager,
+    failures: Vec<HeaderPeerFailure>,
+    result: &mut HeaderSyncRunResult,
+) {
+    for failure in failures {
+        peers.record_transient_failure(failure.address);
+        result.failures.push(failure);
     }
 }
 
@@ -1852,6 +1913,92 @@ mod tests {
 
         fast_server.join().unwrap();
         slow_server.join().unwrap();
+        cleanup_db_path(&path);
+    }
+
+    #[test]
+    fn header_sync_runner_races_past_fast_empty_batch() {
+        let path = temp_db_path("race-empty-headers");
+        let mut coordinator = seeded_coordinator();
+        let genesis = coordinator.chain().best_header().unwrap().unwrap();
+        let child = low_difficulty_child(&genesis);
+        let (empty, empty_server) = spawn_header_server(Height(1), Vec::new(), Duration::ZERO);
+        let (useful, useful_server) =
+            spawn_header_server(Height(1), vec![child], Duration::from_millis(100));
+        let mut peers = PeerManager::default();
+        peers.seed([empty, useful]);
+        let runner = HeaderSyncRunner::with_config(
+            network::mainnet(),
+            TcpHeaderPeerConnector,
+            HeaderSyncRunnerConfig {
+                preferred_peers: 1,
+                max_header_batches_per_peer: 1,
+                parallel_header_fetch_peers: 2,
+                timeout: Duration::from_secs(2),
+                ..HeaderSyncRunnerConfig::default()
+            },
+        );
+
+        {
+            let store = SqlitePeerStore::open(&path).unwrap();
+            let result = runner
+                .sync_once_parallel_and_persist(&mut coordinator, &mut peers, &store, 800)
+                .unwrap();
+
+            assert_eq!(result.attempted, 1);
+            assert_eq!(result.successful, 1);
+            assert_eq!(result.accepted, 1);
+            assert_eq!(result.best.unwrap().height, Height(1));
+            assert_eq!(peers.get(empty).unwrap().successes, 1);
+            assert_eq!(peers.get(useful).unwrap().successes, 1);
+            store.flush().unwrap();
+        }
+
+        useful_server.join().unwrap();
+        empty_server.join().unwrap();
+        cleanup_db_path(&path);
+    }
+
+    #[test]
+    fn header_sync_runner_races_past_fast_stale_peer() {
+        let path = temp_db_path("race-stale-peer");
+        let mut coordinator = seeded_coordinator();
+        let genesis = coordinator.chain().best_header().unwrap().unwrap();
+        let child = low_difficulty_child(&genesis);
+        let (stale, stale_server) = spawn_header_server(Height(0), Vec::new(), Duration::ZERO);
+        let (useful, useful_server) =
+            spawn_header_server(Height(1), vec![child], Duration::from_millis(100));
+        let mut peers = PeerManager::default();
+        peers.seed([stale, useful]);
+        let runner = HeaderSyncRunner::with_config(
+            network::mainnet(),
+            TcpHeaderPeerConnector,
+            HeaderSyncRunnerConfig {
+                preferred_peers: 1,
+                max_header_batches_per_peer: 1,
+                parallel_header_fetch_peers: 2,
+                timeout: Duration::from_secs(2),
+                ..HeaderSyncRunnerConfig::default()
+            },
+        );
+
+        {
+            let store = SqlitePeerStore::open(&path).unwrap();
+            let result = runner
+                .sync_once_parallel_and_persist(&mut coordinator, &mut peers, &store, 800)
+                .unwrap();
+
+            assert_eq!(result.attempted, 1);
+            assert_eq!(result.successful, 1);
+            assert_eq!(result.accepted, 1);
+            assert_eq!(result.best.unwrap().height, Height(1));
+            assert_eq!(peers.get(stale).unwrap().successes, 1);
+            assert_eq!(peers.get(useful).unwrap().successes, 1);
+            store.flush().unwrap();
+        }
+
+        useful_server.join().unwrap();
+        stale_server.join().unwrap();
         cleanup_db_path(&path);
     }
 
