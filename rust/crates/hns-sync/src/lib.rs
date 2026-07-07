@@ -1,4 +1,4 @@
-use hns_chain::{ChainError, HeaderChain, HeaderStore, StoredHeader};
+use hns_chain::{ChainError, HeaderChain, HeaderCheckpoint, HeaderStore, StoredHeader};
 use hns_core::Height;
 use hns_core::network::Network;
 use hns_core::{BlockHeader, Hash, NameHash};
@@ -55,6 +55,7 @@ pub struct HeaderSyncRunnerConfig {
     pub parallel_header_fetch_peers: usize,
     pub parallel_peer_probe_timeout: Duration,
     pub peer_height_refresh_interval: u64,
+    pub checkpoint_header_prefetch: Vec<HeaderCheckpoint>,
     pub timeout: Duration,
     pub stop: Hash,
     pub malformed_ban_seconds: u64,
@@ -189,6 +190,7 @@ impl Default for HeaderSyncRunnerConfig {
             parallel_header_fetch_peers: DEFAULT_PARALLEL_HEADER_FETCH_PEERS,
             parallel_peer_probe_timeout: DEFAULT_PARALLEL_PEER_PROBE_TIMEOUT,
             peer_height_refresh_interval: DEFAULT_PEER_HEIGHT_REFRESH_INTERVAL_SECONDS,
+            checkpoint_header_prefetch: Vec::new(),
             timeout: DEFAULT_SYNC_TIMEOUT,
             stop: Hash::ZERO,
             malformed_ban_seconds: DEFAULT_MALFORMED_BAN_SECONDS,
@@ -440,6 +442,7 @@ impl<C: HeaderPeerConnector> HeaderSyncRunner<C> {
                         | ChainError::InvalidDifficultyBits { .. }
                         | ChainError::InvalidDifficultyWindow
                         | ChainError::InvalidProofOfWork
+                        | ChainError::InvalidCheckpoint { .. }
                         | ChainError::Pow(_) => {
                             Ok(HeaderPeerSyncOutcome::Failure(HeaderPeerFailure {
                                 address,
@@ -526,10 +529,116 @@ impl HeaderSyncRunner<TcpHeaderPeerConnector> {
     ) -> Result<HeaderSyncRunResult, SyncError> {
         self.probe_peers_parallel_and_persist(peers, store, now)?;
         if self.config.parallel_header_fetch_peers > 1 {
-            self.sync_once_racing_and_persist(coordinator, peers, store, now)
+            let prefetch =
+                self.prefetch_checkpoint_header_ranges_and_persist(coordinator, peers, store, now)?;
+            self.sync_once_racing_and_persist(coordinator, peers, store, now, prefetch)
         } else {
             self.sync_once_and_persist(coordinator, peers, store, now)
         }
+    }
+
+    fn prefetch_checkpoint_header_ranges_and_persist<S: HeaderStore>(
+        &self,
+        coordinator: &HeaderSyncCoordinator<S>,
+        peers: &mut PeerManager,
+        store: &SqlitePeerStore,
+        now: u64,
+    ) -> Result<HeaderCheckpointPrefetchResult, SyncError> {
+        let Some(best) = coordinator.chain().best_header()? else {
+            return Ok(HeaderCheckpointPrefetchResult {
+                attempted: 0,
+                successful: 0,
+                ranges: Vec::new(),
+                failures: Vec::new(),
+            });
+        };
+        let checkpoints = self
+            .config
+            .checkpoint_header_prefetch
+            .iter()
+            .copied()
+            .filter(|checkpoint| checkpoint.height > best.height)
+            .collect::<Vec<_>>();
+        if checkpoints.is_empty() {
+            return Ok(HeaderCheckpointPrefetchResult {
+                attempted: 0,
+                successful: 0,
+                ranges: Vec::new(),
+                failures: Vec::new(),
+            });
+        }
+        let addresses = peers.select_outbound(
+            self.config
+                .parallel_header_fetch_peers
+                .max(1)
+                .min(checkpoints.len()),
+            now,
+        );
+        if addresses.is_empty() {
+            return Ok(HeaderCheckpointPrefetchResult {
+                attempted: 0,
+                successful: 0,
+                ranges: Vec::new(),
+                failures: Vec::new(),
+            });
+        }
+
+        let attempted = checkpoints.len();
+        let (sender, receiver) = mpsc::channel();
+        for (index, checkpoint) in checkpoints.into_iter().enumerate() {
+            let sender = sender.clone();
+            let address = addresses[index % addresses.len()];
+            let network = self.network.clone();
+            let local_version = self.local_version.clone();
+            let timeout = self.config.timeout;
+            thread::spawn(move || {
+                let _ = sender.send(request_tcp_checkpoint_header_range(
+                    address,
+                    network,
+                    local_version,
+                    timeout,
+                    checkpoint,
+                ));
+            });
+        }
+        drop(sender);
+
+        let mut successful = 0usize;
+        let mut ranges = Vec::new();
+        let mut failures = Vec::new();
+        for outcome in receiver {
+            match outcome {
+                HeaderCheckpointPrefetchOutcome::Success {
+                    address,
+                    remote_height,
+                    range,
+                } => {
+                    peers.record_success(address, remote_height, now);
+                    successful = successful.saturating_add(1);
+                    ranges.push(range);
+                }
+                HeaderCheckpointPrefetchOutcome::Empty {
+                    address,
+                    remote_height,
+                } => {
+                    peers.record_success(address, remote_height, now);
+                    successful = successful.saturating_add(1);
+                }
+                HeaderCheckpointPrefetchOutcome::Failure(failure) => {
+                    peers.record_transient_failure(failure.address);
+                    failures.push(failure);
+                }
+            }
+            persist_peer_manager(Some(store), peers)?;
+        }
+        ranges.sort_by_key(|range| range.checkpoint.height);
+
+        Ok(HeaderCheckpointPrefetchResult {
+            attempted,
+            successful,
+            ranges,
+            failures,
+        })
     }
 
     fn sync_once_racing_and_persist<S: HeaderStore>(
@@ -538,15 +647,32 @@ impl HeaderSyncRunner<TcpHeaderPeerConnector> {
         peers: &mut PeerManager,
         store: &SqlitePeerStore,
         now: u64,
+        prefetch: HeaderCheckpointPrefetchResult,
     ) -> Result<HeaderSyncRunResult, SyncError> {
         let max_batches = self
             .config
             .preferred_peers
             .max(1)
             .saturating_mul(self.config.max_header_batches_per_peer.max(1));
-        let mut result = HeaderSyncRunResult::empty();
+        let mut result = HeaderSyncRunResult {
+            attempted: prefetch.attempted,
+            successful: prefetch.successful,
+            accepted: 0,
+            best: None,
+            failures: prefetch.failures,
+        };
+        let mut staged_ranges = prefetch.ranges;
 
         for _ in 0..max_batches {
+            apply_ready_checkpoint_ranges(
+                coordinator,
+                peers,
+                store,
+                now,
+                self.config.malformed_ban_seconds,
+                &mut staged_ranges,
+                &mut result,
+            )?;
             let candidates =
                 peers.select_outbound(self.config.parallel_header_fetch_peers.max(1), now);
             if candidates.is_empty() {
@@ -613,6 +739,15 @@ impl HeaderSyncRunner<TcpHeaderPeerConnector> {
                     if header_count < MAX_HEADERS || batch.accepted == 0 {
                         break;
                     }
+                    apply_ready_checkpoint_ranges(
+                        coordinator,
+                        peers,
+                        store,
+                        now,
+                        self.config.malformed_ban_seconds,
+                        &mut staged_ranges,
+                        &mut result,
+                    )?;
                 }
                 Err(SyncError::Chain(error)) => {
                     record_chain_failure(
@@ -633,6 +768,7 @@ impl HeaderSyncRunner<TcpHeaderPeerConnector> {
                         | ChainError::InvalidDifficultyBits { .. }
                         | ChainError::InvalidDifficultyWindow
                         | ChainError::InvalidProofOfWork
+                        | ChainError::InvalidCheckpoint { .. }
                         | ChainError::Pow(_) => {
                             result.failures.push(HeaderPeerFailure {
                                 address,
@@ -647,6 +783,15 @@ impl HeaderSyncRunner<TcpHeaderPeerConnector> {
             }
         }
 
+        apply_ready_checkpoint_ranges(
+            coordinator,
+            peers,
+            store,
+            now,
+            self.config.malformed_ban_seconds,
+            &mut staged_ranges,
+            &mut result,
+        )?;
         store.save_manager(peers)?;
         Ok(result)
     }
@@ -762,11 +907,37 @@ struct HeaderRaceSkipped {
     remote_height: Height,
 }
 
+struct HeaderCheckpointPrefetchResult {
+    attempted: usize,
+    successful: usize,
+    ranges: Vec<PrefetchedHeaderRange>,
+    failures: Vec<HeaderPeerFailure>,
+}
+
+struct PrefetchedHeaderRange {
+    address: SocketAddr,
+    checkpoint: HeaderCheckpoint,
+    headers: Vec<BlockHeader>,
+}
+
 enum HeaderRacePeerOutcome {
     Success {
         address: SocketAddr,
         remote_height: Height,
         headers: Vec<BlockHeader>,
+    },
+    Failure(HeaderPeerFailure),
+}
+
+enum HeaderCheckpointPrefetchOutcome {
+    Success {
+        address: SocketAddr,
+        remote_height: Height,
+        range: PrefetchedHeaderRange,
+    },
+    Empty {
+        address: SocketAddr,
+        remote_height: Height,
     },
     Failure(HeaderPeerFailure),
 }
@@ -879,6 +1050,72 @@ fn request_tcp_header_batch(
     }
 }
 
+fn request_tcp_checkpoint_header_range(
+    address: SocketAddr,
+    network: Network,
+    local_version: VersionPacket,
+    timeout: Duration,
+    checkpoint: HeaderCheckpoint,
+) -> HeaderCheckpointPrefetchOutcome {
+    let mut peer = match PeerConnection::connect(address, network, timeout) {
+        Ok(peer) => peer,
+        Err(error) => {
+            return HeaderCheckpointPrefetchOutcome::Failure(HeaderPeerFailure {
+                address,
+                stage: HeaderPeerFailureStage::Connect,
+                error: error.to_string(),
+            });
+        }
+    };
+    let mut session = HeaderSyncSession::new(local_version);
+    let remote = match peer.handshake(&mut session) {
+        Ok(remote) => remote,
+        Err(error) => {
+            return HeaderCheckpointPrefetchOutcome::Failure(HeaderPeerFailure {
+                address,
+                stage: HeaderPeerFailureStage::Handshake,
+                error: error.to_string(),
+            });
+        }
+    };
+    let headers = match peer.request_headers(&mut session, vec![checkpoint.hash], Hash::ZERO) {
+        Ok(headers) => headers,
+        Err(error) => {
+            return HeaderCheckpointPrefetchOutcome::Failure(HeaderPeerFailure {
+                address,
+                stage: HeaderPeerFailureStage::Headers,
+                error: error.to_string(),
+            });
+        }
+    };
+    if headers.is_empty() {
+        return HeaderCheckpointPrefetchOutcome::Empty {
+            address,
+            remote_height: remote.height,
+        };
+    }
+    if headers
+        .first()
+        .is_none_or(|header| header.prev_block != checkpoint.hash)
+    {
+        return HeaderCheckpointPrefetchOutcome::Failure(HeaderPeerFailure {
+            address,
+            stage: HeaderPeerFailureStage::Headers,
+            error: "checkpoint header range did not start after requested locator".to_owned(),
+        });
+    }
+
+    HeaderCheckpointPrefetchOutcome::Success {
+        address,
+        remote_height: remote.height,
+        range: PrefetchedHeaderRange {
+            address,
+            checkpoint,
+            headers,
+        },
+    }
+}
+
 fn record_race_skipped_peers(peers: &mut PeerManager, skipped: Vec<HeaderRaceSkipped>, now: u64) {
     for peer in skipped {
         peers.record_success(peer.address, peer.remote_height, now);
@@ -894,6 +1131,61 @@ fn record_race_failures(
         peers.record_transient_failure(failure.address);
         result.failures.push(failure);
     }
+}
+
+fn apply_ready_checkpoint_ranges<S: HeaderStore>(
+    coordinator: &mut HeaderSyncCoordinator<S>,
+    peers: &mut PeerManager,
+    store: &SqlitePeerStore,
+    now: u64,
+    malformed_ban_seconds: u64,
+    staged_ranges: &mut Vec<PrefetchedHeaderRange>,
+    result: &mut HeaderSyncRunResult,
+) -> Result<bool, SyncError> {
+    let mut applied_any = false;
+
+    while let Some(index) = staged_ranges.iter().position(|range| {
+        range
+            .headers
+            .first()
+            .is_some_and(|header| coordinator.chain().get_header(header.prev_block).is_some())
+    }) {
+        let range = staged_ranges.remove(index);
+        let address = range.address;
+        match coordinator.ingest_headers(range.headers) {
+            Ok(batch) => {
+                result.accepted = result.accepted.saturating_add(batch.accepted);
+                result.best = batch.best;
+                applied_any = true;
+            }
+            Err(SyncError::Chain(error)) => {
+                record_chain_failure(peers, address, now, &error, malformed_ban_seconds);
+                persist_peer_manager(Some(store), peers)?;
+                match error {
+                    ChainError::Storage(_) | ChainError::MissingBestHeader => {
+                        return Err(SyncError::Chain(error));
+                    }
+                    ChainError::UnknownParent
+                    | ChainError::DuplicateHeader
+                    | ChainError::InvalidGenesisHeader
+                    | ChainError::InvalidDifficultyBits { .. }
+                    | ChainError::InvalidDifficultyWindow
+                    | ChainError::InvalidProofOfWork
+                    | ChainError::InvalidCheckpoint { .. }
+                    | ChainError::Pow(_) => {
+                        result.failures.push(HeaderPeerFailure {
+                            address,
+                            stage: HeaderPeerFailureStage::Chain,
+                            error: error.to_string(),
+                        });
+                    }
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Ok(applied_any)
 }
 
 fn probe_tcp_header_peer(
@@ -1302,6 +1594,7 @@ fn record_chain_failure(
         | ChainError::InvalidDifficultyBits { .. }
         | ChainError::InvalidDifficultyWindow
         | ChainError::InvalidProofOfWork
+        | ChainError::InvalidCheckpoint { .. }
         | ChainError::Pow(_) => peers.record_malformed(address, now, malformed_ban_seconds),
         ChainError::UnknownParent | ChainError::DuplicateHeader => peers.record_stale_tip(address),
         ChainError::MissingBestHeader | ChainError::Storage(_) => {
@@ -1999,6 +2292,72 @@ mod tests {
 
         useful_server.join().unwrap();
         stale_server.join().unwrap();
+        cleanup_db_path(&path);
+    }
+
+    #[test]
+    fn checkpoint_prefetch_range_waits_for_parent_before_ingest() {
+        let path = temp_db_path("checkpoint-prefetch-stage");
+        let mut coordinator = seeded_coordinator();
+        let genesis = coordinator.chain().best_header().unwrap().unwrap();
+        let headers = low_difficulty_chain(&genesis, 4);
+        let checkpoint = HeaderCheckpoint {
+            height: Height(2),
+            hash: headers[1].hash(),
+        };
+        let address: SocketAddr = "127.0.0.1:12045".parse().unwrap();
+        let mut staged_ranges = vec![PrefetchedHeaderRange {
+            address,
+            checkpoint,
+            headers: headers[2..].to_vec(),
+        }];
+        let mut peers = PeerManager::default();
+        peers.seed([address]);
+        let mut result = HeaderSyncRunResult::empty();
+
+        {
+            let store = SqlitePeerStore::open(&path).unwrap();
+            let applied = apply_ready_checkpoint_ranges(
+                &mut coordinator,
+                &mut peers,
+                &store,
+                1_000,
+                DEFAULT_MALFORMED_BAN_SECONDS,
+                &mut staged_ranges,
+                &mut result,
+            )
+            .unwrap();
+
+            assert!(!applied);
+            assert_eq!(result.accepted, 0);
+            assert_eq!(staged_ranges.len(), 1);
+            store.flush().unwrap();
+        }
+
+        coordinator
+            .ingest_headers(headers[..2].to_vec())
+            .expect("prefix should attach");
+
+        {
+            let store = SqlitePeerStore::open(&path).unwrap();
+            let applied = apply_ready_checkpoint_ranges(
+                &mut coordinator,
+                &mut peers,
+                &store,
+                1_000,
+                DEFAULT_MALFORMED_BAN_SECONDS,
+                &mut staged_ranges,
+                &mut result,
+            )
+            .unwrap();
+
+            assert!(applied);
+            assert_eq!(result.accepted, 2);
+            assert_eq!(result.best.unwrap().height, Height(4));
+            assert!(staged_ranges.is_empty());
+            store.flush().unwrap();
+        }
+
         cleanup_db_path(&path);
     }
 

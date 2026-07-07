@@ -20,6 +20,12 @@ pub struct StoredHeader {
     pub chainwork: Chainwork,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HeaderCheckpoint {
+    pub height: Height,
+    pub hash: Hash,
+}
+
 pub trait HeaderStore {
     fn get_header(&self, hash: Hash) -> Option<StoredHeader>;
     fn put_header(&mut self, header: StoredHeader) -> Result<(), ChainError>;
@@ -79,10 +85,79 @@ pub enum ChainError {
     InvalidDifficultyWindow,
     #[error("header proof-of-work does not satisfy target")]
     InvalidProofOfWork,
+    #[error("mainnet checkpoint mismatch at height {height}: got {actual}, expected {expected}")]
+    InvalidCheckpoint {
+        height: u32,
+        actual: Hash,
+        expected: Hash,
+    },
     #[error("proof-of-work target error: {0}")]
     Pow(#[from] PowError),
     #[error("storage error: {0}")]
     Storage(String),
+}
+
+pub fn mainnet_checkpoint_hash(height: Height) -> Option<Hash> {
+    let hash = match height.0 {
+        1008 => checkpoint_hash("0000000000001013c28fa079b545fb805f04c496687799b98e35e83cbbb8953e"),
+        2016 => checkpoint_hash("0000000000000424ee6c2a5d6e0da5edfc47a4a10328c1792056ee48303c3e40"),
+        10_000 => {
+            checkpoint_hash("00000000000001a86811a6f520bf67cefa03207dc84fd315f58153b28694ec51")
+        }
+        20_000 => {
+            checkpoint_hash("0000000000000162c7ac70a582256f59c189b5c90d8e9861b3f374ed714c58de")
+        }
+        30_000 => {
+            checkpoint_hash("0000000000000004f790862846b23c3a81585aea0fa79a7d851b409e027bcaa7")
+        }
+        40_000 => {
+            checkpoint_hash("0000000000000002966206a40b10a575cb46531253b08dae8e1b356cfa277248")
+        }
+        50_000 => {
+            checkpoint_hash("00000000000000020c7447e7139feeb90549bfc77a7f18d4ff28f327c04f8d6e")
+        }
+        56_880 => {
+            checkpoint_hash("0000000000000001d4ef9ea6908bb4eb970d556bd07cbd7d06a634e1cd5bbf4e")
+        }
+        61_043 => {
+            checkpoint_hash("00000000000000015b84385e0307370f8323420eaa27ef6e407f2d3162f1fd05")
+        }
+        100_000 => {
+            checkpoint_hash("000000000000000136d7d3efa688072f40d9fdd71bd47bb961694c0f38950246")
+        }
+        130_000 => {
+            checkpoint_hash("0000000000000005ee5106df9e48bcd232a1917684ac344b35ddd9b9e4101096")
+        }
+        160_000 => {
+            checkpoint_hash("00000000000000021e723ce5aedc021ab4f85d46a6914e40148f01986baa46c9")
+        }
+        200_000 => {
+            checkpoint_hash("000000000000000181ebc18d6c34442ffef3eedca90c57ca8ecc29016a1cfe16")
+        }
+        225_000 => {
+            checkpoint_hash("00000000000000021f0be013ebad018a9ef97c8501766632f017a778781320d5")
+        }
+        258_026 => {
+            checkpoint_hash("0000000000000004963d20732c58e5a91cb7e1b61ec6709d031f1a5ca8c55b95")
+        }
+        _ => return None,
+    };
+
+    Some(hash)
+}
+
+pub fn mainnet_sync_checkpoints() -> Vec<HeaderCheckpoint> {
+    [50_000_u32, 100_000, 160_000, 200_000, 225_000, 258_026]
+        .into_iter()
+        .filter_map(|height| {
+            let height = Height(height);
+            mainnet_checkpoint_hash(height).map(|hash| HeaderCheckpoint { height, hash })
+        })
+        .collect()
+}
+
+fn checkpoint_hash(hex_value: &str) -> Hash {
+    Hash::from_hex(hex_value).expect("valid mainnet checkpoint hash")
 }
 
 impl HeaderStore for MemoryHeaderStore {
@@ -491,17 +566,19 @@ impl<S: HeaderStore> HeaderChain<S> {
             .get_header(header.prev_block)
             .ok_or(ChainError::UnknownParent)?;
         let hash = header.hash();
+        let height = Height(parent.height.0 + 1);
         self.validate_difficulty_bits(&header, &parent)?;
         if !verify_pow(hash, header.bits)? {
             return Err(ChainError::InvalidProofOfWork);
         }
+        self.validate_checkpoint(height, hash)?;
         let chainwork = parent
             .chainwork
             .checked_add(&Chainwork::from_bits(header.bits)?);
         let stored = StoredHeader {
             hash,
             header,
-            height: Height(parent.height.0 + 1),
+            height,
             chainwork,
         };
 
@@ -550,6 +627,8 @@ impl<S: HeaderStore> HeaderChain<S> {
             if !verify_pow(hash, header.bits)? {
                 return Err(ChainError::InvalidProofOfWork);
             }
+            let height = Height(parent.height.0 + 1);
+            self.validate_checkpoint(height, hash)?;
             let header_work = match chainwork_by_bits.get(&header.bits) {
                 Some(work) => work,
                 None => {
@@ -563,7 +642,7 @@ impl<S: HeaderStore> HeaderChain<S> {
             let stored = StoredHeader {
                 hash,
                 header,
-                height: Height(parent.height.0 + 1),
+                height,
                 chainwork,
             };
             pending.insert(hash, stored.clone());
@@ -646,6 +725,26 @@ impl<S: HeaderStore> HeaderChain<S> {
             && header != &BlockHeader::mainnet_genesis()
         {
             return Err(ChainError::InvalidGenesisHeader);
+        }
+
+        Ok(())
+    }
+
+    fn validate_checkpoint(&self, height: Height, hash: Hash) -> Result<(), ChainError> {
+        if self.difficulty_policy != DifficultyPolicy::Mainnet {
+            return Ok(());
+        }
+
+        let Some(expected) = mainnet_checkpoint_hash(height) else {
+            return Ok(());
+        };
+
+        if hash != expected {
+            return Err(ChainError::InvalidCheckpoint {
+                height: height.0,
+                actual: hash,
+                expected,
+            });
         }
 
         Ok(())
@@ -877,6 +976,44 @@ mod tests {
             ChainError::InvalidDifficultyBits {
                 actual: 0x207f_ffff,
                 expected: MAINNET_POW_BITS,
+            },
+        );
+    }
+
+    #[test]
+    fn mainnet_checkpoint_hashes_include_sync_anchors() {
+        assert_eq!(
+            mainnet_checkpoint_hash(Height(50_000)).unwrap().to_string(),
+            "00000000000000020c7447e7139feeb90549bfc77a7f18d4ff28f327c04f8d6e",
+        );
+        assert_eq!(
+            mainnet_checkpoint_hash(Height(258_026))
+                .unwrap()
+                .to_string(),
+            "0000000000000004963d20732c58e5a91cb7e1b61ec6709d031f1a5ca8c55b95",
+        );
+        assert_eq!(
+            mainnet_sync_checkpoints()
+                .into_iter()
+                .map(|checkpoint| checkpoint.height.0)
+                .collect::<Vec<_>>(),
+            vec![50_000, 100_000, 160_000, 200_000, 225_000, 258_026],
+        );
+    }
+
+    #[test]
+    fn mainnet_checkpoint_mismatch_is_rejected() {
+        let chain = HeaderChain::new(MemoryHeaderStore::default());
+        let expected = mainnet_checkpoint_hash(Height(50_000)).unwrap();
+
+        assert_eq!(
+            chain
+                .validate_checkpoint(Height(50_000), Hash::ZERO)
+                .unwrap_err(),
+            ChainError::InvalidCheckpoint {
+                height: 50_000,
+                actual: Hash::ZERO,
+                expected,
             },
         );
     }
