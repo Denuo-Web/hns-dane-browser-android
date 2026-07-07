@@ -60,7 +60,6 @@ pub struct TlsValidation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TlsaRecordSource {
     NativeTlsa,
-    DnssecTxtShadow,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

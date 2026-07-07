@@ -14,9 +14,7 @@ use hns_dane::{
     DaneDecision, MAX_STATELESS_DANE_ROOTS, StatelessDaneConfig, TlsaMatching, TlsaRecord,
     TlsaSelector, TlsaUsage,
 };
-use hns_gateway::{
-    Gateway, GatewayConfig, GatewayError, GatewayRequest, HnsHttpsMode, IcannDaneLookupMode,
-};
+use hns_gateway::{Gateway, GatewayConfig, GatewayError, GatewayRequest, HnsHttpsMode};
 use hns_p2p::{
     DnsSeedPeerSource, HeaderSyncSession, PeerConnection, SqlitePeerStore, VersionPacket,
 };
@@ -1334,7 +1332,6 @@ pub fn gateway_http_response(input: GatewayHttpRequestInput<'_>) -> Vec<u8> {
     let gateway = match Gateway::new(
         GatewayConfig {
             hns_https_mode: HnsHttpsMode::Compatibility,
-            icann_dane_lookup_mode: IcannDaneLookupMode::NativeTlsaWithTxtShadowFallback,
             stateless_dane,
             ..GatewayConfig::default()
         },
@@ -1441,7 +1438,6 @@ pub fn gateway_http_response_body_to_file(
     let gateway = match Gateway::new(
         GatewayConfig {
             hns_https_mode: HnsHttpsMode::Compatibility,
-            icann_dane_lookup_mode: IcannDaneLookupMode::NativeTlsaWithTxtShadowFallback,
             stateless_dane,
             ..GatewayConfig::default()
         },
@@ -1563,7 +1559,6 @@ pub fn gateway_http_upgrade_tunnel(
     let gateway = match Gateway::new(
         GatewayConfig {
             hns_https_mode: HnsHttpsMode::Compatibility,
-            icann_dane_lookup_mode: IcannDaneLookupMode::NativeTlsaWithTxtShadowFallback,
             stateless_dane,
             ..GatewayConfig::default()
         },
@@ -2301,7 +2296,6 @@ fn tls_trace_json(
 fn tlsa_record_source_name(source: TlsaRecordSource) -> &'static str {
     match source {
         TlsaRecordSource::NativeTlsa => "native_tlsa",
-        TlsaRecordSource::DnssecTxtShadow => "dnssec_txt_shadow",
     }
 }
 
@@ -2423,8 +2417,7 @@ fn tlsa_blocked_by(error: Option<&GatewayError>) -> Option<&'static str> {
         Some(GatewayError::Transport(TransportError::Http3(_))) => Some("http3_failed"),
         Some(GatewayError::Transport(TransportError::Quic(_))) => Some("quic_failed"),
         Some(GatewayError::Transport(TransportError::DaneFailed))
-        | Some(GatewayError::InvalidTlsa(_))
-        | Some(GatewayError::InvalidTlsaShadow) => Some("dane_validation_failed"),
+        | Some(GatewayError::InvalidTlsa(_)) => Some("dane_validation_failed"),
         Some(GatewayError::Transport(_)) => Some("origin_transport_failed"),
         Some(GatewayError::Resolver(ResolverError::NameNotFound))
         | Some(GatewayError::Resolver(ResolverError::InvalidName(_)))
@@ -2487,7 +2480,6 @@ fn dane_trace_decision(
         (Some(DaneDecision::NoTlsa), _) => "no_tlsa",
         (Some(DaneDecision::Failed), _) => "failed",
         (_, Some(GatewayError::InvalidTlsa(_)))
-        | (_, Some(GatewayError::InvalidTlsaShadow))
         | (_, Some(GatewayError::Transport(TransportError::DaneFailed))) => "failed",
         _ => "not_evaluated",
     }
@@ -2503,7 +2495,6 @@ fn dane_certificate_match(
         (Some(DaneDecision::NoTlsa), _) => "not_checked",
         (Some(DaneDecision::Failed), _) => "failed",
         (_, Some(GatewayError::InvalidTlsa(_)))
-        | (_, Some(GatewayError::InvalidTlsaShadow))
         | (_, Some(GatewayError::Transport(TransportError::DaneFailed))) => "failed",
         _ => "unknown",
     }
@@ -3038,9 +3029,7 @@ fn map_gateway_error_for_host(
                 "ICANN Origin Address Missing",
                 "Secure ICANN DNS resolution did not produce an origin A or AAAA address.",
             ),
-            GatewayError::InvalidTlsa(_)
-            | GatewayError::InvalidTlsaShadow
-            | GatewayError::Transport(TransportError::DaneFailed) => (
+            GatewayError::InvalidTlsa(_) | GatewayError::Transport(TransportError::DaneFailed) => (
                 502,
                 "ICANN DANE Validation Failed",
                 "ICANN DANE/TLSA validation failed closed.",
@@ -3203,9 +3192,7 @@ fn map_gateway_error(error: &GatewayError) -> (u16, &'static str, &'static str) 
             "HNS Origin Address Missing",
             "Secure HNS resolution did not produce an origin A or AAAA address.",
         ),
-        GatewayError::InvalidTlsa(_)
-        | GatewayError::InvalidTlsaShadow
-        | GatewayError::Transport(TransportError::DaneFailed) => (
+        GatewayError::InvalidTlsa(_) | GatewayError::Transport(TransportError::DaneFailed) => (
             502,
             "HNS DANE Validation Failed",
             "DANE/TLSA validation failed closed.",

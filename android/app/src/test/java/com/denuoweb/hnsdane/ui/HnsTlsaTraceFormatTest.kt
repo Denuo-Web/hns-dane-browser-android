@@ -30,12 +30,12 @@ class HnsTlsaTraceFormatTest {
     }
 
     @Test
-    fun reportsTxtShadowTlsaSource() {
+    fun reportsNativeTlsaSource() {
         val tls = JSONObject(
-            """{"tlsaEvaluated":true,"tlsaStatus":"present","tlsaSource":"dnssec_txt_shadow","tlsaFound":true}""",
+            """{"tlsaEvaluated":true,"tlsaStatus":"present","tlsaSource":"native_tlsa","tlsaFound":true}""",
         )
 
-        assertEquals("DANE TXT shadow", HnsTlsaTraceFormat.tlsaSource(tls))
+        assertEquals("native TLSA", HnsTlsaTraceFormat.tlsaSource(tls))
     }
 
     @Test

@@ -17,7 +17,6 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use thiserror::Error;
 
 const MAX_CNAME_CHAIN_LEN: usize = 8;
-const SHADOW_TLSA_PREFIX: &str = "denuo-dane-v1=tlsa,";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GatewayConfig {
@@ -25,7 +24,6 @@ pub struct GatewayConfig {
     pub auth_token: Option<String>,
     pub require_secure_resolution: bool,
     pub hns_https_mode: HnsHttpsMode,
-    pub icann_dane_lookup_mode: IcannDaneLookupMode,
     pub supported_origin_protocols: Vec<OriginProtocol>,
     pub stateless_dane: StatelessDaneConfig,
 }
@@ -34,13 +32,6 @@ pub struct GatewayConfig {
 pub enum HnsHttpsMode {
     Strict,
     Compatibility,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum IcannDaneLookupMode {
-    NativeTlsaOnly,
-    NativeTlsaWithTxtShadowFallback,
-    TxtShadowOnlyForPrivateNetworks,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -88,8 +79,6 @@ pub enum GatewayError {
     NoResolvedAddress,
     #[error("TLSA record is invalid: {0}")]
     InvalidTlsa(#[from] DaneError),
-    #[error("DANE TXT shadow record is invalid")]
-    InvalidTlsaShadow,
     #[error("HTTPS/SVCB record is invalid: {0}")]
     InvalidSvcb(ParseError),
     #[error("HTTPS/SVCB service binding is unsupported")]
@@ -113,7 +102,6 @@ impl Default for GatewayConfig {
             auth_token: None,
             require_secure_resolution: true,
             hns_https_mode: HnsHttpsMode::Strict,
-            icann_dane_lookup_mode: IcannDaneLookupMode::NativeTlsaOnly,
             supported_origin_protocols: vec![
                 OriginProtocol::Http11,
                 OriginProtocol::Http2,
@@ -265,36 +253,7 @@ where
             });
         };
 
-        let mode = icann_dane_lookup_mode_for_host(host, self.config.icann_dane_lookup_mode);
-        match mode {
-            IcannDaneLookupMode::NativeTlsaOnly => self.resolve_native_tlsa_records(&request),
-            IcannDaneLookupMode::NativeTlsaWithTxtShadowFallback => {
-                match self.resolve_native_tlsa_records(&request) {
-                    Ok(resolved) if resolved.source == Some(TlsaRecordSource::NativeTlsa) => {
-                        Ok(resolved)
-                    }
-                    Ok(resolved) if resolved.secure => self
-                        .resolve_txt_shadow_tlsa_records(&request)
-                        .map(|shadow| {
-                            if shadow.records.is_empty() {
-                                resolved
-                            } else {
-                                shadow
-                            }
-                        }),
-                    Ok(resolved) => Ok(resolved),
-                    Err(GatewayError::Resolver(error))
-                        if native_tlsa_shadow_fallback_error(&error) =>
-                    {
-                        self.resolve_txt_shadow_tlsa_records(&request)
-                    }
-                    Err(error) => Err(error),
-                }
-            }
-            IcannDaneLookupMode::TxtShadowOnlyForPrivateNetworks => {
-                self.resolve_txt_shadow_tlsa_records(&request)
-            }
-        }
+        self.resolve_native_tlsa_records(&request)
     }
 
     fn resolve_native_tlsa_records(
@@ -310,43 +269,6 @@ where
         Ok(ResolvedTlsaRecords {
             secure: answer.secure,
             source: (!records.is_empty()).then_some(TlsaRecordSource::NativeTlsa),
-            records,
-        })
-    }
-
-    fn resolve_txt_shadow_tlsa_records(
-        &self,
-        native_request: &ResolutionRequest,
-    ) -> Result<ResolvedTlsaRecords, GatewayError> {
-        let request = ResolutionRequest {
-            qname: native_request.qname.clone(),
-            qtype: RecordType::Txt.code(),
-        };
-        let answer = match self.resolver.resolve(&request) {
-            Ok(answer) => answer,
-            Err(ResolverError::DnssecFailed) => return Err(ResolverError::DnssecFailed.into()),
-            Err(error) if txt_shadow_lookup_optional_error(&error) => {
-                return Ok(ResolvedTlsaRecords {
-                    secure: false,
-                    records: Vec::new(),
-                    source: None,
-                });
-            }
-            Err(error) => return Err(error.into()),
-        };
-
-        if !answer.secure {
-            return Ok(ResolvedTlsaRecords {
-                secure: false,
-                records: Vec::new(),
-                source: None,
-            });
-        }
-
-        let records = shadow_tlsa_records_from_txt(&answer.records, &request.qname)?;
-        Ok(ResolvedTlsaRecords {
-            secure: true,
-            source: (!records.is_empty()).then_some(TlsaRecordSource::DnssecTxtShadow),
             records,
         })
     }
@@ -404,42 +326,6 @@ fn domain_trust_mode_for_host(host: &str, hns_https_mode: HnsHttpsMode) -> Domai
         NameClass::Hns => hns_https_mode.domain_trust_mode(),
         NameClass::Icann | NameClass::Search => DomainTrustMode::IcannWebPki,
     }
-}
-
-fn icann_dane_lookup_mode_for_host(
-    host: &str,
-    icann_mode: IcannDaneLookupMode,
-) -> IcannDaneLookupMode {
-    match classify_name(host) {
-        NameClass::Icann => icann_mode,
-        NameClass::Hns | NameClass::Search => IcannDaneLookupMode::NativeTlsaOnly,
-    }
-}
-
-fn native_tlsa_shadow_fallback_error(error: &ResolverError) -> bool {
-    matches!(
-        error,
-        ResolverError::ProofUnavailable
-            | ResolverError::NameNotFound
-            | ResolverError::UnsupportedBackend
-            | ResolverError::NoNameserverAddress
-            | ResolverError::DnsTransport(_)
-            | ResolverError::DnsResponseCode(_)
-            | ResolverError::InvalidDnsResponse
-    )
-}
-
-fn txt_shadow_lookup_optional_error(error: &ResolverError) -> bool {
-    matches!(
-        error,
-        ResolverError::ProofUnavailable
-            | ResolverError::NameNotFound
-            | ResolverError::UnsupportedBackend
-            | ResolverError::NoNameserverAddress
-            | ResolverError::DnsTransport(_)
-            | ResolverError::DnsResponseCode(_)
-            | ResolverError::InvalidDnsResponse
-    )
 }
 
 fn hosts_match(origin_host: &str, qname: &str) -> bool {
@@ -533,101 +419,6 @@ fn tlsa_records(
         .filter(|record| record.record_type == RecordType::Tlsa && record.name == owner)
         .map(|record| TlsaRecord::parse_rdata(&record.rdata).map_err(GatewayError::from))
         .collect()
-}
-
-fn shadow_tlsa_records_from_txt(
-    records: &[ResourceRecord],
-    service_qname: &str,
-) -> Result<Vec<TlsaRecord>, GatewayError> {
-    let owner = match DnsName::from_ascii(service_qname) {
-        Ok(owner) => owner,
-        Err(_) => return Ok(Vec::new()),
-    };
-
-    let mut out = Vec::new();
-    for record in records
-        .iter()
-        .filter(|record| record.record_type == RecordType::Txt && record.name == owner)
-    {
-        let text = txt_rdata_to_string(&record.rdata)?;
-        let Some(payload) = text.strip_prefix(SHADOW_TLSA_PREFIX) else {
-            continue;
-        };
-        out.push(parse_shadow_tlsa_payload(payload)?);
-    }
-    Ok(out)
-}
-
-fn parse_shadow_tlsa_payload(payload: &str) -> Result<TlsaRecord, GatewayError> {
-    let mut parts = payload.split(',');
-    let usage = parse_shadow_u8(parts.next())?;
-    let selector = parse_shadow_u8(parts.next())?;
-    let matching = parse_shadow_u8(parts.next())?;
-    let association_hex = parts.next().ok_or(GatewayError::InvalidTlsaShadow)?;
-    if parts.next().is_some() {
-        return Err(GatewayError::InvalidTlsaShadow);
-    }
-
-    if !matches!(
-        (usage, selector, matching),
-        (3, 1, 1) | (3, 1, 2) | (2, 1, 1) | (2, 1, 2)
-    ) {
-        return Err(GatewayError::InvalidTlsaShadow);
-    }
-
-    let mut rdata = vec![usage, selector, matching];
-    rdata.extend(hex_decode(association_hex)?);
-    TlsaRecord::parse_rdata(&rdata).map_err(GatewayError::from)
-}
-
-fn parse_shadow_u8(value: Option<&str>) -> Result<u8, GatewayError> {
-    value
-        .ok_or(GatewayError::InvalidTlsaShadow)?
-        .parse::<u8>()
-        .map_err(|_| GatewayError::InvalidTlsaShadow)
-}
-
-fn txt_rdata_to_string(rdata: &[u8]) -> Result<String, GatewayError> {
-    let mut cursor = 0usize;
-    let mut out = Vec::new();
-
-    while cursor < rdata.len() {
-        let len = *rdata.get(cursor).ok_or(GatewayError::InvalidTlsaShadow)? as usize;
-        cursor += 1;
-        let end = cursor
-            .checked_add(len)
-            .ok_or(GatewayError::InvalidTlsaShadow)?;
-        let chunk = rdata
-            .get(cursor..end)
-            .ok_or(GatewayError::InvalidTlsaShadow)?;
-        out.extend_from_slice(chunk);
-        cursor = end;
-    }
-
-    String::from_utf8(out).map_err(|_| GatewayError::InvalidTlsaShadow)
-}
-
-fn hex_decode(input: &str) -> Result<Vec<u8>, GatewayError> {
-    if !input.len().is_multiple_of(2) {
-        return Err(GatewayError::InvalidTlsaShadow);
-    }
-
-    let mut out = Vec::with_capacity(input.len() / 2);
-    for pair in input.as_bytes().chunks_exact(2) {
-        let high = hex_nibble(pair[0])?;
-        let low = hex_nibble(pair[1])?;
-        out.push((high << 4) | low);
-    }
-    Ok(out)
-}
-
-fn hex_nibble(byte: u8) -> Result<u8, GatewayError> {
-    match byte {
-        b'0'..=b'9' => Ok(byte - b'0'),
-        b'a'..=b'f' => Ok(byte - b'a' + 10),
-        b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err(GatewayError::InvalidTlsaShadow),
-    }
 }
 
 fn apply_https_service_policy(
@@ -1539,97 +1330,10 @@ mod tests {
     }
 
     #[test]
-    fn native_tlsa_with_txt_shadow_fallback_uses_secure_txt_shadow() {
+    fn icann_native_tlsa_records_are_used() {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let gateway = Gateway::new(
-            gateway_config_with_icann_mode(IcannDaneLookupMode::NativeTlsaWithTxtShadowFallback),
-            ScriptedResolver::new(
-                vec![
-                    response(
-                        "example.com",
-                        RecordType::A.code(),
-                        true,
-                        vec![address_record_for("example.com")],
-                    ),
-                    response("example.com", RecordType::Https.code(), true, vec![]),
-                    response(
-                        "_443._tcp.example.com",
-                        RecordType::Tlsa.code(),
-                        true,
-                        vec![],
-                    ),
-                    response(
-                        "_443._tcp.example.com",
-                        RecordType::Txt.code(),
-                        true,
-                        vec![txt_record(
-                            "_443._tcp.example.com",
-                            "denuo-dane-v1=tlsa,3,1,1,aabbcc",
-                        )],
-                    ),
-                ],
-                Arc::clone(&requests),
-            ),
-            CapturingTransport::default(),
-        )
-        .unwrap();
-
-        gateway
-            .handle(&request("example.com", "example.com"))
-            .unwrap();
-
-        let captured = gateway
-            .transport()
-            .last_request
-            .lock()
-            .unwrap()
-            .clone()
-            .unwrap();
-        assert_eq!(captured.tls.mode, DomainTrustMode::IcannWebPki);
-        assert!(captured.tls.dnssec_secure);
-        assert_eq!(
-            captured.tls.tlsa_source,
-            Some(TlsaRecordSource::DnssecTxtShadow)
-        );
-        assert_eq!(captured.tls.tlsa_records.len(), 1);
-        assert_eq!(captured.tls.tlsa_records[0].usage, TlsaUsage::DaneEe);
-        assert_eq!(
-            captured.tls.tlsa_records[0].selector,
-            TlsaSelector::SubjectPublicKeyInfo
-        );
-        assert_eq!(captured.tls.tlsa_records[0].matching, TlsaMatching::Sha256);
-        assert_eq!(
-            captured.tls.tlsa_records[0].association_data,
-            vec![0xaa, 0xbb, 0xcc],
-        );
-        assert_eq!(
-            *requests.lock().unwrap(),
-            vec![
-                ResolutionRequest {
-                    qname: "example.com".to_owned(),
-                    qtype: RecordType::A.code(),
-                },
-                ResolutionRequest {
-                    qname: "example.com".to_owned(),
-                    qtype: RecordType::Https.code(),
-                },
-                ResolutionRequest {
-                    qname: "_443._tcp.example.com".to_owned(),
-                    qtype: RecordType::Tlsa.code(),
-                },
-                ResolutionRequest {
-                    qname: "_443._tcp.example.com".to_owned(),
-                    qtype: RecordType::Txt.code(),
-                },
-            ],
-        );
-    }
-
-    #[test]
-    fn native_tlsa_wins_over_txt_shadow_fallback() {
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let gateway = Gateway::new(
-            gateway_config_with_icann_mode(IcannDaneLookupMode::NativeTlsaWithTxtShadowFallback),
+            GatewayConfig::default(),
             ScriptedResolver::new(
                 vec![
                     response(
@@ -1663,134 +1367,41 @@ mod tests {
             .unwrap()
             .clone()
             .unwrap();
-        assert_eq!(captured.tls.tlsa_source, Some(TlsaRecordSource::NativeTlsa));
-        assert_eq!(captured.tls.tlsa_records[0].association_data, vec![0xaa]);
-        assert!(
-            requests
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|request| request.qtype != RecordType::Txt.code())
-        );
-    }
-
-    #[test]
-    fn bogus_native_tlsa_does_not_fall_back_to_txt_shadow() {
-        struct BogusNativeTlsaResolver {
-            requests: Arc<Mutex<Vec<ResolutionRequest>>>,
-        }
-
-        impl Resolver for BogusNativeTlsaResolver {
-            fn resolve(
-                &self,
-                request: &ResolutionRequest,
-            ) -> Result<ResolutionAnswer, ResolverError> {
-                self.requests.lock().unwrap().push(request.clone());
-                match RecordType::from_code(request.qtype) {
-                    RecordType::A => Ok(ResolutionAnswer {
-                        name: DnsName::from_ascii(&request.qname).unwrap(),
-                        records: vec![address_record_for(&request.qname)],
-                        secure: true,
-                    }),
-                    RecordType::Https => Ok(ResolutionAnswer {
-                        name: DnsName::from_ascii(&request.qname).unwrap(),
-                        records: Vec::new(),
-                        secure: true,
-                    }),
-                    RecordType::Tlsa => Err(ResolverError::DnssecFailed),
-                    RecordType::Txt => Ok(ResolutionAnswer {
-                        name: DnsName::from_ascii(&request.qname).unwrap(),
-                        records: vec![txt_record(
-                            &request.qname,
-                            "denuo-dane-v1=tlsa,3,1,1,aabbcc",
-                        )],
-                        secure: true,
-                    }),
-                    _ => Err(ResolverError::ProofUnavailable),
-                }
-            }
-        }
-
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let gateway = Gateway::new(
-            gateway_config_with_icann_mode(IcannDaneLookupMode::NativeTlsaWithTxtShadowFallback),
-            BogusNativeTlsaResolver {
-                requests: Arc::clone(&requests),
-            },
-            CapturingTransport::default(),
-        )
-        .unwrap();
-
-        assert_eq!(
-            gateway
-                .handle(&request("example.com", "example.com"))
-                .unwrap_err(),
-            GatewayError::Resolver(ResolverError::DnssecFailed),
-        );
-        assert!(
-            requests
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|request| request.qtype != RecordType::Txt.code())
-        );
-    }
-
-    #[test]
-    fn insecure_txt_shadow_is_ignored_after_secure_native_nodata() {
-        let gateway = Gateway::new(
-            gateway_config_with_icann_mode(IcannDaneLookupMode::NativeTlsaWithTxtShadowFallback),
-            ScriptedResolver::new(
-                vec![
-                    response(
-                        "example.com",
-                        RecordType::A.code(),
-                        true,
-                        vec![address_record_for("example.com")],
-                    ),
-                    response("example.com", RecordType::Https.code(), true, vec![]),
-                    response(
-                        "_443._tcp.example.com",
-                        RecordType::Tlsa.code(),
-                        true,
-                        vec![],
-                    ),
-                    response(
-                        "_443._tcp.example.com",
-                        RecordType::Txt.code(),
-                        false,
-                        vec![txt_record(
-                            "_443._tcp.example.com",
-                            "denuo-dane-v1=tlsa,3,1,1,aabbcc",
-                        )],
-                    ),
-                ],
-                Arc::new(Mutex::new(Vec::new())),
-            ),
-            CapturingTransport::default(),
-        )
-        .unwrap();
-
-        gateway
-            .handle(&request("example.com", "example.com"))
-            .unwrap();
-
-        let captured = gateway
-            .transport()
-            .last_request
-            .lock()
-            .unwrap()
-            .clone()
-            .unwrap();
+        assert_eq!(captured.tls.mode, DomainTrustMode::IcannWebPki);
         assert!(captured.tls.dnssec_secure);
-        assert!(captured.tls.tlsa_records.is_empty());
-        assert_eq!(captured.tls.tlsa_source, None);
+        assert_eq!(captured.tls.tlsa_source, Some(TlsaRecordSource::NativeTlsa));
+        assert_eq!(captured.tls.tlsa_records.len(), 1);
+        assert_eq!(captured.tls.tlsa_records[0].usage, TlsaUsage::DaneEe);
+        assert_eq!(
+            captured.tls.tlsa_records[0].selector,
+            TlsaSelector::SubjectPublicKeyInfo
+        );
+        assert_eq!(captured.tls.tlsa_records[0].matching, TlsaMatching::Sha256);
+        assert_eq!(captured.tls.tlsa_records[0].association_data, vec![0xaa]);
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![
+                ResolutionRequest {
+                    qname: "example.com".to_owned(),
+                    qtype: RecordType::A.code(),
+                },
+                ResolutionRequest {
+                    qname: "example.com".to_owned(),
+                    qtype: RecordType::Https.code(),
+                },
+                ResolutionRequest {
+                    qname: "_443._tcp.example.com".to_owned(),
+                    qtype: RecordType::Tlsa.code(),
+                },
+            ],
+        );
     }
 
     #[test]
-    fn malformed_secure_txt_shadow_fails_closed() {
+    fn icann_native_tlsa_no_data_does_not_query_txt() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
         let gateway = Gateway::new(
-            gateway_config_with_icann_mode(IcannDaneLookupMode::NativeTlsaWithTxtShadowFallback),
+            GatewayConfig::default(),
             ScriptedResolver::new(
                 vec![
                     response(
@@ -1805,53 +1416,6 @@ mod tests {
                         RecordType::Tlsa.code(),
                         true,
                         vec![],
-                    ),
-                    response(
-                        "_443._tcp.example.com",
-                        RecordType::Txt.code(),
-                        true,
-                        vec![txt_record(
-                            "_443._tcp.example.com",
-                            "denuo-dane-v1=tlsa,3,1,1,abc",
-                        )],
-                    ),
-                ],
-                Arc::new(Mutex::new(Vec::new())),
-            ),
-            CapturingTransport::default(),
-        )
-        .unwrap();
-
-        assert_eq!(
-            gateway
-                .handle(&request("example.com", "example.com"))
-                .unwrap_err(),
-            GatewayError::InvalidTlsaShadow,
-        );
-    }
-
-    #[test]
-    fn txt_shadow_only_mode_skips_native_tlsa_query() {
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let gateway = Gateway::new(
-            gateway_config_with_icann_mode(IcannDaneLookupMode::TxtShadowOnlyForPrivateNetworks),
-            ScriptedResolver::new(
-                vec![
-                    response(
-                        "example.com",
-                        RecordType::A.code(),
-                        true,
-                        vec![address_record_for("example.com")],
-                    ),
-                    response("example.com", RecordType::Https.code(), true, vec![]),
-                    response(
-                        "_443._tcp.example.com",
-                        RecordType::Txt.code(),
-                        true,
-                        vec![txt_record(
-                            "_443._tcp.example.com",
-                            "denuo-dane-v1=tlsa,2,1,2,aabbcc",
-                        )],
                     ),
                 ],
                 Arc::clone(&requests),
@@ -1871,18 +1435,26 @@ mod tests {
             .unwrap()
             .clone()
             .unwrap();
+        assert_eq!(captured.tls.mode, DomainTrustMode::IcannWebPki);
+        assert!(captured.tls.dnssec_secure);
+        assert!(captured.tls.tlsa_records.is_empty());
+        assert_eq!(captured.tls.tlsa_source, None);
         assert_eq!(
-            captured.tls.tlsa_source,
-            Some(TlsaRecordSource::DnssecTxtShadow)
-        );
-        assert_eq!(captured.tls.tlsa_records[0].usage, TlsaUsage::DaneTa);
-        assert_eq!(captured.tls.tlsa_records[0].matching, TlsaMatching::Sha512);
-        assert!(
-            requests
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|request| request.qtype != RecordType::Tlsa.code())
+            *requests.lock().unwrap(),
+            vec![
+                ResolutionRequest {
+                    qname: "example.com".to_owned(),
+                    qtype: RecordType::A.code(),
+                },
+                ResolutionRequest {
+                    qname: "example.com".to_owned(),
+                    qtype: RecordType::Https.code(),
+                },
+                ResolutionRequest {
+                    qname: "_443._tcp.example.com".to_owned(),
+                    qtype: RecordType::Tlsa.code(),
+                },
+            ],
         );
     }
 
@@ -2269,15 +1841,6 @@ mod tests {
         }
     }
 
-    fn gateway_config_with_icann_mode(
-        icann_dane_lookup_mode: IcannDaneLookupMode,
-    ) -> GatewayConfig {
-        GatewayConfig {
-            icann_dane_lookup_mode,
-            ..GatewayConfig::default()
-        }
-    }
-
     fn push_u16(out: &mut Vec<u8>, value: u16) {
         out.extend(value.to_be_bytes());
     }
@@ -2290,23 +1853,6 @@ mod tests {
             ttl: 60,
             rdata: name_rdata(target),
         }
-    }
-
-    fn txt_record(owner: &str, text: &str) -> ResourceRecord {
-        ResourceRecord {
-            name: DnsName::from_ascii(owner).unwrap(),
-            record_type: RecordType::Txt,
-            class: 1,
-            ttl: 60,
-            rdata: txt_rdata(text),
-        }
-    }
-
-    fn txt_rdata(text: &str) -> Vec<u8> {
-        assert!(text.len() <= u8::MAX as usize);
-        let mut out = vec![text.len() as u8];
-        out.extend(text.as_bytes());
-        out
     }
 
     fn name_rdata(name: &str) -> Vec<u8> {

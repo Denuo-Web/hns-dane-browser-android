@@ -89,7 +89,6 @@ internal object HnsTlsaTraceFormat {
     fun tlsaSource(tls: JSONObject?): String =
         when (val source = fieldText(tls, "tlsaSource", "")) {
             "native_tlsa" -> "native TLSA"
-            "dnssec_txt_shadow" -> "DANE TXT shadow"
             "" -> "none"
             else -> source.replace('_', ' ')
         }
