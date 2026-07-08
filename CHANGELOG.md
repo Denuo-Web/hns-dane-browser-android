@@ -8,6 +8,13 @@ All notable changes to this project will be documented in this file.
 
 - Removed the ICANN DANE TXT-shadow compatibility fallback. The hardcoded ICANN DANE test host now uses native DNSSEC TLSA only, while delegated HNS authoritative DoH continues to use RFC 9461 `_dns.<nameserver>` SVCB discovery.
 
+## 0.3.6 - 2026-07-08
+
+### Changed
+
+- Kept HNS sync active only while the app is open, removed the persistent phone sync notification, hid completed sync progress until header resync, enlarged the browser menu, aligned the main toolbar with the top of the app, and moved header resync into HNS Sync settings.
+- Bumped the Android app, Rust core, network user-agent strings, Play upload defaults, and Play metadata package for the 0.3.6 release.
+
 ## 0.3.5 - 2026-07-08
 
 ### Added

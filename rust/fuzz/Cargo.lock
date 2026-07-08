@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "hns-core"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "blake2",
  "hex",
@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "hns-dane"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "hns-core",
  "hns-dnssec",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "hns-dnssec"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "hns-core",
  "num-bigint",
@@ -321,7 +321,7 @@ dependencies = [
 
 [[package]]
 name = "hns-p2p"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "hns-core",
  "hns-urkel",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "hns-urkel"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "hns-core",
  "thiserror",

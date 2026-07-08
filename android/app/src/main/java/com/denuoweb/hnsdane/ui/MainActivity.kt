@@ -13,6 +13,7 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import android.text.InputType
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.KeyEvent
@@ -156,9 +157,12 @@ class MainActivity : ComponentActivity() {
         omnibox = EditText(this).apply {
             hint = getString(R.string.omnibox_hint)
             setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_VARIATION_URI or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             textSize = 16f
             minHeight = dp(48)
-            imeOptions = EditorInfo.IME_ACTION_GO
+            imeOptions = EditorInfo.IME_ACTION_GO or EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
             setSelectAllOnFocus(true)
             setOnEditorActionListener { _, actionId, event ->
                 val decision = omniboxEditorDecision(actionId, event?.keyCode, event?.action)

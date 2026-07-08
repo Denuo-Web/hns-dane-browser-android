@@ -47,8 +47,8 @@ android {
         applicationId = "com.denuoweb.hnsdane"
         minSdk = 34
         targetSdk = 37
-        versionCode = 26
-        versionName = "0.3.5"
+        versionCode = 27
+        versionName = "0.3.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {

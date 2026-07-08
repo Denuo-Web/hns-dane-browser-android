@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+"$ROOT_DIR/scripts/check-version-consistency.sh"
 cargo fmt --manifest-path "$ROOT_DIR/rust/Cargo.toml" --all -- --check
 cargo clippy --manifest-path "$ROOT_DIR/rust/Cargo.toml" --workspace --all-targets -- -D warnings
 if ! cargo deny --version >/dev/null 2>&1; then

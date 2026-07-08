@@ -1,1 +1,1 @@
-0.3.5 adds Android localization resources for Spanish, French, German, Portuguese, Japanese, Arabic, Persian, and Hebrew, with Android app-language picker support.
+0.3.6 keeps HNS sync active only while the app is open, hides completed sync progress until header resync, and moves header resync into HNS Sync settings.
