@@ -1252,7 +1252,7 @@ fn build_http2_request(request: &OriginRequest) -> Result<Http2Request<()>, Tran
         let headers = h2_request.headers_mut();
         headers.insert(
             HeaderName::from_static("user-agent"),
-            HeaderValue::from_static("hns-dane-browser/0.3.4"),
+            HeaderValue::from_static(concat!("hns-dane-browser/", env!("CARGO_PKG_VERSION"))),
         );
         if !has_header(&request.headers, "accept") {
             headers.insert(
@@ -1416,7 +1416,11 @@ fn build_http_request(
     let mut out = Vec::new();
     write!(
         out,
-        "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: hns-dane-browser/0.3.4\r\n",
+        concat!(
+            "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: hns-dane-browser/",
+            env!("CARGO_PKG_VERSION"),
+            "\r\n",
+        ),
         request.method.to_ascii_uppercase(),
         request.path_and_query,
         host_header(&request.host, request.port, &request.scheme),
@@ -1456,7 +1460,11 @@ fn build_http_upgrade_request(request: &OriginRequest) -> Result<Vec<u8>, Transp
     let mut out = Vec::new();
     write!(
         out,
-        "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: hns-dane-browser/0.3.4\r\n",
+        concat!(
+            "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: hns-dane-browser/",
+            env!("CARGO_PKG_VERSION"),
+            "\r\n",
+        ),
         request.method.to_ascii_uppercase(),
         request.path_and_query,
         host_header(&request.host, request.port, &request.scheme),

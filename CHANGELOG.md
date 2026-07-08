@@ -8,6 +8,17 @@ All notable changes to this project will be documented in this file.
 
 - Removed the ICANN DANE TXT-shadow compatibility fallback. The hardcoded ICANN DANE test host now uses native DNSSEC TLSA only, while delegated HNS authoritative DoH continues to use RFC 9461 `_dns.<nameserver>` SVCB discovery.
 
+## 0.3.5 - 2026-07-08
+
+### Added
+
+- Added Android locale resources for English, Spanish, French, German, Portuguese, Japanese, Arabic, Persian, and Hebrew.
+- Added Android per-app language configuration and a Settings entry for Android's system app-language picker.
+
+### Changed
+
+- Bumped the Android app, Rust core, network user-agent strings, Play upload defaults, and Play metadata package for the 0.3.5 release.
+
 ## 0.3.4 - 2026-07-07
 
 ### Added

@@ -9,9 +9,9 @@ fi
 package_name="${PLAY_PACKAGE:-com.denuoweb.hnsdane}"
 track_name="${PLAY_TRACK:-alpha}"
 release_status="${PLAY_RELEASE_STATUS:-completed}"
-aab_path="${1:-dist/play-store/hns-dane-browser-v0.3.4-play-upload-signed.aab}"
-release_name="${PLAY_RELEASE_NAME:-HNS DANE Browser 0.3.4}"
-release_notes="${PLAY_RELEASE_NOTES:-Experimental stateless HNS DANE certificates are available behind a Settings flag for certificate-carried Urkel proof and DNSSEC-chain validation.}"
+aab_path="${1:-dist/play-store/hns-dane-browser-v0.3.5-play-upload-signed.aab}"
+release_name="${PLAY_RELEASE_NAME:-HNS DANE Browser 0.3.5}"
+release_notes="${PLAY_RELEASE_NOTES:-Adds Android localization resources for Spanish, French, German, Portuguese, Japanese, Arabic, Persian, and Hebrew, with Android app-language picker support.}"
 
 if [[ ! -f "$aab_path" ]]; then
   echo "AAB not found: $aab_path" >&2

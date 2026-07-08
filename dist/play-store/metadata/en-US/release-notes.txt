@@ -1,1 +1,1 @@
-0.3.4 adds an off-by-default experimental stateless HNS DANE certificate mode using certificate-carried Urkel proof and DNSSEC-chain evidence against recent local HNS tree roots.
+0.3.5 adds Android localization resources for Spanish, French, German, Portuguese, Japanese, Arabic, Persian, and Hebrew, with Android app-language picker support.
