@@ -1,1 +1,1 @@
-0.3.6 keeps HNS sync active only while the app is open, hides completed sync progress until header resync, and moves header resync into HNS Sync settings.
+0.3.7 disables spellcheck, suggestions, and personalized learning for the browser omnibar while preserving the HNS sync UI refinements.

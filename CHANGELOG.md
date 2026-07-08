@@ -8,6 +8,13 @@ All notable changes to this project will be documented in this file.
 
 - Removed the ICANN DANE TXT-shadow compatibility fallback. The hardcoded ICANN DANE test host now uses native DNSSEC TLSA only, while delegated HNS authoritative DoH continues to use RFC 9461 `_dns.<nameserver>` SVCB discovery.
 
+## 0.3.7 - 2026-07-08
+
+### Changed
+
+- Disabled spellcheck, suggestions, and personalized learning for the browser omnibar so Android keyboards treat it as a URI/search field instead of prose.
+- Bumped the Android app, Rust core, network user-agent strings, Play upload defaults, and Play metadata package for the 0.3.7 release.
+
 ## 0.3.6 - 2026-07-08
 
 ### Changed
