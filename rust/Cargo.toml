@@ -53,7 +53,7 @@ rustls = { version = "0.23.41", default-features = false, features = ["ring", "s
 serde = { version = "1", features = ["derive"] }
 sha1 = "0.10"
 sha2 = "0.10"
-sha3 = "0.10"
+sha3 = "0.12"
 subtle = "2"
 thiserror = "2"
 tokio = "1"
