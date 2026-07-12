@@ -1,1 +1,1 @@
-0.3.7 disables spellcheck, suggestions, and personalized learning for the browser omnibar while preserving the HNS sync UI refinements.
+0.3.8 hardens native network boundaries, loopback proxy authentication, release supply-chain checks, browser lifecycle cleanup, and HNS resolver behavior.

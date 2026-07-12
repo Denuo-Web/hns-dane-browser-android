@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.3.8 - 2026-07-12
+
 ### Security
 
 - Blocked native origin, authoritative DNS/DoH, and advertised P2P connections to non-public endpoints on mainnet/testnet, enforced the browser unsafe-port policy, and kept explicit regtest-only development exceptions.
@@ -20,6 +22,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - Removed the ICANN DANE TXT-shadow compatibility fallback. The hardcoded ICANN DANE test host now uses native DNSSEC TLSA only, while delegated HNS authoritative DoH continues to use RFC 9461 `_dns.<nameserver>` SVCB discovery.
+- Bumped the Android app, Rust core, network user-agent strings, Play upload defaults, and Play metadata package for the 0.3.8 release.
 
 ## 0.3.7 - 2026-07-08
 

@@ -252,11 +252,11 @@ dependencies = [
 
 [[package]]
 name = "hns-cache"
-version = "0.3.7"
+version = "0.3.8"
 
 [[package]]
 name = "hns-chain"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "hns-core",
  "rusqlite",
@@ -265,7 +265,7 @@ dependencies = [
 
 [[package]]
 name = "hns-core"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "blake2",
  "hex",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "hns-dane"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "hns-core",
  "hns-dnssec",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "hns-dnssec"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "hns-core",
  "num-bigint",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "hns-p2p"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "hns-core",
  "hns-urkel",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "hns-resolver"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "hns-cache",
  "hns-core",
@@ -335,7 +335,7 @@ dependencies = [
 
 [[package]]
 name = "hns-sync"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "hns-chain",
  "hns-core",
@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "hns-urkel"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "hns-core",
  "thiserror",
