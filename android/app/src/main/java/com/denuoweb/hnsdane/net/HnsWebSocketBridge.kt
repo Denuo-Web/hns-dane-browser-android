@@ -34,7 +34,6 @@ class HnsWebSocketBridge(
     private val dataDir: File,
     private val activeMainFrameUrl: () -> String?,
     private val strictHnsMode: () -> Boolean = { false },
-    private val allowInsecureHnsResolution: () -> Boolean = { false },
     private val dohResolverUrl: () -> String = { "" },
     private val statelessDaneCertificates: () -> Boolean = { false },
     private val handshakeNetwork: () -> String = { DEFAULT_NETWORK },
@@ -130,7 +129,6 @@ class HnsWebSocketBridge(
             protocols = payload.optJSONArray("protocols").stringValues(),
             dataDir = dataDir,
             strictHnsMode = strictHnsMode,
-            allowInsecureHnsResolution = allowInsecureHnsResolution,
             dohResolverUrl = dohResolverUrl,
             statelessDaneCertificates = statelessDaneCertificates,
             handshakeNetwork = handshakeNetwork,
@@ -240,7 +238,6 @@ private class NativeHnsWebSocketSession(
     private val protocols: List<String>,
     private val dataDir: File,
     private val strictHnsMode: () -> Boolean,
-    private val allowInsecureHnsResolution: () -> Boolean,
     private val dohResolverUrl: () -> String,
     private val statelessDaneCertificates: () -> Boolean,
     private val handshakeNetwork: () -> String,
@@ -559,9 +556,6 @@ private class NativeHnsWebSocketSession(
         }
         if (strictHnsMode()) {
             headers += HNS_GATEWAY_STRICT_MODE_HEADER to "1"
-        }
-        if (allowInsecureHnsResolution()) {
-            headers += HNS_GATEWAY_ALLOW_INSECURE_RESOLUTION_HEADER to "1"
         }
         dohResolverUrl().takeIf { it.isNotBlank() }?.let { resolver ->
             headers += HNS_GATEWAY_DOH_RESOLVER_HEADER to resolver

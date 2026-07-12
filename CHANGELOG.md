@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Security
+
+- Removed the insecure HNS DNS result opt-in. HNS gateway resolution requires verified HNS/DNSSEC data again; cleartext `http://` remains a transport choice only after secure name resolution.
+- Added a persistent yellow warning bar for `http://` pages to make cleartext transport visible separately from HNS resolution status.
+
 ## 0.3.9 - 2026-07-12
 
 ### Fixed

@@ -17,7 +17,6 @@ class HnsWebViewGatewayInterceptor(
     private val hnsGatewayBridge: HnsGatewayBridge = NativeBridge,
     private val allowProxyFallbackForBodyRequests: () -> Boolean = { false },
     private val strictHnsMode: () -> Boolean = { false },
-    private val allowInsecureHnsResolution: () -> Boolean = { false },
     private val dohResolverUrl: () -> String = { "" },
     private val statelessDaneCertificates: () -> Boolean = { false },
     private val handshakeNetwork: () -> String = { DEFAULT_NETWORK },
@@ -157,16 +156,13 @@ class HnsWebViewGatewayInterceptor(
             .filterKeys { name -> !isHopByHopOrSyntheticHeader(name) }
             .map { (name, value) -> name to value }
             .filterNot { it.first.equals(HNS_GATEWAY_STRICT_MODE_HEADER, ignoreCase = true) }
-            .filterNot { it.first.equals(HNS_GATEWAY_ALLOW_INSECURE_RESOLUTION_HEADER, ignoreCase = true) }
             .filterNot { it.first.equals(HNS_GATEWAY_DOH_RESOLVER_HEADER, ignoreCase = true) }
             .filterNot { it.first.equals(HNS_GATEWAY_STATELESS_DANE_HEADER, ignoreCase = true) }
             .filterNot { it.first.equals(HNS_GATEWAY_NETWORK_HEADER, ignoreCase = true) }
             .toMutableList()
+        headers += "Accept-Encoding" to "identity"
         if (strictHnsMode()) {
             headers += HNS_GATEWAY_STRICT_MODE_HEADER to "1"
-        }
-        if (allowInsecureHnsResolution()) {
-            headers += HNS_GATEWAY_ALLOW_INSECURE_RESOLUTION_HEADER to "1"
         }
         dohResolverUrl().takeIf { it.isNotBlank() }?.let { resolver ->
             headers += HNS_GATEWAY_DOH_RESOLVER_HEADER to resolver
@@ -506,6 +502,7 @@ private fun isHopByHopOrSyntheticHeader(name: String): Boolean {
         name.equals("TE", ignoreCase = true) ||
         name.equals("Trailer", ignoreCase = true) ||
         name.equals("Upgrade", ignoreCase = true) ||
+        name.equals("Accept-Encoding", ignoreCase = true) ||
         name.equals("Content-Length", ignoreCase = true) ||
         name.equals("Host", ignoreCase = true) ||
         name.equals(HNS_GATEWAY_STRICT_MODE_HEADER, ignoreCase = true) ||

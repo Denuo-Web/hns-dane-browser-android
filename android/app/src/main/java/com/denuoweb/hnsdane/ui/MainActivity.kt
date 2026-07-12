@@ -6,6 +6,7 @@ import android.content.ContentValues
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Bundle
@@ -75,6 +76,7 @@ import java.io.FileInputStream
 import java.io.IOException
 import java.io.ByteArrayInputStream
 import java.lang.ref.WeakReference
+import java.net.URI
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -97,6 +99,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var syncProgressBar: ProgressBar
     private lateinit var syncProgressStats: TextView
     private lateinit var pageProgressBar: ProgressBar
+    private lateinit var httpWarningBar: TextView
     private lateinit var proxyController: HnsProxyController
     private lateinit var hnsWebSocketBridge: HnsWebSocketBridge
     private var loopbackProxyServer: LoopbackProxyServer? = null
@@ -139,7 +142,6 @@ class MainActivity : ComponentActivity() {
             dataDir = filesDir,
             activeMainFrameUrl = { activeMainFrameUrl },
             strictHnsMode = { HnsResolutionPreferences.strictHnsMode(this) },
-            allowInsecureHnsResolution = { HnsResolutionPreferences.allowInsecureHnsResolution(this) },
             dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
             statelessDaneCertificates = { HnsResolutionPreferences.statelessDaneCertificates(this) },
             handshakeNetwork = { HnsResolutionPreferences.handshakeNetworkId(this) },
@@ -150,7 +152,6 @@ class MainActivity : ComponentActivity() {
             dataDir = filesDir,
             allowProxyFallbackForBodyRequests = { proxyAvailable },
             strictHnsMode = { HnsResolutionPreferences.strictHnsMode(this) },
-            allowInsecureHnsResolution = { HnsResolutionPreferences.allowInsecureHnsResolution(this) },
             dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
             statelessDaneCertificates = { HnsResolutionPreferences.statelessDaneCertificates(this) },
             handshakeNetwork = { HnsResolutionPreferences.handshakeNetworkId(this) },
@@ -219,6 +220,20 @@ class MainActivity : ComponentActivity() {
             progress = 0
             visibility = View.GONE
         }
+        httpWarningBar = TextView(this).apply {
+            text = getString(R.string.http_transport_warning)
+            contentDescription = getString(R.string.http_transport_warning)
+            gravity = Gravity.CENTER_VERTICAL
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.MARQUEE
+            marqueeRepeatLimit = -1
+            isSelected = true
+            textSize = 12f
+            setPadding(dp(12), 0, dp(12), 0)
+            setTextColor(Color.rgb(49, 39, 0))
+            setBackgroundColor(Color.rgb(255, 214, 102))
+            visibility = View.GONE
+        }
 
         webView = WebView(this).apply {
             BrowserWebViewHardening.applyTo(this, allowJavaScript = true)
@@ -264,6 +279,10 @@ class MainActivity : ComponentActivity() {
             addView(pageProgressBar, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
+            ))
+            addView(httpWarningBar, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(HTTP_WARNING_BAR_HEIGHT_DP),
             ))
             addView(webView, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -354,7 +373,6 @@ class MainActivity : ComponentActivity() {
             EPHEMERAL_GATEWAY_PORT,
             filesDir,
             strictHnsMode = { HnsResolutionPreferences.strictHnsMode(this) },
-            allowInsecureHnsResolution = { HnsResolutionPreferences.allowInsecureHnsResolution(this) },
             dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
             statelessDaneCertificates = { HnsResolutionPreferences.statelessDaneCertificates(this) },
             handshakeNetwork = { HnsResolutionPreferences.handshakeNetworkId(this) },
@@ -792,6 +810,7 @@ class MainActivity : ComponentActivity() {
         refreshLoopbackProxyScope()
         refreshSecurityState()
         refreshPageProgress()
+        refreshTransportWarning()
         webView.reload()
     }
 
@@ -816,6 +835,7 @@ class MainActivity : ComponentActivity() {
         refreshLoopbackProxyScope()
         refreshSecurityState()
         refreshPageProgress()
+        refreshTransportWarning()
         webView.loadUrl(target.url)
     }
 
@@ -837,7 +857,6 @@ class MainActivity : ComponentActivity() {
                 mainFrameHnsStatusCode = mainFrameHnsStatusCode,
                 mainFrameHnsTlsPolicy = mainFrameHnsTlsPolicy,
                 mainFrameHnsResolverPolicy = mainFrameHnsResolverPolicy,
-                mainFrameHnsTraceJson = mainFrameHnsTraceJson,
             ),
         )
     }
@@ -911,12 +930,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun refreshTransportWarning() {
+        if (!::httpWarningBar.isInitialized) {
+            return
+        }
+        httpWarningBar.visibility = if (activeMainFrameUrl.isHttpUrl()) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
+    }
+
     private fun setSecurityState(state: SecurityState) {
         securityLabel.text = when (state) {
             SecurityState.Syncing -> getString(R.string.security_syncing)
             SecurityState.Loading -> getString(R.string.security_loading)
             SecurityState.HnsVerified -> getString(R.string.security_hns_verified)
-            SecurityState.HnsInsecure -> getString(R.string.security_hns_insecure)
             SecurityState.HnsCompatibility -> getString(R.string.security_hns_compat)
             SecurityState.DaneVerified -> getString(R.string.security_dane_verified)
             SecurityState.DaneCompatibility -> getString(R.string.security_dane_compat)
@@ -953,6 +982,7 @@ class MainActivity : ComponentActivity() {
             refreshLoopbackProxyScope()
             refreshSecurityState()
             refreshPageProgress()
+            refreshTransportWarning()
         }
 
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -981,6 +1011,7 @@ class MainActivity : ComponentActivity() {
             clearMainFrameHnsStatus()
             refreshLoopbackProxyScope()
             refreshSecurityState()
+            refreshTransportWarning()
             return false
         }
 
@@ -1029,6 +1060,7 @@ class MainActivity : ComponentActivity() {
             recordHistoryEntry(url, view.title)
             refreshSecurityState()
             refreshPageProgress()
+            refreshTransportWarning()
         }
 
         override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
@@ -1159,7 +1191,6 @@ class MainActivity : ComponentActivity() {
         mimeType: String?,
     ) {
         val strictMode = HnsResolutionPreferences.strictHnsMode(this)
-        val allowInsecureResolution = HnsResolutionPreferences.allowInsecureHnsResolution(this)
         val dohResolver = HnsResolutionPreferences.dohResolverUrl(this)
         val statelessDane = HnsResolutionPreferences.statelessDaneCertificates(this)
         val handshakeNetwork = HnsResolutionPreferences.handshakeNetworkId(this)
@@ -1169,7 +1200,6 @@ class MainActivity : ComponentActivity() {
                 val fetcher = HnsNativeDownloadFetcher(
                     dataDir = filesDir,
                     strictHnsMode = { strictMode },
-                    allowInsecureHnsResolution = { allowInsecureResolution },
                     dohResolverUrl = { dohResolver },
                     statelessDaneCertificates = { statelessDane },
                     handshakeNetwork = { handshakeNetwork },
@@ -1318,7 +1348,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun String.mainFrameMatchKey(): String =
-        trim().substringBefore('#')
+        normalizedMainFrameMatchKey(this)
 
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density).toInt()
@@ -1332,6 +1362,7 @@ class MainActivity : ComponentActivity() {
         private const val SYNC_STATUS_POLL_MS = 2_000L
         private const val SECURITY_LABEL_WIDTH_DP = 136
         private const val TOOLBAR_CONTROL_HEIGHT_DP = 48
+        private const val HTTP_WARNING_BAR_HEIGHT_DP = 22
         private const val MENU_ICON_BUTTON_SIZE_DP = 55
         private const val MENU_POPUP_WIDTH_DP = MENU_ICON_BUTTON_SIZE_DP * 3
         private const val MENU_ROW_HEIGHT_DP = 55
@@ -1350,6 +1381,38 @@ private val EXTERNAL_VIEW_SCHEMES = setOf("mailto", "tel", "sms", "geo")
 
 internal fun canLaunchExternalNavigation(scheme: String?, hasUserGesture: Boolean): Boolean =
     hasUserGesture && scheme?.lowercase(Locale.US) in EXTERNAL_VIEW_SCHEMES
+
+internal fun normalizedMainFrameMatchKey(url: String): String {
+    val fragmentless = url.trim().substringBefore('#')
+    val uri = runCatching { URI(fragmentless) }.getOrNull() ?: return fragmentless
+    val scheme = uri.scheme?.lowercase(Locale.US) ?: return fragmentless
+    if (scheme != "http" && scheme != "https") {
+        return fragmentless
+    }
+    val host = uri.host
+        ?.trim()
+        ?.trimEnd('.')
+        ?.lowercase(Locale.US)
+        ?.takeIf { it.isNotBlank() }
+        ?: return fragmentless
+    val port = uri.port
+    val portPart = when {
+        port < 0 -> ""
+        scheme == "http" && port == 80 -> ""
+        scheme == "https" && port == 443 -> ""
+        else -> ":$port"
+    }
+    val path = uri.rawPath?.takeIf { it.isNotEmpty() } ?: "/"
+    val query = uri.rawQuery?.let { "?$it" }.orEmpty()
+    return "$scheme://$host$portPart$path$query"
+}
+
+private fun String?.isHttpUrl(): Boolean {
+    val value = this?.trim()?.takeIf { it.isNotEmpty() } ?: return false
+    return runCatching {
+        Uri.parse(value).scheme?.equals("http", ignoreCase = true) == true
+    }.getOrDefault(false)
+}
 
 internal fun isBlockedLoopbackHost(host: String?): Boolean {
     val normalized = host

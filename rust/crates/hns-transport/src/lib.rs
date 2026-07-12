@@ -31,6 +31,7 @@ const MAX_TLS_CAPTURE_ENTRIES: usize = 256;
 const MAX_INFORMATIONAL_RESPONSES: usize = 8;
 const MAX_HTTP_TRAILER_FIELDS: usize = 128;
 const MAX_ALT_SVC_AGE_SECS: u64 = 24 * 60 * 60;
+const ALT_SVC_FAILURE_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 const TUNNEL_READ_TIMEOUT: Duration = Duration::from_millis(250);
 pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MAX_RESPONSE_HEADER_BYTES: usize = 64 * 1024;
@@ -168,6 +169,10 @@ impl<'a> CountingWriter<'a> {
     fn new(inner: &'a mut dyn Write) -> Self {
         Self { inner, written: 0 }
     }
+
+    fn inner_mut(&mut self) -> &mut dyn Write {
+        &mut *self.inner
+    }
 }
 
 impl Write for CountingWriter<'_> {
@@ -206,6 +211,7 @@ struct TransportState {
     tls_verifiers: HashMap<String, Arc<DaneServerCertVerifier>>,
     tls_resumption: HashMap<String, Resumption>,
     alt_svc: HashMap<AltSvcKey, AltSvcEndpoint>,
+    blocked_alt_svc: HashMap<AltSvcKey, Instant>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -354,6 +360,38 @@ impl TcpHttpTransport {
 
     pub fn limits(&self) -> TransportLimits {
         self.limits
+    }
+
+    fn fetch_unpromoted(&self, request: &OriginRequest) -> Result<OriginResponse, TransportError> {
+        match (
+            request.scheme.to_ascii_lowercase().as_str(),
+            request.protocol,
+        ) {
+            ("http", OriginProtocol::Http11) => self.fetch_http11(request),
+            ("https", OriginProtocol::Http11) => self.fetch_https_http11(request),
+            ("https", OriginProtocol::Http2) => self.fetch_https_http2(request),
+            ("https", OriginProtocol::Http3) => self.fetch_https_http3(request),
+            ("http", _) => Err(TransportError::UnsupportedTransport),
+            _ => Err(TransportError::UnsupportedScheme),
+        }
+    }
+
+    fn fetch_unpromoted_to_writer(
+        &self,
+        request: &OriginRequest,
+        body: &mut dyn Write,
+    ) -> Result<OriginResponseHead, TransportError> {
+        match (
+            request.scheme.to_ascii_lowercase().as_str(),
+            request.protocol,
+        ) {
+            ("http", OriginProtocol::Http11) => self.fetch_http11_to_writer(request, body),
+            ("https", OriginProtocol::Http11) => self.fetch_https_http11_to_writer(request, body),
+            ("https", OriginProtocol::Http2) => self.fetch_https_http2_to_writer(request, body),
+            ("https", OriginProtocol::Http3) => self.fetch_https_http3_to_writer(request, body),
+            ("http", _) => Err(TransportError::UnsupportedTransport),
+            _ => Err(TransportError::UnsupportedScheme),
+        }
     }
 
     fn fetch_http11(&self, request: &OriginRequest) -> Result<OriginResponse, TransportError> {
@@ -932,6 +970,7 @@ impl TcpHttpTransport {
     fn promoted_request(&self, request: &OriginRequest) -> OriginRequest {
         if !request.scheme.eq_ignore_ascii_case("https")
             || request.protocol == OriginProtocol::Http3
+            || !is_safe_retry_method(&request.method)
         {
             return request.clone();
         }
@@ -945,7 +984,14 @@ impl TcpHttpTransport {
             state
                 .alt_svc
                 .retain(|_, endpoint| endpoint.expires_at > now);
-            state.alt_svc.get(&key).cloned()
+            state
+                .blocked_alt_svc
+                .retain(|_, expires_at| *expires_at > now);
+            if state.blocked_alt_svc.contains_key(&key) {
+                None
+            } else {
+                state.alt_svc.get(&key).cloned()
+            }
         }) else {
             return request.clone();
         };
@@ -980,6 +1026,7 @@ impl TcpHttpTransport {
         {
             if let Ok(mut state) = self.state.lock() {
                 state.alt_svc.remove(&key);
+                state.blocked_alt_svc.remove(&key);
             }
             return;
         }
@@ -991,10 +1038,40 @@ impl TcpHttpTransport {
             state
                 .alt_svc
                 .retain(|_, endpoint| endpoint.expires_at > now);
+            state
+                .blocked_alt_svc
+                .retain(|_, expires_at| *expires_at > now);
+            if state.blocked_alt_svc.contains_key(&key) {
+                return;
+            }
             if !state.alt_svc.contains_key(&key) {
                 evict_one_if_at_capacity(&mut state.alt_svc, MAX_ALT_SVC_CACHE_ENTRIES);
             }
             state.alt_svc.insert(key, endpoint);
+        }
+    }
+
+    fn suppress_alt_svc(&self, request: &OriginRequest) {
+        if !request.scheme.eq_ignore_ascii_case("https") {
+            return;
+        }
+        let key = AltSvcKey {
+            scheme: "https".to_owned(),
+            host: request.host.to_ascii_lowercase(),
+            port: request.port,
+        };
+        if let Ok(mut state) = self.state.lock() {
+            let now = Instant::now();
+            state.alt_svc.remove(&key);
+            state
+                .blocked_alt_svc
+                .retain(|_, expires_at| *expires_at > now);
+            if !state.blocked_alt_svc.contains_key(&key) {
+                evict_one_if_at_capacity(&mut state.blocked_alt_svc, MAX_ALT_SVC_CACHE_ENTRIES);
+            }
+            state
+                .blocked_alt_svc
+                .insert(key, now + ALT_SVC_FAILURE_COOLDOWN);
         }
     }
 
@@ -1051,17 +1128,14 @@ impl OriginTransport for FailClosedTransport {
 
 impl OriginTransport for TcpHttpTransport {
     fn fetch(&self, request: &OriginRequest) -> Result<OriginResponse, TransportError> {
-        let request = self.promoted_request(request);
-        match (
-            request.scheme.to_ascii_lowercase().as_str(),
-            request.protocol,
-        ) {
-            ("http", OriginProtocol::Http11) => self.fetch_http11(&request),
-            ("https", OriginProtocol::Http11) => self.fetch_https_http11(&request),
-            ("https", OriginProtocol::Http2) => self.fetch_https_http2(&request),
-            ("https", OriginProtocol::Http3) => self.fetch_https_http3(&request),
-            ("http", _) => Err(TransportError::UnsupportedTransport),
-            _ => Err(TransportError::UnsupportedScheme),
+        let promoted = self.promoted_request(request);
+        match self.fetch_unpromoted(&promoted) {
+            Ok(response) => Ok(response),
+            Err(error) if should_retry_alt_svc_fallback(request, &promoted, &error, 0) => {
+                self.suppress_alt_svc(request);
+                self.fetch_unpromoted(request)
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -1074,17 +1148,22 @@ impl OriginTransport for TcpHttpTransport {
         request: &OriginRequest,
         body: &mut dyn Write,
     ) -> Result<OriginResponseHead, TransportError> {
-        let request = self.promoted_request(request);
-        match (
-            request.scheme.to_ascii_lowercase().as_str(),
-            request.protocol,
-        ) {
-            ("http", OriginProtocol::Http11) => self.fetch_http11_to_writer(&request, body),
-            ("https", OriginProtocol::Http11) => self.fetch_https_http11_to_writer(&request, body),
-            ("https", OriginProtocol::Http2) => self.fetch_https_http2_to_writer(&request, body),
-            ("https", OriginProtocol::Http3) => self.fetch_https_http3_to_writer(&request, body),
-            ("http", _) => Err(TransportError::UnsupportedTransport),
-            _ => Err(TransportError::UnsupportedScheme),
+        let promoted = self.promoted_request(request);
+        let mut attempted_body = CountingWriter::new(body);
+        match self.fetch_unpromoted_to_writer(&promoted, &mut attempted_body) {
+            Ok(head) => Ok(head),
+            Err(error)
+                if should_retry_alt_svc_fallback(
+                    request,
+                    &promoted,
+                    &error,
+                    attempted_body.written,
+                ) =>
+            {
+                self.suppress_alt_svc(request);
+                self.fetch_unpromoted_to_writer(request, attempted_body.inner_mut())
+            }
+            Err(error) => Err(error),
         }
     }
 }
@@ -2222,6 +2301,36 @@ fn selected_alt_svc_endpoint(values: &[&str], request_port: u16) -> Option<AltSv
     best
 }
 
+fn should_retry_alt_svc_fallback(
+    original: &OriginRequest,
+    promoted: &OriginRequest,
+    error: &TransportError,
+    body_bytes_written: usize,
+) -> bool {
+    original.scheme.eq_ignore_ascii_case("https")
+        && promoted.scheme.eq_ignore_ascii_case("https")
+        && original.protocol != promoted.protocol
+        && original.host.eq_ignore_ascii_case(&promoted.host)
+        && original.port == promoted.port
+        && original.connect_host == promoted.connect_host
+        && body_bytes_written == 0
+        && is_safe_retry_method(&original.method)
+        && is_alt_svc_fallback_error(error)
+}
+
+fn is_alt_svc_fallback_error(error: &TransportError) -> bool {
+    matches!(
+        error,
+        TransportError::Io(_)
+            | TransportError::Http2(_)
+            | TransportError::Http3(_)
+            | TransportError::Quic(_)
+            | TransportError::UnsupportedTransport
+            | TransportError::UnsupportedTransferEncoding
+            | TransportError::MalformedResponse
+    )
+}
+
 fn alt_svc_authority_port(authority: &str, default_port: u16) -> Option<u16> {
     if authority.is_empty() {
         return Some(default_port);
@@ -2661,6 +2770,55 @@ mod tests {
         assert!(requests[0].starts_with("h1 GET /path?q=1 HTTP/1.1"));
         assert!(requests[1].starts_with("h2 GET https://example.com:"));
         assert!(requests[1].ends_with("/path?q=1"));
+    }
+
+    #[test]
+    fn does_not_promote_unsafe_method_from_alt_svc() {
+        let transport = TcpHttpTransport::default();
+        let mut request = request(SocketAddr::from((Ipv4Addr::LOCALHOST, 443)));
+        request.scheme = "https".to_owned();
+
+        transport.record_alt_svc(
+            &request,
+            &[("Alt-Svc".to_owned(), "h2=\":443\"; ma=60".to_owned())],
+        );
+        assert_eq!(
+            transport.promoted_request(&request).protocol,
+            OriginProtocol::Http2
+        );
+
+        request.method = "POST".to_owned();
+        request.body = b"dns query".to_vec();
+
+        assert_eq!(
+            transport.promoted_request(&request).protocol,
+            OriginProtocol::Http11
+        );
+    }
+
+    #[test]
+    fn falls_back_to_original_https_protocol_when_alt_svc_promotion_fails_before_body() {
+        let server = TlsTestServer::start_alt_svc_h2_then_close_then_h1();
+        let transport = TcpHttpTransport::new(
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            TransportLimits::default(),
+        );
+        let mut request = request(server.address);
+        request.scheme = "https".to_owned();
+        request.tls = TlsValidation::hns_strict(true, vec![tlsa_spki_exact(&server.cert_der)]);
+
+        let first = transport.fetch(&request).unwrap();
+        let mut streamed = Vec::new();
+        let second = transport.fetch_to_writer(&request, &mut streamed).unwrap();
+
+        assert_eq!(first.body, b"h1");
+        assert_eq!(second.status, 200);
+        assert_eq!(second.body_len, 2);
+        assert_eq!(streamed, b"fb");
+        let requests = server.requests(2);
+        assert!(requests[0].starts_with("h1 GET /path?q=1 HTTP/1.1"));
+        assert!(requests[1].starts_with("fallback GET /path?q=1 HTTP/1.1"));
     }
 
     #[test]
@@ -3637,6 +3795,76 @@ mod tests {
                                 .await;
                     }
                 });
+            });
+
+            Self {
+                address,
+                cert_der,
+                intermediate_cert_der: None,
+                request_rx,
+            }
+        }
+
+        fn start_alt_svc_h2_then_close_then_h1() -> Self {
+            let rcgen::CertifiedKey { cert, signing_key } =
+                rcgen::generate_simple_self_signed(vec!["example.com".to_owned()]).unwrap();
+            let cert_der = cert.der().to_vec();
+            let key_der =
+                PrivateKeyDer::from(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
+            let mut config = ServerConfig::builder_with_provider(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![CertificateDer::from(cert_der.clone())], key_der)
+            .unwrap();
+            config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+            let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+            let address = listener.local_addr().unwrap();
+            let (request_tx, request_rx) = mpsc::channel();
+
+            thread::spawn(move || {
+                let config = Arc::new(config);
+                {
+                    let (stream, _) = listener.accept().unwrap();
+                    let connection = ServerConnection::new(Arc::clone(&config)).unwrap();
+                    let mut stream = StreamOwned::new(connection, stream);
+                    let request = read_test_http_head(&mut stream);
+                    request_tx
+                        .send(format!("h1 {}", String::from_utf8_lossy(&request)))
+                        .unwrap();
+                    stream
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nAlt-Svc: h2=\":{}\"; ma=60\r\nConnection: close\r\n\r\nh1",
+                                address.port()
+                            )
+                            .as_bytes(),
+                        )
+                        .unwrap();
+                    stream.flush().unwrap();
+                }
+
+                let (stream, _) = listener.accept().unwrap();
+                drop(stream);
+
+                {
+                    let (stream, _) = listener.accept().unwrap();
+                    let connection = ServerConnection::new(Arc::clone(&config)).unwrap();
+                    let mut stream = StreamOwned::new(connection, stream);
+                    let request = read_test_http_head(&mut stream);
+                    request_tx
+                        .send(format!("fallback {}", String::from_utf8_lossy(&request)))
+                        .unwrap();
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nfb",
+                        )
+                        .unwrap();
+                    stream.flush().unwrap();
+                }
             });
 
             Self {

@@ -11,7 +11,6 @@ internal class HnsNativeDownloadFetcher(
     private val dataDir: File,
     private val hnsGatewayBridge: HnsGatewayBridge = NativeBridge,
     private val strictHnsMode: () -> Boolean = { false },
-    private val allowInsecureHnsResolution: () -> Boolean = { false },
     private val dohResolverUrl: () -> String = { "" },
     private val statelessDaneCertificates: () -> Boolean = { false },
     private val handshakeNetwork: () -> String = { DEFAULT_NETWORK },
@@ -137,9 +136,6 @@ internal class HnsNativeDownloadFetcher(
         userAgent?.trim()?.takeIf { it.isNotBlank() }?.let { headers += "User-Agent" to it }
         if (strictHnsMode()) {
             headers += HNS_GATEWAY_STRICT_MODE_HEADER to "1"
-        }
-        if (allowInsecureHnsResolution()) {
-            headers += HNS_GATEWAY_ALLOW_INSECURE_RESOLUTION_HEADER to "1"
         }
         dohResolverUrl().takeIf { it.isNotBlank() }?.let { resolver ->
             headers += HNS_GATEWAY_DOH_RESOLVER_HEADER to resolver

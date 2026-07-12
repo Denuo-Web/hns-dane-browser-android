@@ -4,7 +4,6 @@ enum class SecurityState {
     Syncing,
     Loading,
     HnsVerified,
-    HnsInsecure,
     HnsCompatibility,
     DaneVerified,
     DaneCompatibility,

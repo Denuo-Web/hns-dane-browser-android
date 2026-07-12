@@ -4,6 +4,7 @@ import com.denuoweb.hnsdane.core.HnsPageResolverPolicy
 import com.denuoweb.hnsdane.core.HnsPageTlsPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Before
@@ -215,6 +216,31 @@ class LoopbackProxyServerTest {
     }
 
     @Test
+    fun rootGetWithoutFetchMetadataLooksLikeMainFrameNavigation() {
+        val originForm = ProxyRequest(
+            line = ProxyRequestLine.parse("GET / HTTP/1.1"),
+            headers = listOf("Host" to "shakeshift"),
+        )
+        val absoluteForm = ProxyRequest(
+            line = ProxyRequestLine.parse("GET https://shakeshift/ HTTP/1.1"),
+            headers = listOf("Host" to "shakeshift"),
+        )
+
+        assertTrue(originForm.isLikelyMainFrameNavigation())
+        assertTrue(absoluteForm.isLikelyMainFrameNavigation())
+    }
+
+    @Test
+    fun assetGetWithoutFetchMetadataDoesNotLookLikeMainFrameNavigation() {
+        val request = ProxyRequest(
+            line = ProxyRequestLine.parse("GET /21323cf2.css HTTP/1.1"),
+            headers = listOf("Host" to "shakeshift"),
+        )
+
+        assertFalse(request.isLikelyMainFrameNavigation())
+    }
+
+    @Test
     fun hnsSingleLabelRequiresLocalResolution() {
         assertTrue(requiresHnsResolution("welcome"))
         assertTrue(requiresHnsResolution("name."))
@@ -378,6 +404,46 @@ class LoopbackProxyServerTest {
             ),
             reported.poll(1, TimeUnit.SECONDS),
         )
+        dataDir.deleteRecursively()
+    }
+
+    @Test
+    fun hnsSubresourceStatusDoesNotReportMainFrameHnsStatus() {
+        val bridge = RecordingGatewayBridge(
+            "HTTP/1.1 503 HNS Resolution Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .toByteArray(StandardCharsets.ISO_8859_1),
+        )
+        val reported = ArrayBlockingQueue<ReportedHnsStatus>(1)
+        val dataDir = createTempDirectory("hns-proxy-subresource-status-test").toFile()
+        LoopbackProxyServer(
+            0,
+            dataDir = dataDir,
+            hnsGatewayBridge = bridge,
+            onHnsStatus = { host, status, tlsPolicy, resolverPolicy, traceJson ->
+                reported.offer(ReportedHnsStatus(host, status, tlsPolicy, resolverPolicy, traceJson))
+            },
+        ).use { proxy ->
+            assertTrue(proxy.start())
+            val port = requireNotNull(proxy.boundPort())
+
+            Socket(InetAddress.getByName("127.0.0.1"), port).use { socket ->
+                socket.getOutputStream().write(
+                    (
+                        "GET http://welcome/app.js HTTP/1.1\r\n" +
+                            "Host: welcome\r\n" +
+                            "Accept: */*\r\n" +
+                            "Sec-Fetch-Dest: script\r\n" +
+                            "Sec-Fetch-Mode: no-cors\r\n\r\n"
+                        ).toByteArray(StandardCharsets.ISO_8859_1),
+                )
+                socket.getOutputStream().flush()
+
+                val response = socket.getInputStream().readBytes().toString(StandardCharsets.ISO_8859_1)
+                assertTrue(response.startsWith("HTTP/1.1 503 HNS Resolution Unavailable\r\n"))
+            }
+        }
+
+        assertNull(reported.poll(250, TimeUnit.MILLISECONDS))
         dataDir.deleteRecursively()
     }
 

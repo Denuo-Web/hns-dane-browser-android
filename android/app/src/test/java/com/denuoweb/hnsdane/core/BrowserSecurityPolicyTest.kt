@@ -94,20 +94,6 @@ class BrowserSecurityPolicyTest {
     }
 
     @Test
-    fun unsignedHnsResolutionIsMarkedUnverified() {
-        assertEquals(
-            SecurityState.HnsInsecure,
-            BrowserSecurityPolicy.state(
-                targetKind = BrowserTargetKind.HnsName,
-                proxyAvailable = true,
-                syncStatusJson = """{"status":"idle"}""",
-                mainFrameHnsStatusCode = 200,
-                mainFrameHnsTraceJson = """{"dnssec":"unsigned"}""",
-            ),
-        )
-    }
-
-    @Test
     fun mainFrameHnsGatewaySuccessShowsDaneVerifiedWhenNativeReportsDane() {
         assertEquals(
             SecurityState.DaneVerified,

@@ -83,8 +83,6 @@ const HNS_DOH_PATH: &str = "/dns-query";
 const ICANN_DOH_HOST: &str = "cloudflare-dns.com";
 const ICANN_DOH_PATH: &str = "/dns-query";
 const HNS_GATEWAY_STRICT_MODE_HEADER: &str = "X-HNS-Browser-Strict-Mode";
-const HNS_GATEWAY_ALLOW_INSECURE_RESOLUTION_HEADER: &str =
-    "X-HNS-Browser-Allow-Insecure-Resolution";
 const HNS_GATEWAY_DOH_RESOLVER_HEADER: &str = "X-HNS-Browser-DoH-Resolver";
 const HNS_GATEWAY_STATELESS_DANE_HEADER: &str = "X-HNS-Browser-Stateless-DANE";
 const HNS_GATEWAY_NETWORK_HEADER: &str = "X-HNS-Browser-Network";
@@ -115,7 +113,6 @@ pub struct GatewayHttpRequestInput<'a> {
 struct ParsedGatewayHeaders {
     headers: Vec<(String, String)>,
     strict_hns_mode: bool,
-    allow_insecure_hns_resolution: bool,
     doh_endpoint: HnsDohEndpoint,
     stateless_dane_certificates: bool,
     network: NetworkKind,
@@ -1503,7 +1500,6 @@ pub fn gateway_http_response(input: GatewayHttpRequestInput<'_>) -> Vec<u8> {
     let gateway = match Gateway::new(
         GatewayConfig {
             hns_https_mode: HnsHttpsMode::Compatibility,
-            allow_insecure_hns_origin_resolution: parsed_headers.allow_insecure_hns_resolution,
             stateless_dane,
             allow_non_public_origin_addresses: network == NetworkKind::Regtest || cfg!(test),
             allow_unsafe_origin_ports: network == NetworkKind::Regtest,
@@ -1616,7 +1612,6 @@ pub fn gateway_http_response_body_to_file(
     let gateway = match Gateway::new(
         GatewayConfig {
             hns_https_mode: HnsHttpsMode::Compatibility,
-            allow_insecure_hns_origin_resolution: parsed_headers.allow_insecure_hns_resolution,
             stateless_dane,
             allow_non_public_origin_addresses: network == NetworkKind::Regtest || cfg!(test),
             allow_unsafe_origin_ports: network == NetworkKind::Regtest,
@@ -1744,7 +1739,6 @@ pub fn gateway_http_upgrade_tunnel(
     let gateway = match Gateway::new(
         GatewayConfig {
             hns_https_mode: HnsHttpsMode::Compatibility,
-            allow_insecure_hns_origin_resolution: parsed_headers.allow_insecure_hns_resolution,
             stateless_dane,
             allow_non_public_origin_addresses: network == NetworkKind::Regtest || cfg!(test),
             allow_unsafe_origin_ports: network == NetworkKind::Regtest,
@@ -2027,7 +2021,6 @@ fn parse_gateway_headers(header_text: &str) -> Result<ParsedGatewayHeaders, &'st
 
     let mut headers = Vec::new();
     let mut strict_hns_mode = false;
-    let mut allow_insecure_hns_resolution = false;
     let mut doh_endpoint = HnsDohEndpoint::default();
     let mut stateless_dane_certificates = false;
     let mut network = NetworkKind::Mainnet;
@@ -2053,12 +2046,6 @@ fn parse_gateway_headers(header_text: &str) -> Result<ParsedGatewayHeaders, &'st
             }
             continue;
         }
-        if name.eq_ignore_ascii_case(HNS_GATEWAY_ALLOW_INSECURE_RESOLUTION_HEADER) {
-            if value == "1" || value.eq_ignore_ascii_case("true") {
-                allow_insecure_hns_resolution = true;
-            }
-            continue;
-        }
         if name.eq_ignore_ascii_case(HNS_GATEWAY_DOH_RESOLVER_HEADER) {
             doh_endpoint = HnsDohEndpoint::parse(value)?;
             continue;
@@ -2079,7 +2066,6 @@ fn parse_gateway_headers(header_text: &str) -> Result<ParsedGatewayHeaders, &'st
     Ok(ParsedGatewayHeaders {
         headers,
         strict_hns_mode,
-        allow_insecure_hns_resolution,
         doh_endpoint,
         stateless_dane_certificates,
         network,
@@ -5779,14 +5765,12 @@ mod tests {
         let parsed = parse_gateway_headers(
             "Accept: text/html\r\n\
              X-HNS-Browser-Strict-Mode: 1\r\n\
-             X-HNS-Browser-Allow-Insecure-Resolution: 1\r\n\
              X-HNS-Browser-DoH-Resolver: https://resolver.example/dns-query\r\n\
              X-HNS-Browser-Stateless-DANE: 1\r\n",
         )
         .unwrap();
 
         assert!(parsed.strict_hns_mode);
-        assert!(parsed.allow_insecure_hns_resolution);
         assert!(parsed.stateless_dane_certificates);
         assert_eq!(parsed.network, NetworkKind::Mainnet);
         assert_eq!(

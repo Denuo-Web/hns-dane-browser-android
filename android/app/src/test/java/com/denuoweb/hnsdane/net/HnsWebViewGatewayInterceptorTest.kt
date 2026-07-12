@@ -19,35 +19,6 @@ class HnsWebViewGatewayInterceptorTest {
     }
 
     @Test
-    fun forwardsInsecureResolutionPreferenceOnlyAsInternalGatewayHeader() {
-        val bridge = RecordingGatewayBridge(
-            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".toByteArray(StandardCharsets.ISO_8859_1),
-        )
-        val dataDir = createTempDirectory("hns-insecure-resolution-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(
-            dataDir,
-            bridge,
-            allowInsecureHnsResolution = { true },
-        )
-
-        val response = interceptor.intercept(
-            "GET",
-            "http://welcome/",
-            mapOf(HNS_GATEWAY_ALLOW_INSECURE_RESOLUTION_HEADER to "0"),
-        )
-
-        requireNotNull(response)
-        assertEquals(200, response.statusCode)
-        assertEquals(
-            listOf(HNS_GATEWAY_ALLOW_INSECURE_RESOLUTION_HEADER to "1"),
-            bridge.calls.single().headers.filter {
-                it.first == HNS_GATEWAY_ALLOW_INSECURE_RESOLUTION_HEADER
-            },
-        )
-        dataDir.deleteRecursively()
-    }
-
-    @Test
     fun hnsHttpsGetUsesNativeGatewayBridge() {
         val bridge = RecordingGatewayBridge(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nX-Test: yes\r\nContent-Length: 2\r\n\r\nok"
@@ -61,6 +32,7 @@ class HnsWebViewGatewayInterceptorTest {
             url = "https://welcome/path?q=1#fragment",
             requestHeaders = mapOf(
                 "Accept" to "text/html",
+                "Accept-Encoding" to "gzip, deflate, br",
                 "Host" to "ignored",
                 "Connection" to "keep-alive",
             ),
@@ -74,7 +46,7 @@ class HnsWebViewGatewayInterceptorTest {
                 "welcome",
                 443,
                 "/path?q=1",
-                listOf("Accept" to "text/html"),
+                forwardedGatewayHeaders("Accept" to "text/html"),
                 "",
             ),
             bridge.calls.single(),
@@ -153,7 +125,7 @@ class HnsWebViewGatewayInterceptorTest {
                 "dane-test.denuoweb.com",
                 443,
                 "/path",
-                emptyList(),
+                forwardedGatewayHeaders(),
                 "",
             ),
             bridge.calls.single(),
@@ -187,7 +159,7 @@ class HnsWebViewGatewayInterceptorTest {
                 "welcome",
                 443,
                 "/sw-cache",
-                listOf("Accept" to "*/*"),
+                forwardedGatewayHeaders("Accept" to "*/*"),
                 "",
             ),
             bridge.calls.single(),
@@ -218,7 +190,7 @@ class HnsWebViewGatewayInterceptorTest {
         )
 
         assertEquals(
-            listOf(HNS_GATEWAY_STRICT_MODE_HEADER to "1"),
+            internalGatewayHeaders(HNS_GATEWAY_STRICT_MODE_HEADER to "1"),
             bridge.calls.single().headers,
         )
         dataDir.deleteRecursively()
@@ -244,7 +216,7 @@ class HnsWebViewGatewayInterceptorTest {
         )
 
         assertEquals(
-            listOf(HNS_GATEWAY_DOH_RESOLVER_HEADER to "https://resolver.example/dns-query"),
+            internalGatewayHeaders(HNS_GATEWAY_DOH_RESOLVER_HEADER to "https://resolver.example/dns-query"),
             bridge.calls.single().headers,
         )
         dataDir.deleteRecursively()
@@ -270,7 +242,7 @@ class HnsWebViewGatewayInterceptorTest {
         )
 
         assertEquals(
-            listOf(HNS_GATEWAY_STATELESS_DANE_HEADER to "1"),
+            internalGatewayHeaders(HNS_GATEWAY_STATELESS_DANE_HEADER to "1"),
             bridge.calls.single().headers,
         )
         dataDir.deleteRecursively()
@@ -296,7 +268,7 @@ class HnsWebViewGatewayInterceptorTest {
         )
 
         assertEquals(
-            listOf(HNS_GATEWAY_NETWORK_HEADER to "regtest"),
+            internalGatewayHeaders(HNS_GATEWAY_NETWORK_HEADER to "regtest"),
             bridge.calls.single().headers,
         )
         dataDir.deleteRecursively()
@@ -326,7 +298,7 @@ class HnsWebViewGatewayInterceptorTest {
                 "welcome.2d",
                 443,
                 "/path",
-                emptyList(),
+                forwardedGatewayHeaders(),
                 "",
             ),
             bridge.calls.single(),
@@ -593,6 +565,12 @@ class HnsWebViewGatewayInterceptorTest {
         val headers: List<Pair<String, String>>,
         val body: String,
     )
+
+    private fun forwardedGatewayHeaders(vararg headers: Pair<String, String>): List<Pair<String, String>> =
+        headers.toList() + ("Accept-Encoding" to "identity")
+
+    private fun internalGatewayHeaders(vararg headers: Pair<String, String>): List<Pair<String, String>> =
+        listOf("Accept-Encoding" to "identity") + headers
 
     private class RecordingGatewayBridge(
         private vararg val responses: ByteArray,

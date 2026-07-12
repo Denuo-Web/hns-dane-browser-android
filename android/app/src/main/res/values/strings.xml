@@ -37,7 +37,6 @@
     <string name="security_syncing">Syncing</string>
     <string name="security_loading">Loading</string>
     <string name="security_hns_verified">HNS verified</string>
-    <string name="security_hns_insecure" translatable="false">HNS unverified</string>
     <string name="security_hns_compat">HNS via DoH</string>
     <string name="security_dane_verified">DANE verified</string>
     <string name="security_dane_compat">DANE via DoH</string>
@@ -46,6 +45,7 @@
     <string name="security_failed">Validation failed</string>
     <string name="security_proof_unavailable">Proof unavailable</string>
     <string name="security_status_content_description">Open resolver trace</string>
+    <string name="http_transport_warning">Not secure: HTTP traffic is not encrypted</string>
     <string name="menu_hamburger_content_description">Browser menu</string>
     <string name="menu_forward">Forward</string>
     <string name="menu_refresh">Refresh</string>
@@ -292,13 +292,10 @@
     <string name="settings_header_resync_failed">Header resync did not start</string>
     <string name="settings_hns_mode_on">On. Delegated resolution failures fail closed.</string>
     <string name="settings_hns_mode_off">Off. Compatibility fallback may be used after local or direct resolution fails.</string>
-    <string name="settings_insecure_hns_resolution_on" translatable="false">On. The browser may connect to unsigned HNS DNS results and marks those pages HNS unverified.</string>
-    <string name="settings_insecure_hns_resolution_off" translatable="false">Off. Only HNS DNSSEC-validated results can reach an origin.</string>
     <string name="settings_hns_network_summary">%1$s. %2$s</string>
     <string name="settings_stateless_dane_on">On. Certificate-carried HNS proof evidence may satisfy DANE when valid.</string>
     <string name="settings_stateless_dane_off">Off. HNS proof and TLSA evidence use the live resolver path.</string>
     <string name="settings_strict_hns_mode">Strict HNS mode</string>
-    <string name="settings_allow_insecure_hns_resolution" translatable="false">Allow insecure HNS DNS results</string>
     <string name="settings_stateless_dane_certificates">Experimental stateless DANE certificates</string>
     <string name="settings_theme_dialog_title">Theme</string>
     <string name="settings_theme_set">Theme set to %1$s.</string>

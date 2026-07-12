@@ -33,7 +33,6 @@ class SettingsActivity : ComponentActivity() {
     private lateinit var cookieStatus: TextView
     private lateinit var hnsNetworkStatus: TextView
     private lateinit var hnsModeStatus: TextView
-    private lateinit var insecureHnsResolutionStatus: TextView
     private lateinit var statelessDaneStatus: TextView
     private lateinit var dohResolverStatus: TextView
     private lateinit var resolverCacheStatus: TextView
@@ -50,7 +49,6 @@ class SettingsActivity : ComponentActivity() {
         cookieStatus = preferenceSummary(cookieSummary())
         hnsNetworkStatus = preferenceSummary(hnsNetworkText())
         hnsModeStatus = preferenceSummary(hnsModeText())
-        insecureHnsResolutionStatus = preferenceSummary(insecureHnsResolutionText())
         statelessDaneStatus = preferenceSummary(statelessDaneText())
         dohResolverStatus = preferenceSummary(HnsResolutionPreferences.dohResolverUrl(this))
         resolverCacheStatus = preferenceSummary(getString(R.string.settings_resolver_cache_ready))
@@ -146,7 +144,6 @@ class SettingsActivity : ComponentActivity() {
                     showNetworkDialog()
                 })
                 addPreference(strictHnsModeOption())
-                addPreference(insecureHnsResolutionOption())
                 addPreference(statelessDaneCertificateOption())
                 addPreference(preferenceRow(
                     title = getString(R.string.row_compatibility_doh_resolver),
@@ -283,7 +280,6 @@ class SettingsActivity : ComponentActivity() {
             refreshCookieStatus()
             refreshHnsNetworkStatus()
             refreshHnsModeStatus()
-            refreshInsecureHnsResolutionStatus()
             refreshStatelessDaneStatus()
             refreshHistoryStatus()
             refreshDownloadStatus()
@@ -427,31 +423,6 @@ class SettingsActivity : ComponentActivity() {
                 }
             })
             addView(hnsModeStatus, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                leftMargin = dp(36)
-            })
-        }
-
-    private fun insecureHnsResolutionOption(): LinearLayout =
-        LinearLayout(this).apply {
-            val colors = themeColors()
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(colors.background)
-            setPadding(0, dp(8), 0, dp(10))
-            addView(CheckBox(this@SettingsActivity).apply {
-                text = getString(R.string.settings_allow_insecure_hns_resolution)
-                textSize = 16f
-                setTextColor(colors.primaryText)
-                setPadding(0, 0, 0, 0)
-                isChecked = HnsResolutionPreferences.allowInsecureHnsResolution(this@SettingsActivity)
-                setOnCheckedChangeListener { _, checked ->
-                    HnsResolutionPreferences.setAllowInsecureHnsResolution(this@SettingsActivity, checked)
-                    refreshInsecureHnsResolutionStatus()
-                }
-            })
-            addView(insecureHnsResolutionStatus, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ).apply {
@@ -742,10 +713,6 @@ class SettingsActivity : ComponentActivity() {
         hnsModeStatus.text = hnsModeText()
     }
 
-    private fun refreshInsecureHnsResolutionStatus() {
-        insecureHnsResolutionStatus.text = insecureHnsResolutionText()
-    }
-
     private fun refreshStatelessDaneStatus() {
         statelessDaneStatus.text = statelessDaneText()
     }
@@ -771,13 +738,6 @@ class SettingsActivity : ComponentActivity() {
             getString(R.string.settings_hns_mode_on)
         } else {
             getString(R.string.settings_hns_mode_off)
-        }
-
-    private fun insecureHnsResolutionText(): String =
-        if (HnsResolutionPreferences.allowInsecureHnsResolution(this)) {
-            getString(R.string.settings_insecure_hns_resolution_on)
-        } else {
-            getString(R.string.settings_insecure_hns_resolution_off)
         }
 
     private fun hnsNetworkText(): String {

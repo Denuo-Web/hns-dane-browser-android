@@ -45,7 +45,6 @@ internal object HnsResolutionPreferences {
     private const val PREFS = "hns_resolution_preferences"
     private const val KEY_HANDSHAKE_NETWORK = "handshake_network"
     private const val KEY_STRICT_HNS_MODE = "strict_hns_mode"
-    private const val KEY_ALLOW_INSECURE_HNS_RESOLUTION = "allow_insecure_hns_resolution"
     private const val KEY_DOH_RESOLVER_URL = "doh_resolver_url"
     private const val KEY_STATELESS_DANE_CERTIFICATES = "stateless_dane_certificates"
 
@@ -73,17 +72,6 @@ internal object HnsResolutionPreferences {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putBoolean(KEY_STRICT_HNS_MODE, enabled)
-            .apply()
-    }
-
-    fun allowInsecureHnsResolution(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(KEY_ALLOW_INSECURE_HNS_RESOLUTION, false)
-
-    fun setAllowInsecureHnsResolution(context: Context, enabled: Boolean) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_ALLOW_INSECURE_HNS_RESOLUTION, enabled)
             .apply()
     }
 

@@ -26,13 +26,32 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
+private val SUBRESOURCE_FETCH_DESTINATIONS = setOf(
+    "audio",
+    "audioworklet",
+    "embed",
+    "font",
+    "image",
+    "manifest",
+    "object",
+    "paintworklet",
+    "report",
+    "script",
+    "serviceworker",
+    "sharedworker",
+    "style",
+    "track",
+    "video",
+    "worker",
+    "xslt",
+)
+
 class LoopbackProxyServer(
     private val port: Int,
     private val dataDir: File = File("."),
     private val hnsGatewayBridge: HnsGatewayBridge = NativeBridge,
     private val hnsConnectTerminator: HnsConnectTerminator = LocalTlsHnsConnectTerminator(),
     private val strictHnsMode: () -> Boolean = { false },
-    private val allowInsecureHnsResolution: () -> Boolean = { false },
     private val dohResolverUrl: () -> String = { "" },
     private val statelessDaneCertificates: () -> Boolean = { false },
     private val handshakeNetwork: () -> String = { DEFAULT_NETWORK },
@@ -213,7 +232,6 @@ class LoopbackProxyServer(
             val body = readHnsRequestBody(client.getInputStream(), request)
             val gatewayHeaders = request.headersForGateway(
                 strictHnsMode(),
-                allowInsecureHnsResolution(),
                 dohResolverUrl(),
                 statelessDaneCertificates(),
                 handshakeNetwork(),
@@ -248,7 +266,9 @@ class LoopbackProxyServer(
             client.getOutputStream().flush()
         } catch (error: ProxyHttpException) {
             GatewayEventLog.record("proxy_reject", target.host, error.status, error.reason)
-            onHnsStatus(target.host, error.status, null, null, null)
+            if (request.isLikelyMainFrameNavigation()) {
+                onHnsStatus(target.host, error.status, null, null, null)
+            }
             throw error
         }
     }
@@ -272,7 +292,6 @@ class LoopbackProxyServer(
             pathAndQuery = target.pathAndQuery,
             headers = request.headersForGateway(
                 strictHnsMode(),
-                allowInsecureHnsResolution(),
                 dohResolverUrl(),
                 statelessDaneCertificates(),
                 handshakeNetwork(),
@@ -290,7 +309,9 @@ class LoopbackProxyServer(
         if (response.status >= 400 || response.status == 0) {
             GatewayEventLog.record(stage, host, response.status, response.reason)
         }
-        onHnsStatus(host, response.status, response.hnsTlsPolicy(), response.hnsResolverPolicy(), response.hnsResolutionTrace())
+        if (request.isLikelyMainFrameNavigation()) {
+            onHnsStatus(host, response.status, response.hnsTlsPolicy(), response.hnsResolverPolicy(), response.hnsResolutionTrace())
+        }
     }
 
     private fun responseStatusLine(responseHead: ByteArray): String {
@@ -780,7 +801,6 @@ internal data class ProxyRequest(
 
     fun headersForGateway(
         strictHnsMode: Boolean = false,
-        allowInsecureHnsResolution: Boolean = false,
         dohResolverUrl: String = "",
         statelessDaneCertificates: Boolean = false,
         handshakeNetwork: String = DEFAULT_NETWORK,
@@ -791,16 +811,12 @@ internal data class ProxyRequest(
             .filterNot { it.first.equals("Trailer", ignoreCase = true) }
             .filterNot { hasTransferEncoding() && it.first.equals("Content-Length", ignoreCase = true) }
             .filterNot { it.first.equals(HNS_GATEWAY_STRICT_MODE_HEADER, ignoreCase = true) }
-            .filterNot { it.first.equals(HNS_GATEWAY_ALLOW_INSECURE_RESOLUTION_HEADER, ignoreCase = true) }
             .filterNot { it.first.equals(HNS_GATEWAY_DOH_RESOLVER_HEADER, ignoreCase = true) }
             .filterNot { it.first.equals(HNS_GATEWAY_STATELESS_DANE_HEADER, ignoreCase = true) }
             .filterNot { it.first.equals(HNS_GATEWAY_NETWORK_HEADER, ignoreCase = true) }
             .toMutableList()
         if (strictHnsMode) {
             sanitized += HNS_GATEWAY_STRICT_MODE_HEADER to "1"
-        }
-        if (allowInsecureHnsResolution) {
-            sanitized += HNS_GATEWAY_ALLOW_INSECURE_RESOLUTION_HEADER to "1"
         }
         dohResolverUrl.takeIf { it.isNotBlank() }?.let { resolver ->
             sanitized += HNS_GATEWAY_DOH_RESOLVER_HEADER to resolver
@@ -875,6 +891,9 @@ internal data class ProxyRequest(
         if (fetchDest == "document" || fetchDest == "iframe") {
             return true
         }
+        if (fetchDest in SUBRESOURCE_FETCH_DESTINATIONS) {
+            return false
+        }
         val fetchMode = headerValue("Sec-Fetch-Mode")?.lowercase(Locale.US)
         if (fetchMode == "navigate") {
             return true
@@ -882,9 +901,13 @@ internal data class ProxyRequest(
         if (headerValue("Upgrade-Insecure-Requests") == "1") {
             return true
         }
-        return headerValue("Accept")
+        if (headerValue("Accept")
             ?.lowercase(Locale.US)
             ?.contains("text/html") == true
+        ) {
+            return true
+        }
+        return line.target.isLikelyRootDocumentTarget()
     }
 
     private fun headerValue(name: String): String? =
@@ -896,6 +919,14 @@ internal data class ProxyRequest(
             name.equals("Transfer-Encoding", ignoreCase = true)
     }
 }
+
+private fun String.isLikelyRootDocumentTarget(): Boolean =
+    this == "/" ||
+        runCatching {
+            val uri = URI(this)
+            val path = uri.rawPath.orEmpty().ifBlank { "/" }
+            uri.scheme != null && path == "/" && uri.rawQuery == null
+        }.getOrDefault(false)
 
 internal data class ProxyRequestLine(
     val method: String,
