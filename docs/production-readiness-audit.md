@@ -34,7 +34,7 @@ This audit treats the app as a Play Store closed-testing candidate and checks th
 
 ## Remaining Non-Code Work
 
-- Build and upload a fresh `dist/play-store/hns-dane-browser-v0.3.9-play-upload-signed.aab` to the closed testing track in Play Console for package `com.denuoweb.hnsdane`.
+- Build and upload a fresh `dist/play-store/hns-dane-browser-v0.3.10-play-upload-signed.aab` to the closed testing track in Play Console for package `com.denuoweb.hnsdane`.
 - In Play Console, declare that the current build uses no foreground service types; remove any stale `dataSync` declaration from earlier drafts.
 - Complete Data safety, App access, Content rating, Target audience, Ads, and Privacy policy declarations using `docs/play-store-readiness.md`.
 - Add at least 12 opted-in testers and keep closed testing active for the required period if Google applies the new personal-account production-access rule.

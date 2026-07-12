@@ -1,1 +1,1 @@
-0.3.9 restricts insecure HNS resolution opt-in to cleartext HNS origins while keeping HTTPS HNS resolution fail-closed.
+0.3.10 restores verified HNS resolution, shows a clear HTTP transport warning, and stabilizes HNS gateway page loads and assets.

@@ -4,10 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.3.10 - 2026-07-12
+
 ### Security
 
 - Removed the insecure HNS DNS result opt-in. HNS gateway resolution requires verified HNS/DNSSEC data again; cleartext `http://` remains a transport choice only after secure name resolution.
 - Added a persistent yellow warning bar for `http://` pages to make cleartext transport visible separately from HNS resolution status.
+
+### Fixed
+
+- Stabilized HNS gateway page loads by falling back from failed Alt-Svc promotion, avoiding unsafe DoH POST promotion, preserving identity-encoded WebView gateway assets, and normalizing root main-frame URL status matching.
+- Bumped the Android app, Rust core, network user-agent strings, Play upload defaults, and Play metadata package for the 0.3.10 release.
 
 ## 0.3.9 - 2026-07-12
 
