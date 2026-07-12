@@ -270,7 +270,7 @@ where
         self.validate_origin_port(request.origin.port)?;
 
         let resolution = self.resolver.resolve(&request.resolution)?;
-        if !resolution.secure && !self.allows_insecure_hns_origin_resolution(&request.origin.host) {
+        if !resolution.secure && !self.allows_insecure_hns_origin_resolution(&request.origin) {
             return Err(GatewayError::InsecureResolution);
         }
 
@@ -280,7 +280,7 @@ where
         origin_request.connect_host =
             first_resolved_address(&resolution.records, &origin_request.host);
         if origin_request.connect_host.is_none() {
-            origin_request.connect_host = self.resolve_origin_address(&origin_request.host)?;
+            origin_request.connect_host = self.resolve_origin_address(&origin_request)?;
         }
         let connect_host = origin_request
             .connect_host
@@ -294,11 +294,13 @@ where
             if origin_request.tls.mode != DomainTrustMode::IcannWebPki {
                 origin_request.tls.stateless_dane = self.config.stateless_dane.clone();
             }
-            if !apply_https_service_policy(
-                &resolution.records,
-                &mut origin_request,
-                supported_origin_protocols,
-            )? {
+            let applied_initial_service_policy = resolution.secure
+                && apply_https_service_policy(
+                    &resolution.records,
+                    &mut origin_request,
+                    supported_origin_protocols,
+                )?;
+            if !applied_initial_service_policy {
                 match self
                     .resolve_https_service_policy(&mut origin_request, supported_origin_protocols)
                 {
@@ -337,8 +339,10 @@ where
         }
     }
 
-    fn allows_insecure_hns_origin_resolution(&self, host: &str) -> bool {
-        self.config.allow_insecure_hns_origin_resolution && classify_name(host) == NameClass::Hns
+    fn allows_insecure_hns_origin_resolution(&self, origin: &OriginRequest) -> bool {
+        self.config.allow_insecure_hns_origin_resolution
+            && !is_tls_origin_scheme(&origin.scheme)
+            && classify_name(&origin.host) == NameClass::Hns
     }
 
     fn resolve_tlsa_records(
@@ -374,17 +378,20 @@ where
         })
     }
 
-    fn resolve_origin_address(&self, host: &str) -> Result<Option<String>, GatewayError> {
+    fn resolve_origin_address(
+        &self,
+        origin: &OriginRequest,
+    ) -> Result<Option<String>, GatewayError> {
         for qtype in [RecordType::A, RecordType::Aaaa] {
             let request = ResolutionRequest {
-                qname: normalize_host(host),
+                qname: normalize_host(&origin.host),
                 qtype: qtype.code(),
             };
             let answer = self.resolver.resolve(&request)?;
-            if !answer.secure && !self.allows_insecure_hns_origin_resolution(host) {
+            if !answer.secure && !self.allows_insecure_hns_origin_resolution(origin) {
                 return Err(GatewayError::InsecureResolution);
             }
-            if let Some(address) = first_resolved_address(&answer.records, host) {
+            if let Some(address) = first_resolved_address(&answer.records, &origin.host) {
                 return Ok(Some(address));
             }
         }
@@ -908,26 +915,29 @@ mod tests {
     }
 
     #[test]
-    fn allows_unsigned_hns_https_origin_with_no_tlsa() {
+    fn allows_unsigned_hns_http_origin() {
         let gateway = Gateway::new(
             GatewayConfig {
                 allow_insecure_hns_origin_resolution: true,
-                hns_https_mode: HnsHttpsMode::Compatibility,
                 ..GatewayConfig::default()
             },
             ScriptedResolver::new(
-                vec![
-                    response("name", RecordType::A.code(), false, vec![address_record()]),
-                    response("name", RecordType::Https.code(), true, vec![]),
-                    response("_443._tcp.name", RecordType::Tlsa.code(), true, vec![]),
-                ],
+                vec![response(
+                    "name",
+                    RecordType::A.code(),
+                    false,
+                    vec![address_record()],
+                )],
                 Arc::new(Mutex::new(Vec::new())),
             ),
             CapturingTransport::default(),
         )
         .unwrap();
+        let mut request = request("name", "name");
+        request.origin.scheme = "http".to_owned();
+        request.origin.port = 80;
 
-        gateway.handle(&request("name", "name")).unwrap();
+        gateway.handle(&request).unwrap();
 
         let captured = gateway
             .transport()
@@ -936,9 +946,9 @@ mod tests {
             .unwrap()
             .clone()
             .unwrap();
-        assert_eq!(captured.tls.mode, DomainTrustMode::HnsCompatibility);
-        assert!(captured.tls.dnssec_secure);
-        assert!(captured.tls.tlsa_records.is_empty());
+        assert_eq!(captured.scheme, "http");
+        assert_eq!(captured.port, 80);
+        assert_eq!(captured.connect_host, Some("1.1.1.1".to_owned()));
     }
 
     #[test]
@@ -1934,6 +1944,79 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unsigned_hns_https_origin_even_when_insecure_resolution_allowed() {
+        let gateway = Gateway::new(
+            GatewayConfig {
+                allow_insecure_hns_origin_resolution: true,
+                hns_https_mode: HnsHttpsMode::Compatibility,
+                supported_origin_protocols: vec![OriginProtocol::Http11, OriginProtocol::Http2],
+                ..GatewayConfig::default()
+            },
+            StaticResolver {
+                secure: false,
+                records: vec![address_record()],
+            },
+            CapturingTransport::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            gateway.handle(&request("name", "name")).unwrap_err(),
+            GatewayError::InsecureResolution,
+        );
+        assert!(gateway.transport().last_request.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_unsigned_https_service_policy_even_when_insecure_resolution_allowed() {
+        let gateway = Gateway::new(
+            GatewayConfig {
+                allow_insecure_hns_origin_resolution: true,
+                hns_https_mode: HnsHttpsMode::Compatibility,
+                ..GatewayConfig::default()
+            },
+            ScriptedResolver::new(
+                vec![
+                    response("name", RecordType::A.code(), true, vec![address_record()]),
+                    response("name", RecordType::Https.code(), false, vec![]),
+                ],
+                Arc::new(Mutex::new(Vec::new())),
+            ),
+            CapturingTransport::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            gateway.handle(&request("name", "name")).unwrap_err(),
+            GatewayError::InsecureResolution,
+        );
+    }
+
+    #[test]
+    fn rejects_unsigned_https_service_policy_by_default() {
+        let gateway = Gateway::new(
+            GatewayConfig {
+                hns_https_mode: HnsHttpsMode::Compatibility,
+                ..GatewayConfig::default()
+            },
+            ScriptedResolver::new(
+                vec![
+                    response("name", RecordType::A.code(), true, vec![address_record()]),
+                    response("name", RecordType::Https.code(), false, vec![]),
+                ],
+                Arc::new(Mutex::new(Vec::new())),
+            ),
+            CapturingTransport::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            gateway.handle(&request("name", "name")).unwrap_err(),
+            GatewayError::InsecureResolution,
+        );
+    }
+
+    #[test]
     fn rejects_insecure_tlsa_resolution_by_default() {
         let gateway = Gateway::new(
             GatewayConfig::default(),
@@ -1970,7 +2053,7 @@ mod tests {
             },
             ScriptedResolver::new(
                 vec![
-                    response("name", RecordType::A.code(), false, vec![address_record()]),
+                    response("name", RecordType::A.code(), true, vec![address_record()]),
                     response("name", RecordType::Https.code(), true, vec![]),
                     response(
                         "_443._tcp.name",
