@@ -10,7 +10,9 @@ internal fun View.applySystemBarPadding() {
     val initialBottom = paddingBottom
 
     setOnApplyWindowInsetsListener { view, insets ->
-        val bars = insets.getInsets(WindowInsets.Type.systemBars())
+        val bars = insets.getInsets(
+            WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout(),
+        )
         view.setPadding(
             initialLeft + bars.left,
             initialTop + bars.top,
