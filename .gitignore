@@ -16,6 +16,7 @@ rust/fuzz/target/
 *.swp
 
 # Env/secrets
+/.local/
 .env
 .env.*
 .envrc
