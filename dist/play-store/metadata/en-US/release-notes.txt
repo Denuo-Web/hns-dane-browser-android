@@ -1,1 +1,1 @@
-0.3.12 retries delegated authoritative DNS over TCP when UDP answers fail DNSSEC validation.
+0.3.13 adds a bundled private start page, website-data and diagnostics deletion controls, complete third-party notices, authoritative HNS DoH bootstrap, and hardened 16 KiB native release verification.

@@ -2,14 +2,14 @@
 
 Last audited: 2026-07-14
 
-This checklist maps HNS DANE Browser to current Google Play update requirements and identifies the Play Console fields that must be reconciled outside the repository. The app is already public: the live production listing observed during this audit serves `0.3.1` (`versionCode 22`). The repository currently declares `0.3.12` (`versionCode 33`), but the final version increment is intentionally deferred until the remaining release work is complete.
+This checklist maps HNS DANE Browser to current Google Play update requirements and identifies the Play Console fields that must be reconciled outside the repository. The app is already public: the live production listing observed during this audit serves `0.3.1` (`versionCode 22`). The repository release candidate declares `0.3.13` (`versionCode 34`).
 
 ## Current Repo Status
 
 | Area | Status | Evidence / Action |
 | --- | --- | --- |
 | Target API level | Ready | `targetSdk = 37`, above the current Google Play requirement of Android 15 / API 35 for new apps and updates. |
-| Android App Bundle | Audit build passed | Package identity is `com.denuoweb.hnsdane`. A clean upload-signed audit AAB passed the structural and signer gates at the intentionally deferred version; rebuild after the final increment. |
+| Android App Bundle | Final build required | Package identity is `com.denuoweb.hnsdane`. A clean upload-signed audit AAB passed the structural and signer gates before the version increment; build and verify the final `0.3.13` artifact before upload. |
 | 64-bit / 16 KiB native code | Ready locally | The audit bundle contains exactly `arm64-v8a` and `x86_64`; both stripped NDK r28c libraries and their matching FULL debug metadata passed 16 KiB alignment, ELF hardening, Build ID, symbol, and path-sanitization checks. |
 | Restricted permissions | Ready | Manifest does not request location, contacts, SMS, call logs, camera, microphone, all-files, package visibility, or account permissions. |
 | Foreground service | Not used | Sync is owned by the application while at least one app screen is started and stops when the whole app backgrounds. The manifest declares no service and requests none of `POST_NOTIFICATIONS`, `FOREGROUND_SERVICE`, or `FOREGROUND_SERVICE_DATA_SYNC`; mark foreground-service use as not applicable and remove stale `dataSync` drafts. |
@@ -54,7 +54,7 @@ Then run:
   :app:verifyPlayReleaseBundle
 ```
 
-`verifyPlayReleaseBundle` builds `android/app/build/outputs/bundle/release/app-release.aab`, first runs the unsigned structural gate, then reads every non-signature-metadata entry so Java cryptographically verifies its digest. It rejects an unexpected ABI/library inventory, non-16 KiB bundle or ELF alignment, malformed or weakly hardened ELF files, unstripped shipping libraries, missing/mismatched FULL debug symbols and Build IDs, local build paths, missing R8 mapping or notices, unsigned or mixed-signer content, and a signer that differs from the expected fingerprint. After the deferred version increment, regenerate third-party notices, rerun this gate, and copy the verified output to `dist/play-store/hns-dane-browser-v<release-version>-play-upload-signed.aab` before uploading.
+`verifyPlayReleaseBundle` builds `android/app/build/outputs/bundle/release/app-release.aab`, first runs the unsigned structural gate, then reads every non-signature-metadata entry so Java cryptographically verifies its digest. It rejects an unexpected ABI/library inventory, non-16 KiB bundle or ELF alignment, malformed or weakly hardened ELF files, unstripped shipping libraries, missing/mismatched FULL debug symbols and Build IDs, local build paths, missing R8 mapping or notices, unsigned or mixed-signer content, and a signer that differs from the expected fingerprint. Regenerate third-party notices after version changes, rerun this gate, and copy the verified output to `dist/play-store/hns-dane-browser-v<release-version>-play-upload-signed.aab` before uploading.
 
 ## Google Play Developer API
 
@@ -126,8 +126,8 @@ Use a conservative general-purpose browser posture:
 
 The app is already public at `0.3.1` (`versionCode 22`), so closed-testing eligibility is not a first-launch gate. Use an internal or closed track when useful to validate the candidate, then promote or submit the verified update:
 
-1. Perform the deferred version increment and regenerate the third-party notices and release notes.
-2. Build and verify `dist/play-store/hns-dane-browser-v<release-version>-play-upload-signed.aab` with the exact release toolchain; the automated gate covers 16 KiB alignment, required ABIs, native hardening/symbols, R8 mapping, notices, and upload signing.
+1. Regenerate the third-party notices and release notes after any version or dependency change.
+2. Build and verify `dist/play-store/hns-dane-browser-v0.3.13-play-upload-signed.aab` with the exact release toolchain; the automated gate covers 16 KiB alignment, required ABIs, native hardening/symbols, R8 mapping, notices, and upload signing.
 3. Compare the configured upload-certificate fingerprint with Play Console and complete the physical-device test pass on the final-version build.
 4. Upload to an internal/closed track for validation if desired. For API upload, use the Console's actual track ID; `alpha` is the standard closed-testing API track.
 5. Reconcile the live privacy policy, Data safety answers, listing copy, screenshots, and release notes, then submit the update to production.

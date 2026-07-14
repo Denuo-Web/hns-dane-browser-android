@@ -33,5 +33,5 @@ Last audited: 2026-07-14
 - Gradle verification metadata was generated from artifacts already obtained over the configured HTTPS repositories. Future checksum changes require a deliberate review; the metadata is an integrity pin, not independent provenance proof.
 - cargo-deny relies on the current RustSec advisory database at check time. CI availability or an upstream advisory-database outage can affect results.
 - The local JNI script defaults to and enforces NDK `28.2.13676358`; `HNS_ANDROID_NDK_VERSION` may override that expectation only for an intentional, reviewed toolchain change.
-- The exact-toolchain pass was performed before the user-deferred version increment. The version change alters committed notice-integrity inputs, so regenerate notices and repeat the signed structural gate for the final upload artifact.
+- The exact-toolchain audit pass was performed before the `0.3.13` version increment. The version change alters committed notice-integrity inputs, so regenerate notices and repeat the signed structural gate for the final upload artifact.
 - The upload certificate fingerprint is public configuration, but its approved value still needs an out-of-band comparison with the Play Console upload certificate before the next release.

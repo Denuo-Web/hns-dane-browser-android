@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.3.13 - 2026-07-14
+
 ### Added
 
 - Added in-app third-party software notices generated deterministically from the locked Android release runtime and shipping Rust dependency closure, with complete license text and integrity checking.
@@ -21,6 +23,10 @@ All notable changes to this project will be documented in this file.
 - Expanded the deletion controls to clear WebView origin storage with cookies and to clear the persisted gateway diagnostic log, with updated in-app privacy disclosure.
 - Replaced the automatically loaded remote default homepage with a bundled start page that contains no network resources; user-configured homepages remain supported.
 - Moved adaptive launcher icons to the API-compatible resource directory and removed obsolete notification, service, privacy, resolver-trace, and cookie-only localized strings.
+
+### Changed
+
+- Bumped the Android app, Rust core, Play upload defaults, and Play metadata package for the 0.3.13 release.
 
 ## 0.3.12 - 2026-07-13
 

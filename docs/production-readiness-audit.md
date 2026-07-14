@@ -2,13 +2,13 @@
 
 Last audited: 2026-07-14
 
-This audit treats the repository as a candidate update to an existing public Google Play app, not as a first closed-testing launch. The live listing observed during the audit serves version `0.3.1` (`versionCode 22`), while the repository currently declares `0.3.12` (`versionCode 33`). The final version increment is intentionally deferred until the rest of the release work is complete.
+This audit treats the repository as a candidate update to an existing public Google Play app, not as a first closed-testing launch. The live listing observed during the audit serves version `0.3.1` (`versionCode 22`), while the repository release candidate declares `0.3.13` (`versionCode 34`).
 
 ## Release Candidate Findings
 
 | Area | Status | Finding |
 | --- | --- | --- |
-| Android release build | Local gate passed | A clean exact-toolchain build produced a non-debuggable, minified, resource-shrunk, upload-signed AAB. The structural gate and entry-by-entry signer check passed. A new artifact is still required after the deferred version increment. |
+| Android release build | Final build required | A clean exact-toolchain audit build produced a non-debuggable, minified, resource-shrunk, upload-signed AAB, and its structural and entry-by-entry signer checks passed. A new verified artifact is required for `0.3.13`. |
 | Public Play listing | Reconciliation required | Google Play already has a production listing at `0.3.1` (`versionCode 22`). Before the next update, reconcile the live privacy-policy field, Data safety answers, listing text, screenshots, and release notes with current behavior and the eventual release version. |
 | Privacy policy | Ready | The canonical URL `https://denuoweb.com/work/hns-dane-browser/privacy` renders the HNS DANE Browser Privacy Policy after the site application loads. The supplied hosted policy covers local data, browser/HNS network requests, sharing, security, retention/deletion, children, and a privacy contact mechanism; it is accepted unchanged for this release audit. |
 | Manifest exposure | Ready | The only app-defined exported entry point is `LauncherActivity`. Browser, settings, diagnostics, HNS inspector, history, download, and other app activities are non-exported, and the app declares no service. Merged dependency components remain subject to their own signature/permission guards. |
@@ -40,7 +40,7 @@ This audit treats the repository as a candidate update to an existing public Goo
 
 1. Compare upload certificate SHA-256 `D2:2F:F3:25:17:53:11:EB:E6:D6:E9:3D:A3:FD:F5:1D:84:89:22:A1:B8:1A:CB:B3:2F:22:39:CC:F9:4A:51:14` with the upload certificate shown in Play Console.
 2. Enable GitHub Actions and add appropriate protection or a ruleset for `main`, then obtain a successful run of the release workflow. These are repository-hosting changes and cannot be proven by the checked-in workflow alone.
-3. Perform the deferred version increment. Regenerate third-party notices because the versioned Cargo manifests and lockfile are integrity inputs, update release notes, and run the clean exact-toolchain signed-bundle gate again.
+3. Regenerate third-party notices because the versioned Cargo manifests and lockfile are integrity inputs, then run the clean exact-toolchain signed-bundle gate for `0.3.13`.
 4. Run `HnsConnectInstrumentationTest` and the critical first-run, sync-resume, HNS browsing, download, website-data deletion, and gateway-log deletion flows on a physical supported Android device using that final-version build.
 5. Reconcile the existing live Play listing: point its privacy-policy field to the accepted canonical URL, update Data safety/app-access/content/ads answers, refresh listing copy and release notes, and replace stale screenshots before submitting the verified AAB.
 
