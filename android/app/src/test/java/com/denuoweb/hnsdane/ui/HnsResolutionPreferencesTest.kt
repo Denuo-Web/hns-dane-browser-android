@@ -6,6 +6,14 @@ import org.junit.Test
 
 class HnsResolutionPreferencesTest {
     @Test
+    fun defaultDohResolverUsesWorkingZorroNode() {
+        assertEquals(
+            "https://zorro.hnsdoh.com/dns-query",
+            HnsResolutionPreferences.DEFAULT_DOH_RESOLVER_URL,
+        )
+    }
+
+    @Test
     fun handshakeNetworkFromIdSupportsKnownNetworks() {
         assertEquals(HandshakeNetwork.Mainnet, HandshakeNetwork.fromId("mainnet"))
         assertEquals(HandshakeNetwork.Testnet, HandshakeNetwork.fromId("testnet"))

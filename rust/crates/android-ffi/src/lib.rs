@@ -81,7 +81,7 @@ const HEADER_SNAPSHOT_MAX_HEIGHT: u32 = 1_000_000;
 const MAINNET_GENESIS_TIME: u64 = 1_580_745_078;
 const MAINNET_TARGET_SPACING_SECONDS: u64 = 10 * 60;
 const LOCAL_CHAIN_CURRENTNESS_ALLOWED_LAG: u32 = RESOURCE_PROOF_CACHE_CANONICAL_WINDOW;
-const HNS_DOH_HOST: &str = "hnsdoh.com";
+const HNS_DOH_HOST: &str = "zorro.hnsdoh.com";
 const HNS_DOH_PATH: &str = "/dns-query";
 const ICANN_DOH_HOST: &str = "cloudflare-dns.com";
 const ICANN_DOH_PATH: &str = "/dns-query";
@@ -5901,6 +5901,15 @@ mod tests {
         assert!(recent.contains(&roots[1].into_bytes()));
         assert!(recent.contains(&roots[40].into_bytes()));
         cleanup_dir(&base);
+    }
+
+    #[test]
+    fn default_hns_doh_endpoint_uses_working_zorro_node() {
+        let endpoint = HnsDohEndpoint::default();
+
+        assert_eq!(endpoint.host, "zorro.hnsdoh.com");
+        assert_eq!(endpoint.port, 443);
+        assert_eq!(endpoint.path_and_query, "/dns-query");
     }
 
     #[test]

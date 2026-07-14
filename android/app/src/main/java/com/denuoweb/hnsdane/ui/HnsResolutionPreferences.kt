@@ -40,7 +40,7 @@ enum class HandshakeNetwork(
 }
 
 internal object HnsResolutionPreferences {
-    const val DEFAULT_DOH_RESOLVER_URL = "https://hnsdoh.com/dns-query"
+    const val DEFAULT_DOH_RESOLVER_URL = "https://zorro.hnsdoh.com/dns-query"
 
     private const val PREFS = "hns_resolution_preferences"
     private const val KEY_HANDSHAKE_NETWORK = "handshake_network"
