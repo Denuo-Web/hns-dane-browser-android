@@ -7,7 +7,7 @@ This directory contains the source text and field checklist for the Google Play 
 - App name: `en-US/title.txt`
 - Short description: `en-US/short-description.txt`
 - Full description: `en-US/full-description.txt`
-- 0.3.13 release notes: `en-US/release-notes.txt`
+- 0.3.14 release notes: `en-US/release-notes.txt`
 
 ## Store Assets
 
@@ -21,7 +21,7 @@ This directory contains the source text and field checklist for the Google Play 
 - App category: Tools
 - Ads declaration: No ads
 - Privacy policy URL: `https://denuoweb.com/work/hns-dane-browser/privacy`
-- Default closed-testing upload artifact: `../hns-dane-browser-v0.3.13-play-upload-signed.aab`
+- Default closed-testing upload artifact: `../hns-dane-browser-v0.3.14-play-upload-signed.aab`
 - Foreground service type: none; remove any stale `dataSync` declaration because sync is application-foreground scoped and the manifest declares no service.
 
 The Android App Bundle is generated during release builds and is intentionally not committed.

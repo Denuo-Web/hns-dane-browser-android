@@ -2,13 +2,13 @@
 
 Last audited: 2026-07-14
 
-This audit treats the repository as a candidate update to an existing public Google Play app, not as a first closed-testing launch. The live listing observed during the audit serves version `0.3.1` (`versionCode 22`), while the repository release candidate declares `0.3.13` (`versionCode 34`).
+This audit treats the repository as a candidate update to an existing public Google Play app, not as a first closed-testing launch. The live listing observed during the audit serves version `0.3.1` (`versionCode 22`), while the repository release candidate declares `0.3.14` (`versionCode 35`).
 
 ## Release Candidate Findings
 
 | Area | Status | Finding |
 | --- | --- | --- |
-| Android release build | Final build required | A clean exact-toolchain audit build produced a non-debuggable, minified, resource-shrunk, upload-signed AAB, and its structural and entry-by-entry signer checks passed. A new verified artifact is required for `0.3.13`. |
+| Android release build | Ready locally | The clean final `0.3.14` build produced a non-debuggable, minified, resource-shrunk, upload-signed AAB, and its structural and entry-by-entry signer checks passed. |
 | Public Play listing | Reconciliation required | Google Play already has a production listing at `0.3.1` (`versionCode 22`). Before the next update, reconcile the live privacy-policy field, Data safety answers, listing text, screenshots, and release notes with current behavior and the eventual release version. |
 | Privacy policy | Ready | The canonical URL `https://denuoweb.com/work/hns-dane-browser/privacy` renders the HNS DANE Browser Privacy Policy after the site application loads. The supplied hosted policy covers local data, browser/HNS network requests, sharing, security, retention/deletion, children, and a privacy contact mechanism; it is accepted unchanged for this release audit. |
 | Manifest exposure | Ready | The only app-defined exported entry point is `LauncherActivity`. Browser, settings, diagnostics, HNS inspector, history, download, and other app activities are non-exported, and the app declares no service. Merged dependency components remain subject to their own signature/permission guards. |
@@ -40,17 +40,16 @@ This audit treats the repository as a candidate update to an existing public Goo
 
 1. Compare upload certificate SHA-256 `D2:2F:F3:25:17:53:11:EB:E6:D6:E9:3D:A3:FD:F5:1D:84:89:22:A1:B8:1A:CB:B3:2F:22:39:CC:F9:4A:51:14` with the upload certificate shown in Play Console.
 2. Enable GitHub Actions and add appropriate protection or a ruleset for `main`, then obtain a successful run of the release workflow. These are repository-hosting changes and cannot be proven by the checked-in workflow alone.
-3. Regenerate third-party notices because the versioned Cargo manifests and lockfile are integrity inputs, then run the clean exact-toolchain signed-bundle gate for `0.3.13`.
-4. Run `HnsConnectInstrumentationTest` and the critical first-run, sync-resume, HNS browsing, download, website-data deletion, and gateway-log deletion flows on a physical supported Android device using that final-version build.
-5. Reconcile the existing live Play listing: point its privacy-policy field to the accepted canonical URL, update Data safety/app-access/content/ads answers, refresh listing copy and release notes, and replace stale screenshots before submitting the verified AAB.
+3. Run `HnsConnectInstrumentationTest` and the critical first-run, sync-resume, HNS browsing, download, website-data deletion, and gateway-log deletion flows on a physical supported Android device using that final-version build.
+4. Reconcile the existing live Play listing: point its privacy-policy field to the accepted canonical URL, update Data safety/app-access/content/ads answers, refresh listing copy and release notes, and replace stale screenshots before submitting the verified AAB.
 
 ## Local Verification Evidence
 
 - `./scripts/check.sh`: passed supply-chain/version checks, formatting, warning-denied Clippy, all three cargo-deny scopes, 398 Rust tests, fuzz-target compilation, and the snapshot exporter.
-- Clean Android build: passed with Gradle 9.6.1 / AGP 9.2.1, compile/target SDK 37, NDK `28.2.13676358`, and build-tools AAPT2 36.0.0; 107 tasks completed in 22m 7s.
-- Android tests and lint: 190 unit tests passed; debug and release lint each reported 0 errors and 109 warnings.
+- Clean Android build: passed with Gradle 9.6.1 / AGP 9.2.1, compile/target SDK 37, NDK `28.2.13676358`, and build-tools AAPT2 36.1.0; 97 actionable tasks completed in 13m 44s.
+- Android tests and lint: 193 unit tests passed; debug and release lint each reported 0 errors and 110 warnings.
 - Candidate artifact inspection: both packaged libraries report NDK r28c, Android API 34, stripped status, 16 KiB PT_LOAD alignment, GNU_RELRO, non-executable GNU_STACK, BIND_NOW/NOW, and matching unstripped debug-symbol Build IDs. The debug APK also passes `zipalign -c -P 16 4`.
-- Signed audit AAB at the deferred `0.3.12` / code 33 state: SHA-256 `179f5f3167c32ff9421a6bb310ec5b4aac9c66adb91ec25b8b6d30b617664257`. This is audit evidence only, not the post-increment upload artifact.
+- Final signed `0.3.14` / code 35 AAB: SHA-256 `85b1d843d0afc5b50990b75866a8ced0e13e1cfb98dc05b193c531df908e3b7e`. The signed GitHub APK is SHA-256 `fefd14aebdcb7a0796cacff0e4dd3b60a01d5f4a399ea0c931d8523b159b74d3` and passes APK signature plus 16 KiB ZIP-alignment verification.
 
 ## Watch Items
 

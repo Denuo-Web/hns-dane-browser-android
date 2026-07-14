@@ -19,7 +19,7 @@ Last audited: 2026-07-14
 ## Audit Results
 
 - `scripts/check.sh` passed locally on 2026-07-14, including supply-chain/version checks, formatting, clippy with warnings denied, all three cargo-deny scopes, 398 Rust tests, fuzz-target compilation, and the header-snapshot exporter.
-- A clean Android build passed 190 unit tests, debug assembly, debug and release lint with zero errors, R8/resource shrinking, upload signing, and both release-bundle gates. It used Gradle 9.6.1 / AGP 9.2.1, compile/target SDK 37, NDK `28.2.13676358`, and build-tools AAPT2 36.0.0.
+- A clean final `0.3.14` Android build passed 193 unit tests, debug and release lint with zero errors, R8/resource shrinking, upload signing, APK signature and 16 KiB ZIP-alignment verification, and both release-bundle gates. It used Gradle 9.6.1 / AGP 9.2.1, compile/target SDK 37, NDK `28.2.13676358`, and build-tools AAPT2 36.1.0.
 - Independent artifact inspection confirmed both installed JNI libraries were NDK r28c API 34 ET_DYN files, stripped, 16 KiB-aligned, RELRO, non-executable-stack, immediate-binding, text-relocation-free, and paired with unstripped `.dbg` files carrying the same Build IDs. No checkout/home/NDK path was found; the debug APK passed 16 KiB zip alignment.
 - cargo-deny reports no known advisory, source, or license-policy failures for the shipping workspace, fuzz workspace, or exporter. Duplicate transitive versions and unused allow-list entries remain warnings.
 - No high-confidence secret or secret-bearing filename was found among tracked files.
@@ -33,5 +33,4 @@ Last audited: 2026-07-14
 - Gradle verification metadata was generated from artifacts already obtained over the configured HTTPS repositories. Future checksum changes require a deliberate review; the metadata is an integrity pin, not independent provenance proof.
 - cargo-deny relies on the current RustSec advisory database at check time. CI availability or an upstream advisory-database outage can affect results.
 - The local JNI script defaults to and enforces NDK `28.2.13676358`; `HNS_ANDROID_NDK_VERSION` may override that expectation only for an intentional, reviewed toolchain change.
-- The exact-toolchain audit pass was performed before the `0.3.13` version increment. The version change alters committed notice-integrity inputs, so regenerate notices and repeat the signed structural gate for the final upload artifact.
 - The upload certificate fingerprint is public configuration, but its approved value still needs an out-of-band comparison with the Play Console upload certificate before the next release.

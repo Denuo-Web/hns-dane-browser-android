@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.3.14 - 2026-07-14
+
+### Changed
+
+- Changed the default compatibility DoH resolver from the failing global HNSDoH pool to the working Zorro node while keeping the resolver user-configurable.
+- Bumped the Android app, Rust core, Play upload defaults, and Play metadata package for the 0.3.14 release.
+
 ## 0.3.13 - 2026-07-14
 
 ### Added

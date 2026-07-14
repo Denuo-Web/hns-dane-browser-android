@@ -1,1 +1,1 @@
-0.3.13 adds a bundled private start page, website-data and diagnostics deletion controls, complete third-party notices, authoritative HNS DoH bootstrap, and hardened 16 KiB native release verification.
+0.3.14 changes the default compatibility DoH resolver to the working Zorro HNSDoH node while keeping resolver settings user-configurable.
