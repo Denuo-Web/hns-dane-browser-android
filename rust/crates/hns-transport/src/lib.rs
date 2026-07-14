@@ -1464,6 +1464,12 @@ fn build_http2_request(request: &OriginRequest) -> Result<Http2Request<()>, Tran
             let value = HeaderValue::from_str(value).map_err(|_| TransportError::InvalidRequest)?;
             headers.append(name, value);
         }
+        if !request.body.is_empty() {
+            headers.insert(
+                http::header::CONTENT_LENGTH,
+                HeaderValue::from(request.body.len() as u64),
+            );
+        }
     }
     Ok(h2_request)
 }
@@ -2918,6 +2924,39 @@ mod tests {
         assert!(text.contains("Content-Length: 2\r\n"));
         assert!(!text.contains("Content-Length: 999\r\n"));
         assert!(text.ends_with("\r\n\r\nhi"));
+    }
+
+    #[test]
+    fn rewrites_http2_request_content_length_from_body() {
+        let mut request = request(SocketAddr::from((Ipv4Addr::LOCALHOST, 443)));
+        request.scheme = "https".to_owned();
+        request.body = b"hi".to_vec();
+        request
+            .headers
+            .push(("Content-Length".to_owned(), "999".to_owned()));
+
+        let h2_request = build_http2_request(&request).unwrap();
+        let content_lengths = h2_request
+            .headers()
+            .get_all("content-length")
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(content_lengths, vec!["2"]);
+    }
+
+    #[test]
+    fn omits_http2_content_length_for_empty_body() {
+        let mut request = request(SocketAddr::from((Ipv4Addr::LOCALHOST, 443)));
+        request.scheme = "https".to_owned();
+        request
+            .headers
+            .push(("Content-Length".to_owned(), "999".to_owned()));
+
+        let h2_request = build_http2_request(&request).unwrap();
+
+        assert!(!h2_request.headers().contains_key("content-length"));
     }
 
     #[test]
