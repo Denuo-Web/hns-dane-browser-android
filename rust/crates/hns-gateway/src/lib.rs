@@ -284,7 +284,6 @@ where
         if is_tls_origin_scheme(&origin_request.scheme) {
             origin_request.tls.mode =
                 domain_trust_mode_for_host(&origin_request.host, self.config.hns_https_mode);
-            origin_request.tls.service_port = origin_request.port;
             if origin_request.tls.mode != DomainTrustMode::IcannWebPki {
                 origin_request.tls.stateless_dane = self.config.stateless_dane.clone();
             }
@@ -303,6 +302,7 @@ where
                     Err(error) => return Err(error),
                 }
             }
+            origin_request.tls.service_port = origin_request.port;
             let resolved_tlsa =
                 self.resolve_tlsa_records(&origin_request.host, origin_request.port)?;
             origin_request.tls.dnssec_secure = resolved_tlsa.secure;
@@ -1255,6 +1255,7 @@ mod tests {
             .unwrap();
         assert_eq!(captured.protocol, OriginProtocol::Http2);
         assert_eq!(captured.port, 8443);
+        assert_eq!(captured.tls.service_port, 8443);
         assert_eq!(
             *requests.lock().unwrap(),
             vec![

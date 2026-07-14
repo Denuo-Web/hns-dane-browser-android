@@ -1,7 +1,8 @@
 package com.denuoweb.hnsdane.net
 
-import com.denuoweb.hnsdane.core.HnsPageTlsPolicy
 import com.denuoweb.hnsdane.core.HnsPageResolverPolicy
+import com.denuoweb.hnsdane.core.HnsPageSecurityPath
+import com.denuoweb.hnsdane.core.HnsPageTlsPolicy
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -336,7 +337,7 @@ class HnsWebViewGatewayInterceptorTest {
                 .toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-main-frame-status-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge) { status, tlsPolicy, resolverPolicy, _ ->
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge) { status, tlsPolicy, resolverPolicy, _, _ ->
             statuses += status
             tlsPolicies += tlsPolicy
             resolverPolicies += resolverPolicy
@@ -365,7 +366,7 @@ class HnsWebViewGatewayInterceptorTest {
                 .toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-subresource-status-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge) { status, _, _, _ ->
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge) { status, _, _, _, _ ->
             statuses += status
         }
 
@@ -377,6 +378,68 @@ class HnsWebViewGatewayInterceptorTest {
         )
 
         assertTrue(statuses.isEmpty())
+        dataDir.deleteRecursively()
+    }
+
+    @Test
+    fun mainFrameParsesSecurityPathWithoutExposingInternalHeaderToWebView() {
+        val paths = mutableListOf<HnsPageSecurityPath?>()
+        val bridge = RecordingGatewayBridge(
+            (
+                "HTTP/1.1 200 OK\r\n" +
+                    "$HNS_SECURITY_PATH_HEADER: dane-authoritative-doh\r\n" +
+                    "Content-Length: 0\r\n\r\n"
+                ).toByteArray(StandardCharsets.ISO_8859_1),
+        )
+        val dataDir = createTempDirectory("hns-security-path-test").toFile()
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge) { _, _, _, securityPath, _ ->
+            paths += securityPath
+        }
+
+        val response = interceptor.intercept(
+            method = "GET",
+            url = "https://welcome/",
+            requestHeaders = emptyMap(),
+            isForMainFrame = true,
+        )
+
+        requireNotNull(response)
+        assertEquals(listOf(HnsPageSecurityPath.DaneAuthoritativeDoh), paths)
+        assertFalse(
+            response.webResponseHeaders().keys.any {
+                it.equals(HNS_SECURITY_PATH_HEADER, ignoreCase = true)
+            },
+        )
+        dataDir.deleteRecursively()
+    }
+
+    @Test
+    fun unknownSecurityPathRetainsLegacyHeaderParsing() {
+        val paths = mutableListOf<HnsPageSecurityPath?>()
+        val tlsPolicies = mutableListOf<HnsPageTlsPolicy?>()
+        val bridge = RecordingGatewayBridge(
+            (
+                "HTTP/1.1 200 OK\r\n" +
+                    "X-HNS-TLS-Policy: dane\r\n" +
+                    "$HNS_SECURITY_PATH_HEADER: future-path\r\n" +
+                    "Content-Length: 0\r\n\r\n"
+                ).toByteArray(StandardCharsets.ISO_8859_1),
+        )
+        val dataDir = createTempDirectory("hns-unknown-security-path-test").toFile()
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge) { _, tlsPolicy, _, securityPath, _ ->
+            tlsPolicies += tlsPolicy
+            paths += securityPath
+        }
+
+        interceptor.intercept(
+            method = "GET",
+            url = "https://welcome/",
+            requestHeaders = emptyMap(),
+            isForMainFrame = true,
+        )
+
+        assertEquals(listOf(HnsPageTlsPolicy.Dane), tlsPolicies)
+        assertEquals(listOf(null), paths)
         dataDir.deleteRecursively()
     }
 

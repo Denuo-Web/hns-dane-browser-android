@@ -8,6 +8,7 @@ use hns_core::network::NetworkKind;
 use hns_core::network_policy::{is_browser_blocked_port, is_publicly_routable};
 use hns_core::resource::{ResourceError, decode_handshake_resource_records};
 use hns_core::{Hash, Height, NameHash, NameHashError};
+use hns_dane::{TlsaMatching, TlsaRecord, TlsaSelector, TlsaUsage};
 use hns_dnssec::{
     DnssecChainLink, DnssecChainValidationInput, DnssecStatus, DnssecTime,
     Nsec3NameErrorValidationInput, Nsec3NoDataValidationInput, NsecNameErrorValidationInput,
@@ -37,6 +38,7 @@ const DEFAULT_DOH_PATH: &str = "/dns-query";
 const DOH_URI_TEMPLATE_DNS_VARIABLE: &str = "{?dns}";
 const HNSDNS_VERSION: &str = "1";
 const HNSDNS_MAX_TEXT_BYTES: usize = 255;
+const HNSDNS_MAX_TLSA_PINS: usize = 2;
 const MAX_CNAME_CHAIN_LEN: usize = 8;
 static DNS_QUERY_ID: AtomicU16 = AtomicU16::new(0x4d00);
 // Generated from https://data.iana.org/TLD/tlds-alpha-by-domain.txt, version 2026062302.
@@ -202,6 +204,13 @@ pub struct AuthoritativeDohEndpoint {
     pub connect_addr: IpAddr,
     pub port: u16,
     pub path_and_query: String,
+    pub tls_authentication: AuthoritativeDohTlsAuthentication,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuthoritativeDohTlsAuthentication {
+    WebPki,
+    HnsProofTlsa(Vec<TlsaRecord>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1908,6 +1917,7 @@ struct AuthoritativeDohTemplate {
     host: String,
     port: u16,
     path_and_query: String,
+    tls_authentication: AuthoritativeDohTlsAuthentication,
 }
 
 fn key_value_part(part: &str) -> Option<(&str, &str)> {
@@ -1987,6 +1997,7 @@ fn parse_hnsdns_declaration(
     let mut doh_uri = None;
     let mut explicit_port = None;
     let mut explicit_path = None;
+    let mut proof_tlsa_records = Vec::new();
     for part in text.split(';') {
         let (key, value) = key_value_part(part).ok_or(ResolverError::InvalidAuthoritativeDoh)?;
         match key.to_ascii_lowercase().as_str() {
@@ -2022,6 +2033,15 @@ fn parse_hnsdns_declaration(
                     return Err(ResolverError::InvalidAuthoritativeDoh);
                 }
             }
+            "tlsa" => {
+                let record = parse_hnsdns_tlsa(value)?;
+                if !proof_tlsa_records.contains(&record) {
+                    if proof_tlsa_records.len() >= HNSDNS_MAX_TLSA_PINS {
+                        return Err(ResolverError::InvalidAuthoritativeDoh);
+                    }
+                    proof_tlsa_records.push(record);
+                }
+            }
             _ => {}
         }
     }
@@ -2042,7 +2062,29 @@ fn parse_hnsdns_declaration(
         host,
         port: explicit_port.unwrap_or(port),
         path_and_query: explicit_path.unwrap_or(path_and_query),
+        tls_authentication: if proof_tlsa_records.is_empty() {
+            AuthoritativeDohTlsAuthentication::WebPki
+        } else {
+            AuthoritativeDohTlsAuthentication::HnsProofTlsa(proof_tlsa_records)
+        },
     }))
+}
+
+fn parse_hnsdns_tlsa(value: &str) -> Result<TlsaRecord, ResolverError> {
+    let fields = value.split(',').map(str::trim).collect::<Vec<_>>();
+    let [usage, selector, matching, association] = fields.as_slice() else {
+        return Err(ResolverError::InvalidAuthoritativeDoh);
+    };
+    if *usage != "3" || *selector != "1" || *matching != "1" {
+        return Err(ResolverError::InvalidAuthoritativeDoh);
+    }
+    let digest = Hash::from_hex(association).map_err(|_| ResolverError::InvalidAuthoritativeDoh)?;
+    Ok(TlsaRecord {
+        usage: TlsaUsage::DaneEe,
+        selector: TlsaSelector::SubjectPublicKeyInfo,
+        matching: TlsaMatching::Sha256,
+        association_data: digest.into_bytes().to_vec(),
+    })
 }
 
 fn hnsdns_ns_name(root_owner: &DnsName, value: &str) -> Result<DnsName, ResolverError> {
@@ -2149,6 +2191,7 @@ where
                 connect_addr: *address,
                 port: template.port,
                 path_and_query: template.path_and_query.clone(),
+                tls_authentication: template.tls_authentication.clone(),
             };
             if !endpoints.contains(&endpoint) {
                 endpoints.push(endpoint);
@@ -2158,7 +2201,6 @@ where
     if !endpoints.is_empty() {
         return Ok(endpoints);
     }
-
     let ds_rrset = records_for(&delegation.records, &delegation.owner, RecordType::Ds);
     if ds_rrset.is_empty() {
         return Ok(endpoints);
@@ -2192,6 +2234,7 @@ where
                 connect_addr: address,
                 port: template.port,
                 path_and_query: template.path_and_query,
+                tls_authentication: template.tls_authentication,
             };
             if !endpoints.contains(&endpoint) {
                 endpoints.push(endpoint);
@@ -2203,6 +2246,23 @@ where
 }
 
 fn authoritative_doh_cache_key(delegation: &HnsDelegation) -> String {
+    let records = delegation
+        .records
+        .iter()
+        .map(|record| {
+            format!(
+                "{}:{}:{}:{}:{:02x?}",
+                record.name,
+                record.record_type.code(),
+                record.class,
+                record.ttl,
+                record.rdata,
+            )
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(",");
     let servers = nameserver_ip_addresses(delegation)
         .into_iter()
         .map(|(ns, address)| format!("{ns}@{address}"))
@@ -2210,7 +2270,7 @@ fn authoritative_doh_cache_key(delegation: &HnsDelegation) -> String {
         .into_iter()
         .collect::<Vec<_>>()
         .join(",");
-    format!("{}|{}", delegation.owner, servers)
+    format!("{}|{}|{}", delegation.owner, servers, records)
 }
 
 fn dns_service_binding_name(ns: &DnsName) -> Result<DnsName, ResolverError> {
@@ -2256,6 +2316,7 @@ fn authoritative_doh_template_from_svcb(
             .to_ascii_lowercase(),
         port,
         path_and_query,
+        tls_authentication: AuthoritativeDohTlsAuthentication::WebPki,
     }))
 }
 
@@ -3939,6 +4000,12 @@ mod tests {
         calls: AtomicUsize,
     }
 
+    struct FailingPinnedDohTransport {
+        doh_calls: AtomicUsize,
+        udp_calls: AtomicUsize,
+        tcp_calls: AtomicUsize,
+    }
+
     struct TcpRepairDnsTransport {
         requests: DnsRequestLog,
     }
@@ -4231,6 +4298,47 @@ mod tests {
         }
     }
 
+    impl DnsTransport for FailingPinnedDohTransport {
+        fn endpoint_policy(&self) -> DnsEndpointPolicy {
+            DnsEndpointPolicy::permissive()
+        }
+
+        fn exchange_udp(
+            &self,
+            _server: SocketAddr,
+            query: &[u8],
+        ) -> Result<Vec<u8>, ResolverError> {
+            self.udp_calls.fetch_add(1, Ordering::SeqCst);
+            let query = DnsMessage::parse(query).unwrap();
+            let question = query.questions[0].clone();
+            Ok(dns_response(
+                &query,
+                tcp_repair_fixture(&question, true),
+                false,
+            ))
+        }
+
+        fn exchange_tcp(
+            &self,
+            _server: SocketAddr,
+            _query: &[u8],
+        ) -> Result<Vec<u8>, ResolverError> {
+            self.tcp_calls.fetch_add(1, Ordering::SeqCst);
+            Err(ResolverError::DnsTransport("unexpected TCP".to_owned()))
+        }
+
+        fn exchange_doh(
+            &self,
+            _endpoint: &AuthoritativeDohEndpoint,
+            _query: &[u8],
+        ) -> Result<Vec<u8>, ResolverError> {
+            self.doh_calls.fetch_add(1, Ordering::SeqCst);
+            Err(ResolverError::DnsTransport(
+                "HNS proof TLSA validation failed".to_owned(),
+            ))
+        }
+    }
+
     impl DnsTransport for TcpRepairDnsTransport {
         fn endpoint_policy(&self) -> DnsEndpointPolicy {
             DnsEndpointPolicy::permissive()
@@ -4485,6 +4593,7 @@ mod tests {
             connect_addr: "1.1.1.1".parse().unwrap(),
             port: 22,
             path_and_query: "/dns-query".to_owned(),
+            tls_authentication: AuthoritativeDohTlsAuthentication::WebPki,
         };
 
         assert_eq!(
@@ -4895,9 +5004,211 @@ mod tests {
                 connect_addr: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 53)),
                 port: 8443,
                 path_and_query: "/dns-query".to_owned(),
+                tls_authentication: AuthoritativeDohTlsAuthentication::WebPki,
             }]
         );
         assert!(requests.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn authoritative_doh_endpoint_uses_hns_proof_tlsa_pins() {
+        let first = "11".repeat(32);
+        let second = "AA".repeat(32);
+        let declaration = format!(
+            "hnsdns=1;ns=ns1.denuoweb.;transport=doh;doh=https://denuoweb:8443/dns-query;tlsa=3,1,1,{first};tlsa=3,1,1,{second}"
+        );
+        assert!(declaration.len() <= HNSDNS_MAX_TEXT_BYTES);
+        let delegation = HnsDelegation {
+            root_name: "denuoweb".to_owned(),
+            owner: DnsName::from_ascii("denuoweb").unwrap(),
+            records: vec![
+                ns_record("denuoweb", "ns1.denuoweb"),
+                glue4_record("ns1.denuoweb", [35, 212, 156, 128]),
+                txt_record("denuoweb", &declaration),
+            ],
+        };
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let transport = ScriptedDnsTransport {
+            responses: HashMap::new(),
+            server_responses: HashMap::new(),
+            requests: Arc::clone(&requests),
+            udp_behavior: ScriptedUdpBehavior::Normal,
+        };
+
+        let endpoints =
+            authoritative_doh_endpoints(&transport, &accepting_dnssec_verifier(), &delegation)
+                .unwrap();
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].host, "denuoweb");
+        assert_eq!(endpoints[0].port, 8443);
+        assert_eq!(
+            endpoints[0].tls_authentication,
+            AuthoritativeDohTlsAuthentication::HnsProofTlsa(vec![
+                TlsaRecord {
+                    usage: TlsaUsage::DaneEe,
+                    selector: TlsaSelector::SubjectPublicKeyInfo,
+                    matching: TlsaMatching::Sha256,
+                    association_data: vec![0x11; 32],
+                },
+                TlsaRecord {
+                    usage: TlsaUsage::DaneEe,
+                    selector: TlsaSelector::SubjectPublicKeyInfo,
+                    matching: TlsaMatching::Sha256,
+                    association_data: vec![0xaa; 32],
+                },
+            ])
+        );
+        assert!(requests.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pinned_authoritative_doh_failure_falls_back_to_port_53() {
+        let pin = "36".repeat(32);
+        let delegation = HnsDelegation {
+            root_name: "denuoweb".to_owned(),
+            owner: DnsName::from_ascii("denuoweb").unwrap(),
+            records: vec![
+                ns_record("denuoweb", "ns1.denuoweb"),
+                glue4_record("ns1.denuoweb", [35, 212, 156, 128]),
+                ds_record("denuoweb"),
+                txt_record(
+                    "denuoweb",
+                    &format!(
+                        "hnsdns=1;ns=ns1.denuoweb.;transport=doh;doh=https://denuoweb:8443/dns-query;tlsa=3,1,1,{pin}"
+                    ),
+                ),
+            ],
+        };
+        let resolver = AuthoritativeDnssecResolver::new(
+            FailingPinnedDohTransport {
+                doh_calls: AtomicUsize::new(0),
+                udp_calls: AtomicUsize::new(0),
+                tcp_calls: AtomicUsize::new(0),
+            },
+            accepting_dnssec_verifier(),
+        )
+        .with_authoritative_doh_preferred();
+
+        let answer = resolver
+            .resolve_delegated(
+                &ResolutionRequest {
+                    qname: "denuoweb".to_owned(),
+                    qtype: RecordType::A.code(),
+                },
+                &delegation,
+            )
+            .unwrap();
+        assert!(answer.secure);
+        assert_eq!(
+            answer.records,
+            vec![record(
+                DnsName::from_ascii("denuoweb").unwrap(),
+                RecordType::A,
+                vec![1, 1, 1, 1],
+            )]
+        );
+
+        let (transport, _) = resolver.into_parts();
+        assert_eq!(transport.doh_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.udp_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(transport.tcp_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn malformed_pinned_authoritative_doh_falls_back_to_port_53() {
+        let delegation = HnsDelegation {
+            root_name: "denuoweb".to_owned(),
+            owner: DnsName::from_ascii("denuoweb").unwrap(),
+            records: vec![
+                ns_record("denuoweb", "ns1.denuoweb"),
+                glue4_record("ns1.denuoweb", [35, 212, 156, 128]),
+                ds_record("denuoweb"),
+                txt_record(
+                    "denuoweb",
+                    "hnsdns=1;ns=ns1.denuoweb.;doh=https://denuoweb:8443/dns-query;tlsa=3,1,1,invalid",
+                ),
+            ],
+        };
+        let resolver = AuthoritativeDnssecResolver::new(
+            FailingPinnedDohTransport {
+                doh_calls: AtomicUsize::new(0),
+                udp_calls: AtomicUsize::new(0),
+                tcp_calls: AtomicUsize::new(0),
+            },
+            accepting_dnssec_verifier(),
+        )
+        .with_authoritative_doh_preferred();
+
+        let answer = resolver
+            .resolve_delegated(
+                &ResolutionRequest {
+                    qname: "denuoweb".to_owned(),
+                    qtype: RecordType::A.code(),
+                },
+                &delegation,
+            )
+            .unwrap();
+        assert!(answer.secure);
+        assert_eq!(
+            answer.records,
+            vec![record(
+                DnsName::from_ascii("denuoweb").unwrap(),
+                RecordType::A,
+                vec![1, 1, 1, 1],
+            )]
+        );
+
+        let (transport, _) = resolver.into_parts();
+        assert_eq!(transport.doh_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(transport.udp_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(transport.tcp_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn authoritative_doh_endpoint_rejects_invalid_or_excess_proof_tlsa_pins() {
+        let valid = "11".repeat(32);
+        let invalid_declarations = [
+            "hnsdns=1;ns=ns1;doh=https://welcome/dns-query;tlsa=3,1,1,abcd".to_owned(),
+            format!("hnsdns=1;ns=ns1;doh=https://welcome/dns-query;tlsa=2,1,1,{valid}"),
+            format!("hnsdns=1;ns=ns1;doh=https://welcome/dns-query;tlsa=3,0,1,{valid}"),
+            format!("hnsdns=1;ns=ns1;doh=https://welcome/dns-query;tlsa=3,1,2,{valid}"),
+            format!(
+                "hnsdns=1;ns=ns1;tlsa=3,1,1,{valid};tlsa=3,1,1,{};tlsa=3,1,1,{}",
+                "22".repeat(32),
+                "33".repeat(32),
+            ),
+        ];
+
+        for declaration in invalid_declarations {
+            assert!(declaration.len() <= HNSDNS_MAX_TEXT_BYTES, "{declaration}");
+            assert_eq!(
+                parse_hnsdns_declaration(&declaration, &DnsName::from_ascii("welcome").unwrap(),)
+                    .unwrap_err(),
+                ResolverError::InvalidAuthoritativeDoh,
+                "{declaration}",
+            );
+        }
+    }
+
+    #[test]
+    fn authoritative_doh_cache_key_changes_when_proof_pin_changes() {
+        let delegation = |pin: &str| HnsDelegation {
+            root_name: "welcome".to_owned(),
+            owner: DnsName::from_ascii("welcome").unwrap(),
+            records: vec![
+                ns_record("welcome", "ns1.welcome"),
+                glue4_record("ns1.welcome", [203, 0, 113, 53]),
+                txt_record(
+                    "welcome",
+                    &format!("hnsdns=1;ns=ns1;doh=https://welcome/dns-query;tlsa=3,1,1,{pin}"),
+                ),
+            ],
+        };
+
+        assert_ne!(
+            authoritative_doh_cache_key(&delegation(&"11".repeat(32))),
+            authoritative_doh_cache_key(&delegation(&"22".repeat(32))),
+        );
     }
 
     #[test]
@@ -4949,6 +5260,7 @@ mod tests {
                 connect_addr: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 53)),
                 port: 443,
                 path_and_query: "/dns-query".to_owned(),
+                tls_authentication: AuthoritativeDohTlsAuthentication::WebPki,
             }]
         );
         assert_eq!(

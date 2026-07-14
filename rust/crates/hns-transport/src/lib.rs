@@ -71,6 +71,7 @@ pub struct TlsValidation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TlsaRecordSource {
     NativeTlsa,
+    HnsProofTxt,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1295,44 +1296,49 @@ impl ServerCertVerifier for DaneServerCertVerifier {
             .iter()
             .map(|certificate| certificate.as_ref())
             .collect::<Vec<_>>();
-        let mut stateless_tlsa_records = None;
+        let mut stateless_dane_evidence = None;
         let mut tlsa_records = self.tls.tlsa_records.as_slice();
         let mut dnssec_secure = self.tls.dnssec_secure;
         if self.tls.stateless_dane.enabled
             && self.tls.mode != DomainTrustMode::IcannWebPki
             && tlsa_records.is_empty()
         {
-            match evaluate_stateless_dane_certificate(StatelessDaneValidationInput {
+            let evidence = evaluate_stateless_dane_certificate(StatelessDaneValidationInput {
                 cert_der: end_entity.as_ref(),
                 host: &server_name.to_str(),
                 port: self.tls.service_port,
                 accepted_tree_roots: &self.tls.stateless_dane.accepted_tree_roots,
                 now_unix: now.as_secs(),
-            }) {
-                Ok(StatelessDaneEvidence::Missing) => {}
-                Ok(StatelessDaneEvidence::Tlsa { records, .. }) => {
-                    stateless_tlsa_records = Some(records);
-                    dnssec_secure = true;
-                }
-                Err(error) => {
-                    return Err(RustlsError::General(format!(
-                        "stateless DANE certificate evidence rejected: {error}"
-                    )));
-                }
+            })
+            .map_err(|error| {
+                RustlsError::General(format!(
+                    "stateless DANE certificate evidence rejected: {error}"
+                ))
+            })?;
+            if matches!(evidence, StatelessDaneEvidence::Tlsa { .. }) {
+                dnssec_secure = true;
             }
+            stateless_dane_evidence = Some(evidence);
         }
-        if let Some(records) = stateless_tlsa_records.as_ref() {
+        if let Some(StatelessDaneEvidence::Tlsa { records, .. }) = stateless_dane_evidence.as_ref()
+        {
             tlsa_records = records;
         }
 
-        match evaluate_policy_with_certificate_chain(DaneCertificateChainValidationInput {
-            mode: self.tls.mode,
-            dnssec_secure,
-            tlsa_records,
-            end_entity_der: end_entity.as_ref(),
-            intermediate_der: &intermediate_der,
-            webpki_status,
-        }) {
+        let decision =
+            evaluate_policy_with_certificate_chain(DaneCertificateChainValidationInput {
+                mode: self.tls.mode,
+                dnssec_secure,
+                tlsa_records,
+                end_entity_der: end_entity.as_ref(),
+                intermediate_der: &intermediate_der,
+                webpki_status,
+            })
+            .map(|decision| {
+                with_stateless_dane_provenance(decision, stateless_dane_evidence.as_ref())
+            });
+
+        match decision {
             Ok(DaneDecision::Failed) => Err(RustlsError::General(
                 "DANE certificate association did not match".to_owned(),
             )),
@@ -1369,6 +1375,18 @@ impl ServerCertVerifier for DaneServerCertVerifier {
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.webpki.supported_verify_schemes()
+    }
+}
+
+fn with_stateless_dane_provenance(
+    decision: DaneDecision,
+    evidence: Option<&StatelessDaneEvidence>,
+) -> DaneDecision {
+    match (decision, evidence) {
+        (DaneDecision::Matched(usage), Some(StatelessDaneEvidence::Tlsa { .. })) => {
+            DaneDecision::StatelessMatched(usage)
+        }
+        (decision, _) => decision,
     }
 }
 
@@ -3141,6 +3159,79 @@ mod tests {
     }
 
     #[test]
+    fn enabled_stateless_dane_without_certificate_evidence_is_not_labeled_stateless() {
+        let server = TlsTestServer::start();
+        let mut roots = RootCertStore::empty();
+        roots
+            .add(CertificateDer::from(server.cert_der.clone()))
+            .unwrap();
+        let transport = TcpHttpTransport::with_root_store(
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            TransportLimits::default(),
+            roots,
+        );
+        let mut request = request(server.address);
+        request.scheme = "https".to_owned();
+        request.tls = TlsValidation::hns_compatibility(false, Vec::new());
+        request.tls.stateless_dane = StatelessDaneConfig {
+            enabled: true,
+            accepted_tree_roots: vec![[0x42; 32]],
+        };
+
+        let response = transport.fetch(&request).unwrap();
+
+        assert_eq!(response.dane_decision, DaneDecision::WebPkiFallback);
+        assert!(!matches!(
+            response.dane_decision,
+            DaneDecision::StatelessMatched(_)
+        ));
+    }
+
+    #[test]
+    fn accepted_stateless_tlsa_match_has_stateless_provenance() {
+        let evidence = StatelessDaneEvidence::Tlsa {
+            records: vec![TlsaRecord {
+                usage: TlsaUsage::DaneEe,
+                selector: TlsaSelector::FullCertificate,
+                matching: TlsaMatching::Exact,
+                association_data: b"cert".to_vec(),
+            }],
+            proof_root: [0x42; 32],
+            proof_height: None,
+        };
+        let StatelessDaneEvidence::Tlsa { records, .. } = &evidence else {
+            unreachable!();
+        };
+        let decision =
+            evaluate_policy_with_certificate_chain(DaneCertificateChainValidationInput {
+                mode: DomainTrustMode::HnsStrict,
+                dnssec_secure: true,
+                tlsa_records: records,
+                end_entity_der: b"cert",
+                intermediate_der: &[],
+                webpki_status: WebPkiStatus::Invalid,
+            })
+            .unwrap();
+
+        assert_eq!(
+            with_stateless_dane_provenance(decision, Some(&evidence)),
+            DaneDecision::StatelessMatched(TlsaUsage::DaneEe),
+        );
+        assert_eq!(
+            with_stateless_dane_provenance(
+                DaneDecision::Matched(TlsaUsage::DaneEe),
+                Some(&StatelessDaneEvidence::Missing),
+            ),
+            DaneDecision::Matched(TlsaUsage::DaneEe),
+        );
+        assert_eq!(
+            with_stateless_dane_provenance(DaneDecision::Failed, Some(&evidence)),
+            DaneDecision::Failed,
+        );
+    }
+
+    #[test]
     fn fetches_https_with_dnssec_tlsa_match() {
         let server = TlsTestServer::start();
         let transport = TcpHttpTransport::new(
@@ -3192,6 +3283,42 @@ mod tests {
         );
         let request_text = server.request();
         assert!(request_text.starts_with("GET https://example.com:"));
+        assert!(request_text.ends_with("/path?q=1"));
+    }
+
+    #[test]
+    fn fetches_single_label_hns_http2_with_proof_spki_sha256() {
+        let server = TlsTestServer::start_h2();
+        let transport = TcpHttpTransport::new(
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            TransportLimits::default(),
+        );
+        let spki = hns_dane::extract_spki_der(&server.cert_der).unwrap();
+        let mut request = request(server.address);
+        request.scheme = "https".to_owned();
+        request.host = "denuoweb".to_owned();
+        request.protocol = OriginProtocol::Http2;
+        request.tls = TlsValidation::hns_strict(
+            true,
+            vec![TlsaRecord {
+                usage: TlsaUsage::DaneEe,
+                selector: TlsaSelector::SubjectPublicKeyInfo,
+                matching: TlsaMatching::Sha256,
+                association_data: Sha256::digest(spki).to_vec(),
+            }],
+        );
+
+        let response = transport.fetch(&request).unwrap();
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"ok");
+        assert_eq!(
+            response.dane_decision,
+            DaneDecision::Matched(TlsaUsage::DaneEe),
+        );
+        let request_text = server.request();
+        assert!(request_text.starts_with("GET https://denuoweb:"));
         assert!(request_text.ends_with("/path?q=1"));
     }
 

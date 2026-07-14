@@ -50,6 +50,15 @@ class HnsTlsaTraceFormatTest {
     }
 
     @Test
+    fun reportsThirdPartyHnsDohResolutionSource() {
+        val trace = JSONObject(
+            """{"nameClass":"hns","host":"denuoweb","resolutionSource":"hns_doh"}""",
+        )
+
+        assertEquals("third-party HNS DoH", HnsResolutionTraceFormat.resolutionSource(trace))
+    }
+
+    @Test
     fun reportsDnssecBlockedTlsaAsNotEvaluated() {
         val tls = JSONObject(
             """{"tlsaEvaluated":false,"tlsaStatus":"not_evaluated","tlsaBlockedBy":"delegated_dnssec_validation_failed","tlsaFound":false,"dnssecSecure":null,"dane":{"decision":"not_evaluated"}}""",

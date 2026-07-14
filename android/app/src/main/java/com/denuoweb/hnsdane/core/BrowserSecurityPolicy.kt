@@ -8,6 +8,7 @@ object BrowserSecurityPolicy {
         mainFrameHnsStatusCode: Int? = null,
         mainFrameHnsTlsPolicy: HnsPageTlsPolicy? = null,
         mainFrameHnsResolverPolicy: HnsPageResolverPolicy? = null,
+        mainFrameHnsSecurityPath: HnsPageSecurityPath? = null,
     ): SecurityState {
         if (targetKind != BrowserTargetKind.HnsName && targetKind != BrowserTargetKind.NativeGateway) {
             return SecurityState.WebPkiOnly
@@ -16,6 +17,9 @@ object BrowserSecurityPolicy {
             return SecurityState.ValidationFailed
         }
         if (mainFrameHnsStatusCode?.let { it in 200..299 } == true) {
+            mainFrameHnsSecurityPath?.let { securityPath ->
+                return securityPath.securityState()
+            }
             if (mainFrameHnsTlsPolicy == HnsPageTlsPolicy.Dane) {
                 if (mainFrameHnsResolverPolicy == HnsPageResolverPolicy.HnsDohCompatibility) {
                     return SecurityState.DaneCompatibility
@@ -58,6 +62,18 @@ object BrowserSecurityPolicy {
 
         return SecurityState.Syncing
     }
+
+    private fun HnsPageSecurityPath.securityState(): SecurityState =
+        when (this) {
+            HnsPageSecurityPath.DaneAuthoritativeDoh -> SecurityState.DaneViaAuthoritativeDoh
+            HnsPageSecurityPath.DaneAuthoritativeDns53 -> SecurityState.DaneViaAuthoritativeDns53
+            HnsPageSecurityPath.DaneThirdPartyDoh -> SecurityState.DaneViaThirdPartyDoh
+            HnsPageSecurityPath.StatelessDane -> SecurityState.StatelessDane
+            HnsPageSecurityPath.DaneIcannDoh -> SecurityState.DaneViaIcannDoh
+            HnsPageSecurityPath.HnsAuthoritativeDoh -> SecurityState.HnsViaAuthoritativeDoh
+            HnsPageSecurityPath.HnsAuthoritativeDns53 -> SecurityState.HnsViaAuthoritativeDns53
+            HnsPageSecurityPath.HnsThirdPartyDoh -> SecurityState.HnsViaThirdPartyDoh
+        }
 
     private fun String?.hasSyncStatus(status: String): Boolean =
         this?.contains("\"status\":\"$status\"") == true

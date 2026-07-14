@@ -116,6 +116,7 @@ pub enum StatelessDaneEvidence {
 pub enum DaneDecision {
     NoTlsa,
     Matched(TlsaUsage),
+    StatelessMatched(TlsaUsage),
     WebPkiFallback,
     Failed,
 }

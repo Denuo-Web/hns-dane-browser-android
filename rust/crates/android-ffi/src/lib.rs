@@ -20,11 +20,12 @@ use hns_p2p::{
     StaticPeerSource, VersionPacket, is_allowed_peer_endpoint,
 };
 use hns_resolver::{
-    AuthoritativeDnssecResolver, AuthoritativeDohEndpoint, CompositeResolver, DelegatedResolver,
-    DelegatingResolver, DnsEndpointPolicy, DnsInterceptionStatus, DnsTransport, HnsDelegation,
-    HnsProofProvider, HnsResourceValueProvider, NameClass, ProvenNameRecords, ResolutionAnswer,
-    ResolutionRequest, Resolver, ResolverError, ResourceValueAnchor, SqliteResourceValueProvider,
-    SystemDnssecVerifier, UdpTcpDnsTransport, classify_name,
+    AuthoritativeDnssecResolver, AuthoritativeDohEndpoint, AuthoritativeDohTlsAuthentication,
+    CompositeResolver, DelegatedResolver, DelegatingResolver, DnsEndpointPolicy,
+    DnsInterceptionStatus, DnsTransport, HnsDelegation, HnsProofProvider, HnsResourceValueProvider,
+    NameClass, ProvenNameRecords, ResolutionAnswer, ResolutionRequest, Resolver, ResolverError,
+    ResourceValueAnchor, SqliteResourceValueProvider, SystemDnssecVerifier, UdpTcpDnsTransport,
+    classify_name,
 };
 use hns_sync::{
     HeaderSyncCoordinator, HeaderSyncRunner, HeaderSyncRunnerConfig, ProofScheduler, SyncError,
@@ -92,6 +93,7 @@ const HNS_GATEWAY_NETWORK_HEADER: &str = "X-HNS-Browser-Network";
 const HNS_RESOLUTION_TRACE_HEADER: &str = "X-HNS-Resolution-Trace";
 const HNS_RESOLVER_MODE_HEADER: &str = "X-HNS-Resolver-Mode";
 const HNS_DOH_FALLBACK_HEADER: &str = "X-HNS-DoH-Fallback";
+const HNS_SECURITY_PATH_HEADER: &str = "X-HNS-Security-Path";
 const TUNNEL_COPY_BUFFER_BYTES: usize = 16 * 1024;
 const DOH_DNS_ID: u16 = 0;
 static SHARED_HTTP_TRANSPORT: OnceLock<TcpHttpTransport> = OnceLock::new();
@@ -652,6 +654,8 @@ impl DnsTraceRecorder {
 struct DnsTraceEvent {
     protocol: &'static str,
     server: String,
+    question_name: Option<String>,
+    question_type: Option<u16>,
     status: String,
     elapsed_ms: u64,
     error: Option<String>,
@@ -687,6 +691,7 @@ impl DnsTransport for AndroidAuthoritativeDnsTransport {
         self.trace.push(dns_trace_event(
             "udp53",
             server.to_string(),
+            query,
             elapsed_millis(started),
             &result,
         ));
@@ -699,6 +704,7 @@ impl DnsTransport for AndroidAuthoritativeDnsTransport {
         self.trace.push(dns_trace_event(
             "tcp53",
             server.to_string(),
+            query,
             elapsed_millis(started),
             &result,
         ));
@@ -715,6 +721,7 @@ impl DnsTransport for AndroidAuthoritativeDnsTransport {
         self.trace.push(doh_trace_event(
             "authoritative_doh",
             authoritative_doh_endpoint_display(endpoint),
+            query,
             elapsed_millis(started),
             &response,
         ));
@@ -745,6 +752,8 @@ impl DnsTransport for AndroidAuthoritativeDnsTransport {
         self.trace.push(DnsTraceEvent {
             protocol: "dns_interception_probe",
             server: "192.0.2.1:53".to_owned(),
+            question_name: Some(DNS_INTERCEPTION_PROBE_NAME.to_owned()),
+            question_type: Some(RecordType::A.code()),
             status: dns_interception_status_name(status).to_owned(),
             elapsed_ms: elapsed_millis(started),
             error,
@@ -828,13 +837,17 @@ fn dns_interception_status_name(status: DnsInterceptionStatus) -> &'static str {
 fn dns_trace_event(
     protocol: &'static str,
     server: String,
+    query: &[u8],
     elapsed_ms: u64,
     result: &Result<Vec<u8>, ResolverError>,
 ) -> DnsTraceEvent {
+    let (question_name, question_type) = dns_trace_question(query);
     match result {
         Ok(_) => DnsTraceEvent {
             protocol,
             server,
+            question_name,
+            question_type,
             status: "ok".to_owned(),
             elapsed_ms,
             error: None,
@@ -842,6 +855,8 @@ fn dns_trace_event(
         Err(error) => DnsTraceEvent {
             protocol,
             server,
+            question_name,
+            question_type,
             status: dns_trace_error_status(error).to_owned(),
             elapsed_ms,
             error: Some(error.to_string()),
@@ -852,32 +867,89 @@ fn dns_trace_event(
 fn doh_trace_event(
     protocol: &'static str,
     server: String,
+    query: &[u8],
     elapsed_ms: u64,
     result: &Result<OriginResponse, TransportError>,
 ) -> DnsTraceEvent {
+    let (question_name, question_type) = dns_trace_question(query);
     match result {
-        Ok(response) if response.status == 200 => DnsTraceEvent {
+        Ok(response) if doh_response_matches_query(response, query) => DnsTraceEvent {
             protocol,
             server,
+            question_name,
+            question_type,
             status: "ok".to_owned(),
             elapsed_ms,
             error: None,
         },
-        Ok(response) => DnsTraceEvent {
+        Ok(response) if !doh_http_status_success(response.status) => DnsTraceEvent {
             protocol,
             server,
+            question_name,
+            question_type,
             status: "http_error".to_owned(),
             elapsed_ms,
             error: Some(format!("HTTP {}", response.status)),
         },
+        Ok(_) => DnsTraceEvent {
+            protocol,
+            server,
+            question_name,
+            question_type,
+            status: "invalid_response".to_owned(),
+            elapsed_ms,
+            error: Some("DoH response did not match the DNS question".to_owned()),
+        },
         Err(error) => DnsTraceEvent {
             protocol,
             server,
+            question_name,
+            question_type,
             status: "transport_error".to_owned(),
             elapsed_ms,
             error: Some(error.to_string()),
         },
     }
+}
+
+fn doh_response_matches_query(response: &OriginResponse, query: &[u8]) -> bool {
+    if !doh_http_status_success(response.status)
+        || !doh_response_has_dns_message_content_type(response)
+    {
+        return false;
+    }
+    let (Ok(query), Ok(answer)) = (DnsMessage::parse(query), DnsMessage::parse(&response.body))
+    else {
+        return false;
+    };
+    let ([question], [answered_question]) =
+        (query.questions.as_slice(), answer.questions.as_slice())
+    else {
+        return false;
+    };
+    answer.header.flags.is_response()
+        && answer.header.flags.opcode() == 0
+        && matches!(
+            answer.header.flags.rcode(),
+            DNS_RCODE_NOERROR | DNS_RCODE_NXDOMAIN
+        )
+        && answer.header.id == query.header.id
+        && answered_question.name == question.name
+        && answered_question.record_type == question.record_type
+        && answered_question.class == question.class
+}
+
+fn dns_trace_question(query: &[u8]) -> (Option<String>, Option<u16>) {
+    let Ok(message) = DnsMessage::parse(query) else {
+        return (None, None);
+    };
+    let Some(question) = message.questions.first() else {
+        return (None, None);
+    };
+    (
+        Some(question.name.to_string()),
+        Some(question.record_type.code()),
+    )
 }
 
 fn elapsed_millis(started: Instant) -> u64 {
@@ -1083,10 +1155,11 @@ impl HnsDohDnsTransport {
     fn exchange_doh(&self, _server: SocketAddr, query: &[u8]) -> Result<Vec<u8>, ResolverError> {
         let (query, original_id) = recursive_doh_query(query)?;
         let started = Instant::now();
-        let response = fetch_doh_message(&self.endpoint, query);
+        let response = fetch_doh_message(&self.endpoint, query.clone());
         self.trace.push(doh_trace_event(
             "hns_doh",
             self.endpoint.display(),
+            &query,
             elapsed_millis(started),
             &response,
         ));
@@ -1146,10 +1219,11 @@ impl Resolver for HnsDohResolver {
         let id = DOH_DNS_ID;
         let query = build_doh_query(id, &qname, qtype)?;
         let started = Instant::now();
-        let response = fetch_doh_message(&self.endpoint, query);
+        let response = fetch_doh_message(&self.endpoint, query.clone());
         self.trace.push(doh_trace_event(
             "hns_doh",
             self.endpoint.display(),
+            &query,
             elapsed_millis(started),
             &response,
         ));
@@ -1193,10 +1267,11 @@ impl Resolver for IcannDohResolver {
         let id = DOH_DNS_ID;
         let query = build_doh_query(id, &qname, qtype)?;
         let started = Instant::now();
-        let response = fetch_doh_message(&self.endpoint, query);
+        let response = fetch_doh_message(&self.endpoint, query.clone());
         self.trace.push(doh_trace_event(
             "icann_doh",
             self.endpoint.display(),
+            &query,
             elapsed_millis(started),
             &response,
         ));
@@ -1281,7 +1356,7 @@ fn fetch_authoritative_doh_message(
         port: endpoint.port,
         path_and_query: endpoint.path_and_query.clone(),
         protocol: OriginProtocol::Http2,
-        tls: TlsValidation::default(),
+        tls: authoritative_doh_tls_validation(endpoint),
         headers: vec![
             ("Accept".to_owned(), "application/dns-message".to_owned()),
             (
@@ -1293,6 +1368,18 @@ fn fetch_authoritative_doh_message(
     })
 }
 
+fn authoritative_doh_tls_validation(endpoint: &AuthoritativeDohEndpoint) -> TlsValidation {
+    match &endpoint.tls_authentication {
+        AuthoritativeDohTlsAuthentication::WebPki => TlsValidation::default(),
+        AuthoritativeDohTlsAuthentication::HnsProofTlsa(records) => {
+            let mut validation = TlsValidation::hns_strict(true, records.clone());
+            validation.tlsa_source = Some(TlsaRecordSource::HnsProofTxt);
+            validation.service_port = endpoint.port;
+            validation
+        }
+    }
+}
+
 fn authoritative_doh_endpoint_display(endpoint: &AuthoritativeDohEndpoint) -> String {
     let base = if endpoint.port == 443 {
         format!("https://{}{}", endpoint.host, endpoint.path_and_query)
@@ -1302,7 +1389,11 @@ fn authoritative_doh_endpoint_display(endpoint: &AuthoritativeDohEndpoint) -> St
             endpoint.host, endpoint.port, endpoint.path_and_query
         )
     };
-    format!("{base} via {}", endpoint.connect_addr)
+    let authentication = match &endpoint.tls_authentication {
+        AuthoritativeDohTlsAuthentication::WebPki => "WebPKI",
+        AuthoritativeDohTlsAuthentication::HnsProofTlsa(_) => "HNS-proof TLSA",
+    };
+    format!("{base} via {} [{authentication}]", endpoint.connect_addr)
 }
 
 fn doh_http_status_success(status: u16) -> bool {
@@ -1618,6 +1709,12 @@ pub fn gateway_http_response(input: GatewayHttpRequestInput<'_>) -> Vec<u8> {
     match gateway.handle(&request) {
         Ok(response) => {
             let resolver_policy = fallback_marker.used().then_some("hns-doh-compat");
+            let security_path = security_path_name(
+                &input,
+                response.origin_request.port,
+                &response.origin.dane_decision,
+                &dns_trace.snapshot(),
+            );
             let trace = resolution_trace_json(
                 &input,
                 network,
@@ -1627,12 +1724,18 @@ pub fn gateway_http_response(input: GatewayHttpRequestInput<'_>) -> Vec<u8> {
                     validation: Some(&response.origin_request.tls),
                     decision: Some(&response.origin.dane_decision),
                     inspection: response.origin.tls_inspection.as_ref(),
+                    origin_address: response.origin_request.connect_host.as_deref(),
                 },
                 None,
                 &fallback_marker,
                 &dns_trace,
             );
-            origin_response_with_resolver_policy_and_trace(response.origin, resolver_policy, &trace)
+            origin_response_with_resolver_policy_and_trace(
+                response.origin,
+                resolver_policy,
+                security_path,
+                &trace,
+            )
         }
         Err(error) => {
             let (status, reason, detail) = map_gateway_error_for_host(input.host, &error);
@@ -1737,6 +1840,12 @@ pub fn gateway_http_response_body_to_file(
     match gateway.handle_to_writer(&request, &mut body_file) {
         Ok(response) => {
             let resolver_policy = fallback_marker.used().then_some("hns-doh-compat");
+            let security_path = security_path_name(
+                &input,
+                response.origin_request.port,
+                &response.origin.dane_decision,
+                &dns_trace.snapshot(),
+            );
             let trace = resolution_trace_json(
                 &input,
                 network,
@@ -1746,6 +1855,7 @@ pub fn gateway_http_response_body_to_file(
                     validation: Some(&response.origin_request.tls),
                     decision: Some(&response.origin.dane_decision),
                     inspection: response.origin.tls_inspection.as_ref(),
+                    origin_address: response.origin_request.connect_host.as_deref(),
                 },
                 None,
                 &fallback_marker,
@@ -1754,6 +1864,7 @@ pub fn gateway_http_response_body_to_file(
             Ok(origin_response_head_with_resolver_policy_and_trace(
                 response.origin,
                 resolver_policy,
+                security_path,
                 &trace,
             ))
         }
@@ -1869,6 +1980,7 @@ pub fn gateway_http_upgrade_tunnel(
                     validation: Some(&response.origin_request.tls),
                     decision: Some(&response.origin.dane_decision),
                     inspection: response.origin.tls_inspection.as_ref(),
+                    origin_address: response.origin_request.connect_host.as_deref(),
                 },
                 None,
                 &fallback_marker,
@@ -2156,6 +2268,9 @@ fn parse_gateway_headers(header_text: &str) -> Result<ParsedGatewayHeaders, &'st
             network = value.parse().map_err(|_| "Handshake network is invalid")?;
             continue;
         }
+        if name.eq_ignore_ascii_case(HNS_SECURITY_PATH_HEADER) {
+            continue;
+        }
         headers.push((name.to_owned(), value.to_owned()));
     }
 
@@ -2170,12 +2285,13 @@ fn parse_gateway_headers(header_text: &str) -> Result<ParsedGatewayHeaders, &'st
 
 #[cfg(test)]
 fn origin_response(response: OriginResponse) -> Vec<u8> {
-    origin_response_with_resolver_policy_and_trace(response, None, "{}")
+    origin_response_with_resolver_policy_and_trace(response, None, None, "{}")
 }
 
 fn origin_response_with_resolver_policy_and_trace(
     response: OriginResponse,
     resolver_policy: Option<&str>,
+    security_path: Option<&str>,
     trace_json: &str,
 ) -> Vec<u8> {
     let body = response.body;
@@ -2188,6 +2304,7 @@ fn origin_response_with_resolver_policy_and_trace(
             tls_inspection: response.tls_inspection,
         },
         resolver_policy,
+        security_path,
         trace_json,
     );
     out.extend(body);
@@ -2199,12 +2316,13 @@ fn origin_response_with_resolver_policy(
     response: OriginResponse,
     resolver_policy: Option<&str>,
 ) -> Vec<u8> {
-    origin_response_with_resolver_policy_and_trace(response, resolver_policy, "{}")
+    origin_response_with_resolver_policy_and_trace(response, resolver_policy, None, "{}")
 }
 
 fn origin_response_head_with_resolver_policy_and_trace(
     response: OriginResponseHead,
     resolver_policy: Option<&str>,
+    security_path: Option<&str>,
     trace_json: &str,
 ) -> Vec<u8> {
     let mut out = response_head(response.status, "OK", None, response.body_len);
@@ -2219,6 +2337,9 @@ fn origin_response_head_with_resolver_policy_and_trace(
     }
     if let Some(policy) = resolver_policy {
         out.extend(format!("X-HNS-Resolver-Policy: {policy}\r\n").as_bytes());
+    }
+    if let Some(path) = security_path {
+        out.extend(format!("{HNS_SECURITY_PATH_HEADER}: {path}\r\n").as_bytes());
     }
     out.extend(format!("{HNS_RESOLVER_MODE_HEADER}: {}\r\n", trace_mode(trace_json)).as_bytes());
     out.extend(
@@ -2298,6 +2419,7 @@ fn suppressed_origin_response_header(name: &str) -> bool {
         || name.eq_ignore_ascii_case("trailer")
         || name.eq_ignore_ascii_case("x-hns-tls-policy")
         || name.eq_ignore_ascii_case("x-hns-resolver-policy")
+        || name.eq_ignore_ascii_case(HNS_SECURITY_PATH_HEADER)
         || name.eq_ignore_ascii_case(HNS_RESOLUTION_TRACE_HEADER)
         || name.eq_ignore_ascii_case(HNS_RESOLVER_MODE_HEADER)
         || name.eq_ignore_ascii_case(HNS_DOH_FALLBACK_HEADER)
@@ -2308,6 +2430,7 @@ struct TlsTraceInput<'a> {
     validation: Option<&'a TlsValidation>,
     decision: Option<&'a DaneDecision>,
     inspection: Option<&'a TlsCertificateInspection>,
+    origin_address: Option<&'a str>,
 }
 
 // The trace deliberately keeps its independent resolution, TLS, fallback, and DNS inputs
@@ -2352,14 +2475,15 @@ fn resolution_trace_json(
                 })
         })
         .unwrap_or(false);
-    let origin_address = resolution
-        .map(|answer| {
-            answer
-                .records
-                .iter()
-                .any(|record| matches!(record.record_type, RecordType::A | RecordType::Aaaa))
-        })
-        .unwrap_or(false);
+    let origin_address = tls.origin_address.is_some()
+        || resolution
+            .map(|answer| {
+                answer
+                    .records
+                    .iter()
+                    .any(|record| matches!(record.record_type, RecordType::A | RecordType::Aaaa))
+            })
+            .unwrap_or(false);
     let hns_proof = hns_proof_trace_status(input, network, name_class, resolution, error);
     let fallback_reason = fallback_marker.reason().unwrap_or("none");
     let fallback_type = if fallback_marker.used() {
@@ -2379,6 +2503,7 @@ fn resolution_trace_json(
     let port53_interception = dns_protocol_status(&dns_events, "dns_interception_probe");
     let dns_attempts = dns_trace_attempts_json(&dns_events);
     let resolution_source = resolution_source_name(
+        input.host,
         name_class,
         resolution,
         authoritative_dns_used,
@@ -2432,6 +2557,7 @@ fn name_class_trace_name(name_class: NameClass) -> &'static str {
 }
 
 fn resolution_source_name(
+    host: &str,
     name_class: NameClass,
     resolution: Option<&ResolutionAnswer>,
     authoritative_dns_used: bool,
@@ -2454,14 +2580,13 @@ fn resolution_source_name(
         return "unknown";
     }
 
-    if dns_events
-        .iter()
-        .any(|event| event.protocol == "authoritative_doh" && event.status == "ok")
-    {
-        return "authoritative_doh";
-    }
-    if authoritative_dns_used {
-        return "authoritative_dns";
+    if resolution.is_some() {
+        match successful_dns_path_for_types(dns_events, host, &[RecordType::A, RecordType::Aaaa]) {
+            Some("authoritative_doh") => return "authoritative_doh",
+            Some("udp53" | "tcp53") => return "authoritative_dns",
+            Some("hns_doh") => return "hns_doh",
+            _ => return "hns_resource",
+        }
     }
     if matches!(
         error,
@@ -2472,8 +2597,8 @@ fn resolution_source_name(
     ) {
         return "authoritative_dns";
     }
-    if resolution.is_some() {
-        "hns_resource"
+    if authoritative_dns_used {
+        "authoritative_dns"
     } else {
         "unknown"
     }
@@ -2577,30 +2702,51 @@ fn tls_trace_json(
         return "null".to_owned();
     }
 
-    let owner = tlsa_owner_name(input.host, input.port);
+    let owner = tlsa_owner_name(
+        input.host,
+        tls_validation
+            .map(|tls| tls.service_port)
+            .unwrap_or(input.port),
+    );
+    let stateless_dane = matches!(dane_decision, Some(DaneDecision::StatelessMatched(_)));
     let tlsa_evaluated = tls_validation.is_some();
-    let tlsa_status = tlsa_status_name(tls_validation);
+    let tlsa_status = if stateless_dane {
+        "present"
+    } else {
+        tlsa_status_name(tls_validation)
+    };
     let tlsa_blocked_by = tlsa_blocked_by_json(tls_validation, error);
     let records = tls_validation
         .map(|tls| tlsa_records_json(&tls.tlsa_records))
         .unwrap_or_else(|| "[]".to_owned());
-    let records_found = tls_validation
-        .map(|tls| !tls.tlsa_records.is_empty())
-        .unwrap_or(false);
-    let dnssec_secure = tls_validation
-        .map(|tls| if tls.dnssec_secure { "true" } else { "false" })
-        .unwrap_or("null");
-    let tlsa_source = tls_validation
-        .and_then(|tls| tls.tlsa_source)
-        .map(|source| format!(r#""{}""#, tlsa_record_source_name(source)))
-        .unwrap_or_else(|| "null".to_owned());
+    let records_found = stateless_dane
+        || tls_validation
+            .map(|tls| !tls.tlsa_records.is_empty())
+            .unwrap_or(false);
+    let dnssec_secure = if stateless_dane {
+        "true"
+    } else {
+        tls_validation
+            .map(|tls| if tls.dnssec_secure { "true" } else { "false" })
+            .unwrap_or("null")
+    };
+    let tlsa_source = if stateless_dane {
+        r#""stateless_certificate""#.to_owned()
+    } else {
+        tls_validation
+            .and_then(|tls| tls.tlsa_source)
+            .map(|source| format!(r#""{}""#, tlsa_record_source_name(source)))
+            .unwrap_or_else(|| "null".to_owned())
+    };
     let mode = tls_validation
         .map(|tls| format!(r#""{}""#, json_escape(tls_mode_name(tls))))
         .unwrap_or_else(|| "null".to_owned());
     let decision = dane_trace_decision(dane_decision, error);
     let matched_usage = dane_decision
         .and_then(|decision| match decision {
-            DaneDecision::Matched(usage) => Some(format!(r#""{}""#, tlsa_usage_name(*usage))),
+            DaneDecision::Matched(usage) | DaneDecision::StatelessMatched(usage) => {
+                Some(format!(r#""{}""#, tlsa_usage_name(*usage)))
+            }
             _ => None,
         })
         .unwrap_or_else(|| "null".to_owned());
@@ -2629,6 +2775,7 @@ fn tls_trace_json(
 fn tlsa_record_source_name(source: TlsaRecordSource) -> &'static str {
     match source {
         TlsaRecordSource::NativeTlsa => "native_tlsa",
+        TlsaRecordSource::HnsProofTxt => "hns_proof_txt",
     }
 }
 
@@ -2819,7 +2966,7 @@ fn dane_trace_decision(
     error: Option<&GatewayError>,
 ) -> &'static str {
     match (dane_decision, error) {
-        (Some(DaneDecision::Matched(_)), _) => "verified",
+        (Some(DaneDecision::Matched(_) | DaneDecision::StatelessMatched(_)), _) => "verified",
         (Some(DaneDecision::WebPkiFallback), _) => "webpki_fallback",
         (Some(DaneDecision::NoTlsa), _) => "no_tlsa",
         (Some(DaneDecision::Failed), _) => "failed",
@@ -2834,7 +2981,7 @@ fn dane_certificate_match(
     error: Option<&GatewayError>,
 ) -> &'static str {
     match (dane_decision, error) {
-        (Some(DaneDecision::Matched(_)), _) => "pass",
+        (Some(DaneDecision::Matched(_) | DaneDecision::StatelessMatched(_)), _) => "pass",
         (Some(DaneDecision::WebPkiFallback), _) => "webpki_valid",
         (Some(DaneDecision::NoTlsa), _) => "not_checked",
         (Some(DaneDecision::Failed), _) => "failed",
@@ -2916,10 +3063,21 @@ fn dns_trace_attempts_json(events: &[DnsTraceEvent]) -> String {
                 .as_ref()
                 .map(|error| format!(r#""{}""#, json_escape(error)))
                 .unwrap_or_else(|| "null".to_owned());
+            let question_name = event
+                .question_name
+                .as_ref()
+                .map(|name| format!(r#""{}""#, json_escape(name)))
+                .unwrap_or_else(|| "null".to_owned());
+            let question_type = event
+                .question_type
+                .map(|record_type| record_type.to_string())
+                .unwrap_or_else(|| "null".to_owned());
             format!(
-                r#"{{"protocol":"{}","server":"{}","status":"{}","elapsedMs":{},"error":{}}}"#,
+                r#"{{"protocol":"{}","server":"{}","questionName":{},"questionType":{},"status":"{}","elapsedMs":{},"error":{}}}"#,
                 event.protocol,
                 json_escape(&event.server),
+                question_name,
+                question_type,
                 json_escape(&event.status),
                 event.elapsed_ms,
                 error,
@@ -2927,6 +3085,69 @@ fn dns_trace_attempts_json(events: &[DnsTraceEvent]) -> String {
         })
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn successful_dns_path<'a>(
+    events: &'a [DnsTraceEvent],
+    qname: &str,
+    qtype: RecordType,
+) -> Option<&'a str> {
+    successful_dns_path_for_types(events, qname, &[qtype])
+}
+
+fn successful_dns_path_for_types<'a>(
+    events: &'a [DnsTraceEvent],
+    qname: &str,
+    qtypes: &[RecordType],
+) -> Option<&'a str> {
+    let qname = qname.trim_end_matches('.');
+    events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.status == "ok"
+                && event
+                    .question_type
+                    .is_some_and(|code| qtypes.iter().any(|qtype| qtype.code() == code))
+                && event
+                    .question_name
+                    .as_deref()
+                    .is_some_and(|name| name.trim_end_matches('.').eq_ignore_ascii_case(qname))
+        })
+        .map(|event| event.protocol)
+}
+
+fn security_path_name(
+    input: &GatewayHttpRequestInput<'_>,
+    effective_port: u16,
+    decision: &DaneDecision,
+    events: &[DnsTraceEvent],
+) -> Option<&'static str> {
+    match decision {
+        DaneDecision::StatelessMatched(_) => return Some("stateless-dane"),
+        DaneDecision::Matched(_) => {
+            let owner = tlsa_owner_name(input.host, effective_port);
+            return match successful_dns_path(events, &owner, RecordType::Tlsa) {
+                Some("authoritative_doh") => Some("dane-authoritative-doh"),
+                Some("udp53" | "tcp53") => Some("dane-authoritative-dns53"),
+                Some("hns_doh") => Some("dane-third-party-doh"),
+                Some("icann_doh") => Some("dane-icann-doh"),
+                _ => None,
+            };
+        }
+        DaneDecision::WebPkiFallback | DaneDecision::Failed => return None,
+        DaneDecision::NoTlsa => {}
+    }
+
+    if !input.scheme.eq_ignore_ascii_case("http") && !input.scheme.eq_ignore_ascii_case("ws") {
+        return None;
+    }
+    match successful_dns_path_for_types(events, input.host, &[RecordType::A, RecordType::Aaaa]) {
+        Some("authoritative_doh") => Some("hns-authoritative-doh"),
+        Some("udp53" | "tcp53") => Some("hns-authoritative-dns53"),
+        Some("hns_doh") => Some("hns-third-party-doh"),
+        _ => None,
+    }
 }
 
 fn nameserver_candidates_json(events: &[DnsTraceEvent]) -> String {
@@ -3356,7 +3577,7 @@ fn trace_doh_fallback(trace_json: &str) -> &'static str {
 
 fn hns_tls_policy_header(decision: &DaneDecision) -> Option<&'static str> {
     match decision {
-        DaneDecision::Matched(_) => Some("dane"),
+        DaneDecision::Matched(_) | DaneDecision::StatelessMatched(_) => Some("dane"),
         DaneDecision::WebPkiFallback => Some("webpki-fallback"),
         DaneDecision::Failed => Some("failed"),
         DaneDecision::NoTlsa => None,
@@ -5819,12 +6040,40 @@ mod tests {
     }
 
     #[test]
+    fn origin_response_suppresses_spoofed_security_path_and_emits_native_value() {
+        let response = origin_response_with_resolver_policy_and_trace(
+            OriginResponse {
+                status: 200,
+                headers: vec![(
+                    HNS_SECURITY_PATH_HEADER.to_owned(),
+                    "stateless-dane".to_owned(),
+                )],
+                body: b"ok".to_vec(),
+                dane_decision: DaneDecision::Matched(TlsaUsage::DaneEe),
+                tls_inspection: None,
+            },
+            None,
+            Some("dane-authoritative-doh"),
+            "{}",
+        );
+        let text = String::from_utf8(response).unwrap();
+
+        assert!(!text.contains("X-HNS-Security-Path: stateless-dane\r\n"));
+        assert_eq!(
+            text.matches("X-HNS-Security-Path: dane-authoritative-doh\r\n")
+                .count(),
+            1,
+        );
+    }
+
+    #[test]
     fn upgrade_response_preserves_canonical_websocket_headers_only() {
         let response = upgrade_response_head_with_resolver_policy_and_trace(
             b"HTTP/1.1 101 Switching Protocols\r\n\
               Connection: Upgrade, X-Hop\r\n\
               Upgrade: websocket\r\n\
               X-Hop: secret\r\n\
+              X-HNS-Security-Path: spoofed\r\n\
               Sec-WebSocket-Accept: accepted\r\n\r\n",
             &DaneDecision::NoTlsa,
             None,
@@ -5837,6 +6086,7 @@ mod tests {
         assert!(text.contains("Sec-WebSocket-Accept: accepted\r\n"));
         assert!(!text.contains("X-Hop:"));
         assert!(!text.contains("Connection: Upgrade, X-Hop"));
+        assert!(!text.contains(HNS_SECURITY_PATH_HEADER));
     }
 
     #[test]
@@ -5864,7 +6114,8 @@ mod tests {
             "Accept: text/html\r\n\
              X-HNS-Browser-Strict-Mode: 1\r\n\
              X-HNS-Browser-DoH-Resolver: https://resolver.example/dns-query\r\n\
-             X-HNS-Browser-Stateless-DANE: 1\r\n",
+             X-HNS-Browser-Stateless-DANE: 1\r\n\
+             X-HNS-Security-Path: dane-authoritative-doh\r\n",
         )
         .unwrap();
 
@@ -5913,6 +6164,55 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_doh_uses_hns_proof_tlsa_without_webpki_fallback() {
+        let record = TlsaRecord {
+            usage: TlsaUsage::DaneEe,
+            selector: TlsaSelector::SubjectPublicKeyInfo,
+            matching: TlsaMatching::Sha256,
+            association_data: vec![0x36; 32],
+        };
+        let endpoint = AuthoritativeDohEndpoint {
+            ns: DnsName::from_ascii("ns1.denuoweb").unwrap(),
+            host: "denuoweb".to_owned(),
+            connect_addr: "35.212.156.128".parse().unwrap(),
+            port: 8443,
+            path_and_query: "/dns-query".to_owned(),
+            tls_authentication: AuthoritativeDohTlsAuthentication::HnsProofTlsa(vec![
+                record.clone(),
+            ]),
+        };
+
+        let validation = authoritative_doh_tls_validation(&endpoint);
+
+        assert_eq!(validation.mode, hns_dane::DomainTrustMode::HnsStrict);
+        assert!(validation.dnssec_secure);
+        assert_eq!(validation.tlsa_records, vec![record]);
+        assert_eq!(validation.tlsa_source, Some(TlsaRecordSource::HnsProofTxt));
+        assert_eq!(validation.service_port, 8443);
+        assert_eq!(
+            authoritative_doh_endpoint_display(&endpoint),
+            "https://denuoweb:8443/dns-query via 35.212.156.128 [HNS-proof TLSA]"
+        );
+    }
+
+    #[test]
+    fn authoritative_doh_without_proof_tlsa_keeps_webpki_validation() {
+        let endpoint = AuthoritativeDohEndpoint {
+            ns: DnsName::from_ascii("ns1.welcome").unwrap(),
+            host: "doh.example".to_owned(),
+            connect_addr: "203.0.113.53".parse().unwrap(),
+            port: 443,
+            path_and_query: "/dns-query".to_owned(),
+            tls_authentication: AuthoritativeDohTlsAuthentication::WebPki,
+        };
+
+        assert_eq!(
+            authoritative_doh_tls_validation(&endpoint),
+            TlsValidation::default()
+        );
+    }
+
+    #[test]
     fn gateway_headers_reject_invalid_doh_endpoint() {
         assert!(matches!(
             parse_gateway_headers(
@@ -5958,6 +6258,7 @@ mod tests {
                 tls_inspection: None,
             },
             None,
+            None,
             r#"{"mode":"strict","fallback":{"used":false}}"#,
         );
         let text = String::from_utf8(response).unwrap();
@@ -5975,6 +6276,8 @@ mod tests {
         dns_trace.push(DnsTraceEvent {
             protocol: "udp53",
             server: "192.0.2.53:53".to_owned(),
+            question_name: Some("nathan.woodburn".to_owned()),
+            question_type: Some(RecordType::A.code()),
             status: "timeout".to_owned(),
             elapsed_ms: 901,
             error: Some("operation timed out".to_owned()),
@@ -5982,6 +6285,8 @@ mod tests {
         dns_trace.push(DnsTraceEvent {
             protocol: "tcp53",
             server: "192.0.2.53:53".to_owned(),
+            question_name: Some("nathan.woodburn".to_owned()),
+            question_type: Some(RecordType::A.code()),
             status: "transport_error".to_owned(),
             elapsed_ms: 12,
             error: Some("connection refused".to_owned()),
@@ -5989,6 +6294,8 @@ mod tests {
         dns_trace.push(DnsTraceEvent {
             protocol: "dns_interception_probe",
             server: "192.0.2.1:53".to_owned(),
+            question_name: Some(DNS_INTERCEPTION_PROBE_NAME.to_owned()),
+            question_type: Some(RecordType::A.code()),
             status: "detected".to_owned(),
             elapsed_ms: 7,
             error: Some(
@@ -6022,10 +6329,145 @@ mod tests {
         ));
         assert!(trace.contains(r#""nameserverCandidates":["192.0.2.53:53"]"#));
         assert!(trace.contains(r#""port53Interception":"detected""#));
-        assert!(
-            trace.contains(r#""protocol":"udp53","server":"192.0.2.53:53","status":"timeout""#)
-        );
+        assert!(trace.contains(r#""protocol":"udp53","server":"192.0.2.53:53""#));
+        assert!(trace.contains(r#""questionName":"nathan.woodburn","questionType":1"#));
+        assert!(trace.contains(r#""status":"timeout""#));
         assert!(trace.contains(r#""elapsedMs":901"#));
+    }
+
+    #[test]
+    fn security_path_uses_effective_svcb_port_and_last_successful_tlsa_transport() {
+        let input = GatewayHttpRequestInput {
+            data_dir: "/tmp",
+            method: "GET",
+            scheme: "https",
+            host: "denuoweb",
+            port: 443,
+            path_and_query: "/",
+            header_text: "",
+            body: &[],
+        };
+        let tlsa_owner = "_8443._tcp.denuoweb";
+        let events = vec![
+            DnsTraceEvent {
+                protocol: "authoritative_doh",
+                server: "https://denuoweb:8443/dns-query".to_owned(),
+                question_name: Some(tlsa_owner.to_owned()),
+                question_type: Some(RecordType::Tlsa.code()),
+                status: "ok".to_owned(),
+                elapsed_ms: 10,
+                error: None,
+            },
+            DnsTraceEvent {
+                protocol: "hns_doh",
+                server: "https://resolver.example/dns-query".to_owned(),
+                question_name: Some("denuoweb".to_owned()),
+                question_type: Some(RecordType::A.code()),
+                status: "ok".to_owned(),
+                elapsed_ms: 11,
+                error: None,
+            },
+            DnsTraceEvent {
+                protocol: "tcp53",
+                server: "35.212.156.128:53".to_owned(),
+                question_name: Some(tlsa_owner.to_owned()),
+                question_type: Some(RecordType::Tlsa.code()),
+                status: "ok".to_owned(),
+                elapsed_ms: 12,
+                error: None,
+            },
+        ];
+
+        assert_eq!(
+            security_path_name(
+                &input,
+                8443,
+                &DaneDecision::Matched(TlsaUsage::DaneEe),
+                &events,
+            ),
+            Some("dane-authoritative-dns53"),
+        );
+    }
+
+    #[test]
+    fn security_path_distinguishes_third_party_and_actual_stateless_dane() {
+        let input = GatewayHttpRequestInput {
+            data_dir: "/tmp",
+            method: "GET",
+            scheme: "https",
+            host: "denuoweb",
+            port: 443,
+            path_and_query: "/",
+            header_text: "",
+            body: &[],
+        };
+        let events = vec![DnsTraceEvent {
+            protocol: "hns_doh",
+            server: "https://resolver.example/dns-query".to_owned(),
+            question_name: Some("_443._tcp.denuoweb".to_owned()),
+            question_type: Some(RecordType::Tlsa.code()),
+            status: "ok".to_owned(),
+            elapsed_ms: 10,
+            error: None,
+        }];
+
+        assert_eq!(
+            security_path_name(
+                &input,
+                input.port,
+                &DaneDecision::Matched(TlsaUsage::DaneEe),
+                &events,
+            ),
+            Some("dane-third-party-doh"),
+        );
+        assert_eq!(
+            security_path_name(
+                &input,
+                input.port,
+                &DaneDecision::StatelessMatched(TlsaUsage::DaneEe),
+                &events,
+            ),
+            Some("stateless-dane"),
+        );
+    }
+
+    #[test]
+    fn http_security_path_uses_later_aaaa_transport_after_empty_a_lookup() {
+        let input = GatewayHttpRequestInput {
+            data_dir: "/tmp",
+            method: "GET",
+            scheme: "http",
+            host: "denuoweb",
+            port: 80,
+            path_and_query: "/",
+            header_text: "",
+            body: &[],
+        };
+        let events = vec![
+            DnsTraceEvent {
+                protocol: "authoritative_doh",
+                server: "https://denuoweb:8443/dns-query".to_owned(),
+                question_name: Some("denuoweb".to_owned()),
+                question_type: Some(RecordType::A.code()),
+                status: "ok".to_owned(),
+                elapsed_ms: 10,
+                error: None,
+            },
+            DnsTraceEvent {
+                protocol: "tcp53",
+                server: "35.212.156.128:53".to_owned(),
+                question_name: Some("denuoweb".to_owned()),
+                question_type: Some(RecordType::Aaaa.code()),
+                status: "ok".to_owned(),
+                elapsed_ms: 12,
+                error: None,
+            },
+        ];
+
+        assert_eq!(
+            security_path_name(&input, input.port, &DaneDecision::NoTlsa, &events),
+            Some("hns-authoritative-dns53"),
+        );
     }
 
     #[test]
@@ -6061,11 +6503,45 @@ mod tests {
     }
 
     #[test]
+    fn resolution_trace_reports_later_selected_aaaa_origin_address() {
+        let trace = resolution_trace_json(
+            &GatewayHttpRequestInput {
+                data_dir: "/tmp",
+                method: "GET",
+                scheme: "http",
+                host: "crewball",
+                port: 80,
+                path_and_query: "/",
+                header_text: "",
+                body: &[],
+            },
+            NetworkKind::Mainnet,
+            GatewayResolutionMode::Strict,
+            Some(&ResolutionAnswer {
+                name: DnsName::from_ascii("crewball").unwrap(),
+                records: Vec::new(),
+                secure: true,
+            }),
+            TlsTraceInput {
+                origin_address: Some("2001:db8::20"),
+                ..TlsTraceInput::default()
+            },
+            None,
+            &FallbackMarker::default(),
+            &DnsTraceRecorder::default(),
+        );
+
+        assert!(trace.contains(r#""originAddress":"found""#));
+    }
+
+    #[test]
     fn resolution_trace_reports_authoritative_doh_source() {
         let dns_trace = DnsTraceRecorder::default();
         dns_trace.push(DnsTraceEvent {
             protocol: "authoritative_doh",
             server: "https://ns1.crewball/dns-query via 203.0.113.53".to_owned(),
+            question_name: Some("crewball".to_owned()),
+            question_type: Some(RecordType::A.code()),
             status: "ok".to_owned(),
             elapsed_ms: 42,
             error: None,
@@ -6101,11 +6577,61 @@ mod tests {
     }
 
     #[test]
+    fn resolution_trace_source_uses_exact_address_question_not_other_doh_success() {
+        let dns_trace = DnsTraceRecorder::default();
+        dns_trace.push(DnsTraceEvent {
+            protocol: "tcp53",
+            server: "203.0.113.53:53".to_owned(),
+            question_name: Some("crewball".to_owned()),
+            question_type: Some(RecordType::A.code()),
+            status: "ok".to_owned(),
+            elapsed_ms: 42,
+            error: None,
+        });
+        dns_trace.push(DnsTraceEvent {
+            protocol: "authoritative_doh",
+            server: "https://crewball:8443/dns-query via 203.0.113.53".to_owned(),
+            question_name: Some("_443._tcp.crewball".to_owned()),
+            question_type: Some(RecordType::Tlsa.code()),
+            status: "ok".to_owned(),
+            elapsed_ms: 20,
+            error: None,
+        });
+        let trace = resolution_trace_json(
+            &GatewayHttpRequestInput {
+                data_dir: "/tmp",
+                method: "GET",
+                scheme: "https",
+                host: "crewball",
+                port: 443,
+                path_and_query: "/",
+                header_text: "",
+                body: &[],
+            },
+            NetworkKind::Mainnet,
+            GatewayResolutionMode::Strict,
+            Some(&ResolutionAnswer {
+                name: DnsName::from_ascii("crewball").unwrap(),
+                records: vec![address_record("crewball", [203, 0, 113, 20])],
+                secure: true,
+            }),
+            TlsTraceInput::default(),
+            None,
+            &FallbackMarker::default(),
+            &dns_trace,
+        );
+
+        assert!(trace.contains(r#""resolutionSource":"authoritative_dns""#));
+    }
+
+    #[test]
     fn resolution_trace_reports_icann_doh_source_without_hns_proof() {
         let dns_trace = DnsTraceRecorder::default();
         dns_trace.push(DnsTraceEvent {
             protocol: "icann_doh",
             server: "https://cloudflare-dns.com/dns-query".to_owned(),
+            question_name: Some("dane-test.denuoweb.com".to_owned()),
+            question_type: Some(RecordType::A.code()),
             status: "ok".to_owned(),
             elapsed_ms: 42,
             error: None,
@@ -6239,6 +6765,8 @@ mod tests {
         dns_trace.push(DnsTraceEvent {
             protocol: "udp53",
             server: "192.0.2.53:53".to_owned(),
+            question_name: Some("denuoweb".to_owned()),
+            question_type: Some(RecordType::A.code()),
             status: "ok".to_owned(),
             elapsed_ms: 19,
             error: None,
@@ -6280,7 +6808,8 @@ mod tests {
             matching: TlsaMatching::Sha256,
             association_data: vec![0xaa, 0xbb],
         };
-        let tls = TlsValidation::hns_compatibility(true, vec![tlsa]);
+        let mut tls = TlsValidation::hns_compatibility(true, vec![tlsa]);
+        tls.service_port = 8443;
         let inspection = TlsCertificateInspection {
             end_entity_der: b"cert".to_vec(),
             end_entity_spki_der: b"spki".to_vec(),
@@ -6305,13 +6834,14 @@ mod tests {
                 validation: Some(&tls),
                 decision: Some(&DaneDecision::Matched(TlsaUsage::DaneEe)),
                 inspection: Some(&inspection),
+                origin_address: None,
             },
             None,
             &FallbackMarker::default(),
             &DnsTraceRecorder::default(),
         );
 
-        assert!(trace.contains(r#""tlsaOwner":"_443._tcp.nathan.woodburn""#));
+        assert!(trace.contains(r#""tlsaOwner":"_8443._tcp.nathan.woodburn""#));
         assert!(trace.contains(r#""tlsaEvaluated":true"#));
         assert!(trace.contains(r#""tlsaStatus":"present""#));
         assert!(trace.contains(r#""tlsaBlockedBy":null"#));
@@ -6775,6 +7305,73 @@ mod tests {
 
         response.headers.clear();
         assert!(!doh_response_has_dns_message_content_type(&response));
+    }
+
+    #[test]
+    fn doh_trace_requires_a_matching_dns_message_and_accepts_valid_2xx() {
+        let qname = DnsName::from_ascii("denuoweb").unwrap();
+        let query = build_doh_query(DOH_DNS_ID, &qname, RecordType::A).unwrap();
+        let question = DnsMessage::parse(&query).unwrap().questions[0].clone();
+        let body = DnsMessage {
+            header: DnsHeader {
+                id: DOH_DNS_ID,
+                flags: DnsFlags::new(0x8180),
+                question_count: 1,
+                answer_count: 0,
+                authority_count: 0,
+                additional_count: 0,
+            },
+            questions: vec![question],
+            answers: Vec::new(),
+            authorities: Vec::new(),
+            additionals: Vec::new(),
+        }
+        .encode(&DnsEncodeConfig {
+            max_message_len: 4096,
+        })
+        .unwrap();
+        let response = OriginResponse {
+            status: 201,
+            headers: vec![(
+                "Content-Type".to_owned(),
+                "application/dns-message".to_owned(),
+            )],
+            body,
+            dane_decision: DaneDecision::NoTlsa,
+            tls_inspection: None,
+        };
+
+        let valid = doh_trace_event(
+            "authoritative_doh",
+            "https://denuoweb:8443/dns-query".to_owned(),
+            &query,
+            1,
+            &Ok(response.clone()),
+        );
+        assert_eq!(valid.status, "ok");
+
+        let mut servfail_response = response.clone();
+        servfail_response.body[3] = (servfail_response.body[3] & 0xf0) | 2;
+        let servfail = doh_trace_event(
+            "authoritative_doh",
+            "https://denuoweb:8443/dns-query".to_owned(),
+            &query,
+            1,
+            &Ok(servfail_response),
+        );
+        assert_eq!(servfail.status, "invalid_response");
+
+        let invalid = doh_trace_event(
+            "authoritative_doh",
+            "https://denuoweb:8443/dns-query".to_owned(),
+            &query,
+            1,
+            &Ok(OriginResponse {
+                body: Vec::new(),
+                ..response
+            }),
+        );
+        assert_eq!(invalid.status, "invalid_response");
     }
 
     #[test]

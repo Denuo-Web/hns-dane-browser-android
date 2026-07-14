@@ -1,6 +1,7 @@
 package com.denuoweb.hnsdane.net
 
 import com.denuoweb.hnsdane.core.HnsPageResolverPolicy
+import com.denuoweb.hnsdane.core.HnsPageSecurityPath
 import com.denuoweb.hnsdane.core.HnsPageTlsPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -362,6 +363,7 @@ class LoopbackProxyServerTest {
                     "Connection: close\r\n" +
                     "X-HNS-TLS-Policy: dane\r\n" +
                     "X-HNS-Resolver-Policy: hns-doh-compat\r\n" +
+                    "$HNS_SECURITY_PATH_HEADER: dane-third-party-doh\r\n" +
                     "$HNS_RESOLUTION_TRACE_HEADER: {\"fallback\":{\"used\":true}}\r\n\r\nok"
                 ).toByteArray(StandardCharsets.ISO_8859_1),
         )
@@ -371,8 +373,8 @@ class LoopbackProxyServerTest {
             0,
             dataDir = dataDir,
             hnsGatewayBridge = bridge,
-            onHnsStatus = { host, status, tlsPolicy, resolverPolicy, traceJson ->
-                reported.offer(ReportedHnsStatus(host, status, tlsPolicy, resolverPolicy, traceJson))
+            onHnsStatus = { host, status, tlsPolicy, resolverPolicy, securityPath, traceJson ->
+                reported.offer(ReportedHnsStatus(host, status, tlsPolicy, resolverPolicy, securityPath, traceJson))
             },
         ).use { proxy ->
             assertTrue(proxy.start())
@@ -391,6 +393,7 @@ class LoopbackProxyServerTest {
 
                 val response = socket.getInputStream().readBytes().toString(StandardCharsets.ISO_8859_1)
                 assertTrue(response.startsWith("HTTP/1.1 200 OK\r\n"))
+                assertFalse(response.contains(HNS_SECURITY_PATH_HEADER, ignoreCase = true))
             }
         }
 
@@ -400,6 +403,7 @@ class LoopbackProxyServerTest {
                 200,
                 HnsPageTlsPolicy.Dane,
                 HnsPageResolverPolicy.HnsDohCompatibility,
+                HnsPageSecurityPath.DaneThirdPartyDoh,
                 """{"fallback":{"used":true}}""",
             ),
             reported.poll(1, TimeUnit.SECONDS),
@@ -419,8 +423,8 @@ class LoopbackProxyServerTest {
             0,
             dataDir = dataDir,
             hnsGatewayBridge = bridge,
-            onHnsStatus = { host, status, tlsPolicy, resolverPolicy, traceJson ->
-                reported.offer(ReportedHnsStatus(host, status, tlsPolicy, resolverPolicy, traceJson))
+            onHnsStatus = { host, status, tlsPolicy, resolverPolicy, securityPath, traceJson ->
+                reported.offer(ReportedHnsStatus(host, status, tlsPolicy, resolverPolicy, securityPath, traceJson))
             },
         ).use { proxy ->
             assertTrue(proxy.start())
@@ -493,7 +497,7 @@ class LoopbackProxyServerTest {
     @Test
     fun hnsHttpRequestStreamsNativeGatewayBodyFile() {
         val bridge = FileGatewayBridge(
-            "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n"
+            "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n$HNS_SECURITY_PATH_HEADER: hns-authoritative-dns53\r\n\r\n"
                 .toByteArray(StandardCharsets.ISO_8859_1),
             "test".toByteArray(StandardCharsets.ISO_8859_1),
         )
@@ -1014,7 +1018,12 @@ class LoopbackProxyServerTest {
     @Test
     fun hnsConnectWebSocketUpgradeTunnelsThroughNativeGateway() {
         val bridge = TunnelGatewayBridge(
-            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+            (
+                "HTTP/1.1 101 Switching Protocols\r\n" +
+                    "Upgrade: websocket\r\n" +
+                    "Connection: Upgrade\r\n" +
+                    "$HNS_SECURITY_PATH_HEADER: dane-authoritative-doh\r\n\r\n"
+                )
                 .toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-proxy-connect-websocket-test").toFile()
@@ -1039,6 +1048,7 @@ class LoopbackProxyServerTest {
                 val response = socket.getInputStream().readBytes().toString(StandardCharsets.ISO_8859_1)
                 assertTrue(response.startsWith("HTTP/1.1 200 Connection Established\r\n"))
                 assertTrue(response.contains("HTTP/1.1 101 Switching Protocols\r\n"))
+                assertFalse(response.contains(HNS_SECURITY_PATH_HEADER, ignoreCase = true))
                 assertTrue(response.endsWith("ping"))
             }
         }
@@ -1343,6 +1353,7 @@ class LoopbackProxyServerTest {
         val status: Int,
         val tlsPolicy: HnsPageTlsPolicy?,
         val resolverPolicy: HnsPageResolverPolicy?,
+        val securityPath: HnsPageSecurityPath?,
         val traceJson: String?,
     )
 

@@ -37,8 +37,16 @@
     <string name="security_loading">Loading</string>
     <string name="security_hns_verified">HNS verified</string>
     <string name="security_hns_compat">HNS via DoH</string>
+    <string name="security_hns_via_authoritative_doh" translatable="false">HNS via ADoH</string>
+    <string name="security_hns_via_authoritative_dns53" translatable="false">HNS via DNS53</string>
+    <string name="security_hns_via_third_party_doh" translatable="false">HNS via 3rd DoH</string>
     <string name="security_dane_verified">DANE verified</string>
     <string name="security_dane_compat">DANE via DoH</string>
+    <string name="security_dane_via_authoritative_doh" translatable="false">DANE via ADoH</string>
+    <string name="security_dane_via_authoritative_dns53" translatable="false">DANE via DNS53</string>
+    <string name="security_dane_via_third_party_doh" translatable="false">DANE via 3rd DoH</string>
+    <string name="security_stateless_dane" translatable="false">Stateless DANE</string>
+    <string name="security_dane_via_icann_doh" translatable="false">DANE via ICANN DoH</string>
     <string name="security_webpki">WebPKI</string>
     <string name="security_hns_webpki">HNS + WebPKI</string>
     <string name="security_failed">Validation failed</string>
@@ -452,6 +460,7 @@
     <string name="trace_source_icann_dns">ICANN DNS</string>
     <string name="trace_source_authoritative_dns">authoritative DNS</string>
     <string name="trace_source_authoritative_doh">authoritative DoH</string>
+    <string name="trace_source_hns_doh" translatable="false">third-party HNS DoH</string>
     <string name="trace_source_hns_resource">HNS resource</string>
     <string name="trace_protocol_authoritative_udp53">Authoritative UDP 53</string>
     <string name="trace_protocol_authoritative_tcp53">Authoritative TCP 53</string>

@@ -4,6 +4,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import com.denuoweb.hnsdane.core.HnsHostPolicy
 import com.denuoweb.hnsdane.core.HnsPageResolverPolicy
+import com.denuoweb.hnsdane.core.HnsPageSecurityPath
 import com.denuoweb.hnsdane.core.HnsPageTlsPolicy
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -21,7 +22,7 @@ class HnsWebViewGatewayInterceptor(
     private val statelessDaneCertificates: () -> Boolean = { false },
     private val handshakeNetwork: () -> String = { DEFAULT_NETWORK },
     private val reportAllHnsStatuses: Boolean = false,
-    private val onMainFrameHnsStatus: (Int, HnsPageTlsPolicy?, HnsPageResolverPolicy?, String?) -> Unit = { _, _, _, _ -> },
+    private val onMainFrameHnsStatus: (Int, HnsPageTlsPolicy?, HnsPageResolverPolicy?, HnsPageSecurityPath?, String?) -> Unit = { _, _, _, _, _ -> },
 ) {
     fun intercept(request: WebResourceRequest): WebResourceResponse? {
         return intercept(
@@ -66,6 +67,7 @@ class HnsWebViewGatewayInterceptor(
                 response.statusCode,
                 response.hnsTlsPolicy(),
                 response.hnsResolverPolicy(),
+                response.hnsSecurityPath(),
                 response.hnsResolutionTrace(),
             )
         }
@@ -277,10 +279,13 @@ internal data class HnsInterceptedResponse(
             encoding,
             webStatusCode,
             webReason,
-            headers,
+            webResponseHeaders(),
             openBodyStream(),
         )
     }
+
+    internal fun webResponseHeaders(): Map<String, String> =
+        headers.filterKeys { name -> !name.equals(HNS_SECURITY_PATH_HEADER, ignoreCase = true) }
 
     internal fun openBodyStream(): InputStream =
         bodyFile?.let(GatewayResponseBodyStore::openReleasing) ?: ByteArrayInputStream(body)
@@ -304,6 +309,9 @@ internal data class HnsInterceptedResponse(
             "hns-doh-compat" -> HnsPageResolverPolicy.HnsDohCompatibility
             else -> null
         }
+
+    fun hnsSecurityPath(): HnsPageSecurityPath? =
+        HnsPageSecurityPath.fromHeaderValue(headerValue(HNS_SECURITY_PATH_HEADER))
 
     fun hnsResolutionTrace(): String? =
         headerValue(HNS_RESOLUTION_TRACE_HEADER)
@@ -507,7 +515,8 @@ private fun isHopByHopOrSyntheticHeader(name: String): Boolean {
         name.equals("Host", ignoreCase = true) ||
         name.equals(HNS_GATEWAY_STRICT_MODE_HEADER, ignoreCase = true) ||
         name.equals(HNS_GATEWAY_STATELESS_DANE_HEADER, ignoreCase = true) ||
-        name.equals(HNS_GATEWAY_NETWORK_HEADER, ignoreCase = true)
+        name.equals(HNS_GATEWAY_NETWORK_HEADER, ignoreCase = true) ||
+        name.equals(HNS_SECURITY_PATH_HEADER, ignoreCase = true)
 }
 
 private const val DEFAULT_NETWORK = "mainnet"

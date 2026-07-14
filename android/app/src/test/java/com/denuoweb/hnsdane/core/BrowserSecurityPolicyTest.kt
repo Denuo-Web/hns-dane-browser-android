@@ -151,6 +151,64 @@ class BrowserSecurityPolicyTest {
     }
 
     @Test
+    fun explicitSecurityPathsSelectExactSuccessfulState() {
+        val expectations = mapOf(
+            HnsPageSecurityPath.DaneAuthoritativeDoh to SecurityState.DaneViaAuthoritativeDoh,
+            HnsPageSecurityPath.DaneAuthoritativeDns53 to SecurityState.DaneViaAuthoritativeDns53,
+            HnsPageSecurityPath.DaneThirdPartyDoh to SecurityState.DaneViaThirdPartyDoh,
+            HnsPageSecurityPath.StatelessDane to SecurityState.StatelessDane,
+            HnsPageSecurityPath.DaneIcannDoh to SecurityState.DaneViaIcannDoh,
+            HnsPageSecurityPath.HnsAuthoritativeDoh to SecurityState.HnsViaAuthoritativeDoh,
+            HnsPageSecurityPath.HnsAuthoritativeDns53 to SecurityState.HnsViaAuthoritativeDns53,
+            HnsPageSecurityPath.HnsThirdPartyDoh to SecurityState.HnsViaThirdPartyDoh,
+        )
+
+        expectations.forEach { (path, expectedState) ->
+            assertEquals(
+                path.name,
+                expectedState,
+                BrowserSecurityPolicy.state(
+                    targetKind = BrowserTargetKind.HnsName,
+                    proxyAvailable = true,
+                    syncStatusJson = """{"status":"idle"}""",
+                    mainFrameHnsStatusCode = 200,
+                    mainFrameHnsSecurityPath = path,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun explicitSecurityPathTakesPrecedenceOverLegacySuccessHeaders() {
+        assertEquals(
+            SecurityState.StatelessDane,
+            BrowserSecurityPolicy.state(
+                targetKind = BrowserTargetKind.HnsName,
+                proxyAvailable = true,
+                syncStatusJson = """{"status":"idle"}""",
+                mainFrameHnsStatusCode = 200,
+                mainFrameHnsTlsPolicy = HnsPageTlsPolicy.WebPkiFallback,
+                mainFrameHnsResolverPolicy = HnsPageResolverPolicy.HnsDohCompatibility,
+                mainFrameHnsSecurityPath = HnsPageSecurityPath.StatelessDane,
+            ),
+        )
+    }
+
+    @Test
+    fun gatewayFailureTakesPrecedenceOverExplicitSecurityPath() {
+        assertEquals(
+            SecurityState.ValidationFailed,
+            BrowserSecurityPolicy.state(
+                targetKind = BrowserTargetKind.HnsName,
+                proxyAvailable = true,
+                syncStatusJson = """{"status":"up_to_date"}""",
+                mainFrameHnsStatusCode = 502,
+                mainFrameHnsSecurityPath = HnsPageSecurityPath.DaneAuthoritativeDoh,
+            ),
+        )
+    }
+
+    @Test
     fun mainFrameHnsGatewaySuccessShowsMixedPolicyForWebPkiFallback() {
         assertEquals(
             SecurityState.MixedPolicy,

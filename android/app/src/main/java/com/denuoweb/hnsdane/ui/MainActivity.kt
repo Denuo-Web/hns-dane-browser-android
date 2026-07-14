@@ -54,6 +54,7 @@ import com.denuoweb.hnsdane.core.BrowserSecurityPolicy
 import com.denuoweb.hnsdane.core.BrowserTargetKind
 import com.denuoweb.hnsdane.core.BrowserUrlClassifier
 import com.denuoweb.hnsdane.core.HnsPageResolverPolicy
+import com.denuoweb.hnsdane.core.HnsPageSecurityPath
 import com.denuoweb.hnsdane.core.HnsPageTlsPolicy
 import com.denuoweb.hnsdane.core.SecurityState
 import com.denuoweb.hnsdane.net.DisabledServiceWorkerClient
@@ -110,6 +111,7 @@ class MainActivity : ComponentActivity() {
     private var mainFrameHnsStatusCode: Int? = null
     private var mainFrameHnsTlsPolicy: HnsPageTlsPolicy? = null
     private var mainFrameHnsResolverPolicy: HnsPageResolverPolicy? = null
+    private var mainFrameHnsSecurityPath: HnsPageSecurityPath? = null
     private var mainFrameHnsTraceJson: String? = null
     private var mainFrameHnsStatusUrl: String? = null
     private var lastSyncSnapshot: HnsSyncSnapshot? = null
@@ -154,10 +156,10 @@ class MainActivity : ComponentActivity() {
             dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
             statelessDaneCertificates = { HnsResolutionPreferences.statelessDaneCertificates(this) },
             handshakeNetwork = { HnsResolutionPreferences.handshakeNetworkId(this) },
-            onMainFrameHnsStatus = { statusCode, tlsPolicy, resolverPolicy, traceJson ->
+            onMainFrameHnsStatus = { statusCode, tlsPolicy, resolverPolicy, securityPath, traceJson ->
                 runOnUiThread {
                     if (mainFrameHnsStatusCode == null) {
-                        applyMainFrameHnsStatus(statusCode, tlsPolicy, resolverPolicy, traceJson)
+                        applyMainFrameHnsStatus(statusCode, tlsPolicy, resolverPolicy, securityPath, traceJson)
                     }
                 }
             },
@@ -378,10 +380,10 @@ class MainActivity : ComponentActivity() {
             enforceHnsHostScope = true,
             scopedHnsHost = { currentHnsProxyHost() },
             proxyAuthorization = authorization,
-            onHnsStatus = { host, statusCode, tlsPolicy, resolverPolicy, traceJson ->
+            onHnsStatus = { host, statusCode, tlsPolicy, resolverPolicy, securityPath, traceJson ->
                 runOnUiThread {
                     if (isActiveMainFrameHost(host) && mainFrameHnsStatusCode == null) {
-                        applyMainFrameHnsStatus(statusCode, tlsPolicy, resolverPolicy, traceJson)
+                        applyMainFrameHnsStatus(statusCode, tlsPolicy, resolverPolicy, securityPath, traceJson)
                     }
                 }
             },
@@ -848,6 +850,7 @@ class MainActivity : ComponentActivity() {
                 mainFrameHnsStatusCode = mainFrameHnsStatusCode,
                 mainFrameHnsTlsPolicy = mainFrameHnsTlsPolicy,
                 mainFrameHnsResolverPolicy = mainFrameHnsResolverPolicy,
+                mainFrameHnsSecurityPath = mainFrameHnsSecurityPath,
             ),
         )
     }
@@ -856,11 +859,13 @@ class MainActivity : ComponentActivity() {
         statusCode: Int,
         tlsPolicy: HnsPageTlsPolicy?,
         resolverPolicy: HnsPageResolverPolicy?,
+        securityPath: HnsPageSecurityPath?,
         traceJson: String?,
     ) {
         mainFrameHnsStatusCode = statusCode
         mainFrameHnsTlsPolicy = tlsPolicy
         mainFrameHnsResolverPolicy = resolverPolicy
+        mainFrameHnsSecurityPath = securityPath
         mainFrameHnsTraceJson = traceJson
         mainFrameHnsStatusUrl = activeMainFrameUrl
         refreshSecurityState()
@@ -870,6 +875,7 @@ class MainActivity : ComponentActivity() {
         mainFrameHnsStatusCode = null
         mainFrameHnsTlsPolicy = null
         mainFrameHnsResolverPolicy = null
+        mainFrameHnsSecurityPath = null
         mainFrameHnsTraceJson = null
         mainFrameHnsStatusUrl = null
     }
@@ -938,8 +944,16 @@ class MainActivity : ComponentActivity() {
             SecurityState.Loading -> getString(R.string.security_loading)
             SecurityState.HnsVerified -> getString(R.string.security_hns_verified)
             SecurityState.HnsCompatibility -> getString(R.string.security_hns_compat)
+            SecurityState.HnsViaAuthoritativeDoh -> getString(R.string.security_hns_via_authoritative_doh)
+            SecurityState.HnsViaAuthoritativeDns53 -> getString(R.string.security_hns_via_authoritative_dns53)
+            SecurityState.HnsViaThirdPartyDoh -> getString(R.string.security_hns_via_third_party_doh)
             SecurityState.DaneVerified -> getString(R.string.security_dane_verified)
             SecurityState.DaneCompatibility -> getString(R.string.security_dane_compat)
+            SecurityState.DaneViaAuthoritativeDoh -> getString(R.string.security_dane_via_authoritative_doh)
+            SecurityState.DaneViaAuthoritativeDns53 -> getString(R.string.security_dane_via_authoritative_dns53)
+            SecurityState.DaneViaThirdPartyDoh -> getString(R.string.security_dane_via_third_party_doh)
+            SecurityState.StatelessDane -> getString(R.string.security_stateless_dane)
+            SecurityState.DaneViaIcannDoh -> getString(R.string.security_dane_via_icann_doh)
             SecurityState.WebPkiOnly -> getString(R.string.security_webpki)
             SecurityState.MixedPolicy -> getString(R.string.security_hns_webpki)
             SecurityState.ValidationFailed -> getString(R.string.security_failed)

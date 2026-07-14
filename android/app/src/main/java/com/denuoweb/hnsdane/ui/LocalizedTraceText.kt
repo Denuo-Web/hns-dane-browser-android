@@ -44,6 +44,7 @@ internal object LocalizedTraceText {
             "icann_dns" -> context.getString(R.string.trace_source_icann_dns)
             "authoritative_dns" -> context.getString(R.string.trace_source_authoritative_dns)
             "authoritative_doh" -> context.getString(R.string.trace_source_authoritative_doh)
+            "hns_doh" -> context.getString(R.string.trace_source_hns_doh)
             "hns_resource" -> context.getString(R.string.trace_source_hns_resource)
             "" -> context.getString(R.string.common_unknown)
             else -> source.replace('_', ' ')

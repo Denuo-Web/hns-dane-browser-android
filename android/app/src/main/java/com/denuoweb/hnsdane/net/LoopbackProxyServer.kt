@@ -2,6 +2,7 @@ package com.denuoweb.hnsdane.net
 
 import com.denuoweb.hnsdane.core.HnsHostPolicy
 import com.denuoweb.hnsdane.core.HnsPageResolverPolicy
+import com.denuoweb.hnsdane.core.HnsPageSecurityPath
 import com.denuoweb.hnsdane.core.HnsPageTlsPolicy
 import java.io.Closeable
 import java.io.File
@@ -58,7 +59,7 @@ class LoopbackProxyServer(
     private val enforceHnsHostScope: Boolean = false,
     private val scopedHnsHost: () -> String? = { null },
     private val proxyAuthorization: LoopbackProxyAuthorization? = null,
-    private val onHnsStatus: (String, Int, HnsPageTlsPolicy?, HnsPageResolverPolicy?, String?) -> Unit = { _, _, _, _, _ -> },
+    private val onHnsStatus: (String, Int, HnsPageTlsPolicy?, HnsPageResolverPolicy?, HnsPageSecurityPath?, String?) -> Unit = { _, _, _, _, _, _ -> },
     private val executor: ExecutorService = Executors.newCachedThreadPool(),
     private val rateLimiter: LoopbackGatewayRateLimiter = LoopbackGatewayRateLimiter(),
 ) : Closeable {
@@ -262,12 +263,12 @@ class LoopbackProxyServer(
                 body = body,
             ) ?: throw ProxyHttpException(503, "HNS Resolution Unavailable")
             recordGatewayStatus(target.host, response, "native_response", request)
-            client.getOutputStream().write(response)
+            client.getOutputStream().write(response.withoutInternalSecurityPathHeader())
             client.getOutputStream().flush()
         } catch (error: ProxyHttpException) {
             GatewayEventLog.record("proxy_reject", target.host, error.status, error.reason)
             if (request.isLikelyMainFrameNavigation()) {
-                onHnsStatus(target.host, error.status, null, null, null)
+                onHnsStatus(target.host, error.status, null, null, null, null)
             }
             throw error
         }
@@ -283,6 +284,7 @@ class LoopbackProxyServer(
             throw ProxyHttpException(429, "Too Many Requests")
         }
         client.soTimeout = 0
+        val browserOutput = client.getOutputStream()
         val tunneled = hnsGatewayBridge.httpUpgradeTunnel(
             dataDir = dataDir.absolutePath,
             method = request.line.method,
@@ -297,7 +299,7 @@ class LoopbackProxyServer(
                 handshakeNetwork(),
             ),
             clientInput = client.getInputStream(),
-            clientOutput = client.getOutputStream(),
+            clientOutput = SecurityPathStrippingUpgradeOutputStream(browserOutput),
         )
         if (!tunneled) {
             throw ProxyHttpException(501, "HNS Protocol Upgrade Unsupported")
@@ -310,7 +312,14 @@ class LoopbackProxyServer(
             GatewayEventLog.record(stage, host, response.status, response.reason)
         }
         if (request.isLikelyMainFrameNavigation()) {
-            onHnsStatus(host, response.status, response.hnsTlsPolicy(), response.hnsResolverPolicy(), response.hnsResolutionTrace())
+            onHnsStatus(
+                host,
+                response.status,
+                response.hnsTlsPolicy(),
+                response.hnsResolverPolicy(),
+                response.hnsSecurityPath(),
+                response.hnsResolutionTrace(),
+            )
         }
     }
 
@@ -362,13 +371,36 @@ class LoopbackProxyServer(
 
     private fun writeGatewayFileResponse(output: OutputStream, response: HnsGatewayFileResponse) {
         try {
-            output.write(response.head)
+            output.write(response.head.withoutInternalSecurityPathHeader())
             response.openBodyStream().use { body ->
                 copy(body, output)
             }
             output.flush()
         } finally {
             response.deleteBodyFile()
+        }
+    }
+
+    private fun ByteArray.withoutInternalSecurityPathHeader(): ByteArray {
+        val headerEnd = headerEndIndex(this)
+        if (headerEnd < 0) {
+            return this
+        }
+        val headerText = copyOfRange(0, headerEnd).toString(StandardCharsets.ISO_8859_1)
+        val lines = headerText.split("\r\n")
+        val retained = lines.filterIndexed { index, line ->
+            index == 0 || !line.substringBefore(':').trim().equals(HNS_SECURITY_PATH_HEADER, ignoreCase = true)
+        }
+        if (retained.size == lines.size) {
+            return this
+        }
+
+        val sanitizedHead = (retained.joinToString("\r\n") + "\r\n\r\n")
+            .toByteArray(StandardCharsets.ISO_8859_1)
+        val bodyStart = headerEnd + HEADER_END.size
+        return ByteArray(sanitizedHead.size + size - bodyStart).also { sanitized ->
+            sanitizedHead.copyInto(sanitized)
+            copyInto(sanitized, destinationOffset = sanitizedHead.size, startIndex = bodyStart)
         }
     }
 
@@ -551,6 +583,50 @@ class LoopbackProxyServer(
         }
     }
 
+    private inner class SecurityPathStrippingUpgradeOutputStream(
+        private val delegate: OutputStream,
+    ) : OutputStream() {
+        private val pendingHead = java.io.ByteArrayOutputStream()
+        private var headForwarded = false
+
+        override fun write(value: Int) {
+            write(byteArrayOf(value.toByte()), 0, 1)
+        }
+
+        override fun write(bytes: ByteArray, offset: Int, length: Int) {
+            if (length <= 0) {
+                return
+            }
+            if (headForwarded) {
+                delegate.write(bytes, offset, length)
+                return
+            }
+
+            pendingHead.write(bytes, offset, length)
+            val buffered = pendingHead.toByteArray()
+            if (headerEndIndex(buffered) < 0) {
+                if (buffered.size > MAX_HEADER_BYTES) {
+                    throw IOException("HNS upgrade response headers are too large")
+                }
+                return
+            }
+
+            delegate.write(buffered.withoutInternalSecurityPathHeader())
+            pendingHead.reset()
+            headForwarded = true
+        }
+
+        override fun flush() {
+            if (headForwarded) {
+                delegate.flush()
+            }
+        }
+
+        override fun close() {
+            delegate.close()
+        }
+    }
+
     companion object {
         private const val LOOPBACK = "127.0.0.1"
         private const val MAX_HEADER_BYTES = 64 * 1024
@@ -723,6 +799,9 @@ private data class ParsedGatewayResponseHead(
             else -> null
         }
 
+    fun hnsSecurityPath(): HnsPageSecurityPath? =
+        HnsPageSecurityPath.fromHeaderValue(headerValue(HNS_SECURITY_PATH_HEADER))
+
     fun hnsResolutionTrace(): String? =
         headerValue(HNS_RESOLUTION_TRACE_HEADER)
 
@@ -814,6 +893,7 @@ internal data class ProxyRequest(
             .filterNot { it.first.equals(HNS_GATEWAY_DOH_RESOLVER_HEADER, ignoreCase = true) }
             .filterNot { it.first.equals(HNS_GATEWAY_STATELESS_DANE_HEADER, ignoreCase = true) }
             .filterNot { it.first.equals(HNS_GATEWAY_NETWORK_HEADER, ignoreCase = true) }
+            .filterNot { it.first.equals(HNS_SECURITY_PATH_HEADER, ignoreCase = true) }
             .toMutableList()
         if (strictHnsMode) {
             sanitized += HNS_GATEWAY_STRICT_MODE_HEADER to "1"
