@@ -10,15 +10,5 @@ name = "hns_dane_browser_ffi"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-hns-chain.workspace = true
-hns-core.workspace = true
-hns-dane.workspace = true
-hns-gateway.workspace = true
-hns-p2p.workspace = true
-hns-resolver.workspace = true
-hns-sync.workspace = true
-hns-transport.workspace = true
-hns-urkel.workspace = true
+hns-browser-runtime.workspace = true
 jni.workspace = true
-rcgen.workspace = true
-sha2.workspace = true

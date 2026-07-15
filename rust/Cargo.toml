@@ -3,6 +3,7 @@ resolver = "3"
 exclude = ["fuzz"]
 members = [
     "crates/android-ffi",
+    "crates/hns-browser-runtime",
     "crates/hns-cache",
     "crates/hns-chain",
     "crates/hns-core",
@@ -27,6 +28,7 @@ blake2 = "0.10"
 bytes = "1"
 hex = "0.4"
 hns-cache = { path = "crates/hns-cache" }
+hns-browser-runtime = { path = "crates/hns-browser-runtime" }
 hns-chain = { path = "crates/hns-chain" }
 hns-core = { path = "crates/hns-core" }
 hns-dane = { path = "crates/hns-dane" }

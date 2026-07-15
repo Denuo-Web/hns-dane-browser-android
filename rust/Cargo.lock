@@ -6,18 +6,8 @@ version = 4
 name = "android-ffi"
 version = "0.3.16"
 dependencies = [
- "hns-chain",
- "hns-core",
- "hns-dane",
- "hns-gateway",
- "hns-p2p",
- "hns-resolver",
- "hns-sync",
- "hns-transport",
- "hns-urkel",
+ "hns-browser-runtime",
  "jni",
- "rcgen",
- "sha2",
 ]
 
 [[package]]
@@ -560,6 +550,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
 dependencies = [
  "digest",
+]
+
+[[package]]
+name = "hns-browser-runtime"
+version = "0.3.16"
+dependencies = [
+ "hns-chain",
+ "hns-core",
+ "hns-dane",
+ "hns-gateway",
+ "hns-p2p",
+ "hns-resolver",
+ "hns-sync",
+ "hns-transport",
+ "hns-urkel",
+ "rcgen",
+ "sha2",
 ]
 
 [[package]]
