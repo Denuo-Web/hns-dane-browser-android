@@ -2,7 +2,6 @@ package com.denuoweb.hnsdane.net
 
 import java.io.File
 import java.io.InputStream
-import java.io.OutputStream
 import java.util.Locale
 import java.util.concurrent.locks.ReentrantReadWriteLock
 
@@ -29,48 +28,12 @@ interface HnsGatewayBridge {
         body: ByteArray,
     ): HnsGatewayFileResponse? = null
 
-    fun httpUpgradeTunnel(
-        dataDir: String,
-        method: String,
-        scheme: String,
-        host: String,
-        port: Int,
-        pathAndQuery: String,
-        headers: List<Pair<String, String>>,
-        clientInput: InputStream,
-        clientOutput: OutputStream,
-    ): Boolean = false
 }
 
 interface HnsSyncBridge {
     fun syncOnce(dataDir: String): String
 
     fun syncOnce(dataDir: String, network: String): String = syncOnce(dataDir)
-}
-
-interface LocalTlsCertificateProvider {
-    fun localTlsCertificate(host: String): LocalTlsCertificate?
-}
-
-data class LocalTlsCertificate(
-    val certificateDer: ByteArray,
-    val privateKeyPkcs8Der: ByteArray,
-    val certificateSha256: ByteArray,
-) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is LocalTlsCertificate) return false
-        return certificateDer.contentEquals(other.certificateDer) &&
-            privateKeyPkcs8Der.contentEquals(other.privateKeyPkcs8Der) &&
-            certificateSha256.contentEquals(other.certificateSha256)
-    }
-
-    override fun hashCode(): Int {
-        var result = certificateDer.contentHashCode()
-        result = 31 * result + privateKeyPkcs8Der.contentHashCode()
-        result = 31 * result + certificateSha256.contentHashCode()
-        return result
-    }
 }
 
 data class HnsGatewayFileResponse(
@@ -84,7 +47,7 @@ data class HnsGatewayFileResponse(
     }
 }
 
-object NativeBridge : HnsGatewayBridge, HnsSyncBridge, LocalTlsCertificateProvider {
+object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
     val isLoaded: Boolean = runCatching {
         System.loadLibrary("hns_dane_browser_ffi")
     }.isSuccess
@@ -160,12 +123,6 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge, LocalTlsCertificateProvid
         unavailable = """{"host":"${jsonEscape(host)}","name":null,"network":"${jsonEscape(network)}","nameHash":null,"hnsProof":"error","proofStatus":"error","secure":null,"exists":null,"treeRoot":null,"blockHeight":null,"cacheStatus":"rust_core_unavailable","resourceValueHex":null,"recordTypes":[],"resourceRecords":[],"currentTip":null,"error":"rust-core-unavailable"}""",
         createFailure = { nativeHnsProofDetails(dataDir, host, network) },
     ) { handle -> nativeRuntimeHnsProofDetails(handle, host) }
-
-    override fun localTlsCertificate(host: String): LocalTlsCertificate? = if (isLoaded) {
-        nativeLocalTlsCertificate(host)?.let(::parseLocalTlsCertificateBundle)
-    } else {
-        null
-    }
 
     override fun httpResponse(
         dataDir: String,
@@ -249,28 +206,6 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge, LocalTlsCertificateProvid
         }
         return HnsGatewayFileResponse(head, bodyFile)
     }
-
-    override fun httpUpgradeTunnel(
-        dataDir: String,
-        method: String,
-        scheme: String,
-        host: String,
-        port: Int,
-        pathAndQuery: String,
-        headers: List<Pair<String, String>>,
-        clientInput: InputStream,
-        clientOutput: OutputStream,
-    ): Boolean = isLoaded && nativeGatewayHttpUpgradeTunnel(
-        dataDir,
-        method,
-        scheme,
-        host,
-        port,
-        pathAndQuery,
-        serializeHeaders(headers),
-        clientInput,
-        clientOutput,
-    )
 
     internal fun startRustProxy(config: RustBrowserProxyConfig): LocalBrowserProxyEndpoint? = withRuntime(
         dataDir = config.dataDir,
@@ -494,20 +429,6 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge, LocalTlsCertificateProvid
 
     private external fun nativeHnsProofDetails(dataDir: String, host: String, network: String): String
 
-    private external fun nativeLocalTlsCertificate(host: String): ByteArray?
-
-    private external fun nativeGatewayHttpUpgradeTunnel(
-        dataDir: String,
-        method: String,
-        scheme: String,
-        host: String,
-        port: Int,
-        pathAndQuery: String,
-        headerText: String,
-        clientInput: InputStream,
-        clientOutput: OutputStream,
-    ): Boolean
-
     private fun serializeHeaders(headers: List<Pair<String, String>>): String = buildString {
         headers.forEach { (name, value) ->
             append(name)
@@ -557,37 +478,6 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge, LocalTlsCertificateProvid
             else -> network.trim()
         }
 
-    private fun parseLocalTlsCertificateBundle(bundle: ByteArray): LocalTlsCertificate? {
-        var offset = 0
-
-        fun readLength(): Int? {
-            if (offset + 4 > bundle.size) return null
-            val length = (
-                ((bundle[offset].toInt() and 0xff) shl 24) or
-                    ((bundle[offset + 1].toInt() and 0xff) shl 16) or
-                    ((bundle[offset + 2].toInt() and 0xff) shl 8) or
-                    (bundle[offset + 3].toInt() and 0xff)
-                )
-            offset += 4
-            if (length < 0 || length > bundle.size - offset) return null
-            return length
-        }
-
-        fun readBytes(length: Int): ByteArray {
-            val value = bundle.copyOfRange(offset, offset + length)
-            offset += length
-            return value
-        }
-
-        val certificateLength = readLength() ?: return null
-        val certificateDer = readBytes(certificateLength)
-        val keyLength = readLength() ?: return null
-        val keyDer = readBytes(keyLength)
-        if (offset + LOCAL_TLS_FINGERPRINT_BYTES != bundle.size) return null
-        val fingerprint = readBytes(LOCAL_TLS_FINGERPRINT_BYTES)
-        return LocalTlsCertificate(certificateDer, keyDer, fingerprint)
-    }
-
     private fun unavailableSyncJson(
         error: String = "rust-core-unavailable",
         network: String = DEFAULT_NETWORK,
@@ -602,7 +492,6 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge, LocalTlsCertificateProvid
             .replace("\r", "\\r")
             .replace("\t", "\\t")
 
-    private const val LOCAL_TLS_FINGERPRINT_BYTES = 32
     private const val INVALID_RUNTIME_HANDLE = 0L
     private const val DEFAULT_NETWORK = "mainnet"
 

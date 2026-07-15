@@ -139,8 +139,8 @@ internal class BrowserProxyCoordinator(
     }
 
     /**
-     * Queues the latest navigation until the matching override is committed, or until both proxy
-     * implementations have failed and the caller's fail-closed interceptor path must take over.
+     * Queues the latest navigation until the matching override is committed, or until the native
+     * proxy has failed and the caller's fail-closed compatibility interceptor must take over.
      */
     fun navigate(
         config: RustBrowserProxyConfig?,

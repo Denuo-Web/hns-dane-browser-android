@@ -573,7 +573,6 @@ dependencies = [
  "hns-transport",
  "hns-urkel",
  "httparse",
- "rcgen",
  "sha2",
  "thiserror 2.0.18",
 ]

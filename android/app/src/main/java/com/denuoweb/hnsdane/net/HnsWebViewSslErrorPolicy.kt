@@ -9,15 +9,7 @@ fun interface HnsLocalCertificateDerVerifier {
     fun matchesLocalCertificate(host: String, certificateDer: ByteArray): Boolean
 }
 
-internal object KotlinFallbackHnsLocalCertificateVerifier : HnsLocalCertificateDerVerifier {
-    override fun matchesLocalCertificate(host: String, certificateDer: ByteArray): Boolean =
-        HnsLocalCertificateRegistry.hasPinnedCertificateDer(host, certificateDer)
-}
-
 object HnsWebViewSslErrorPolicy {
-    fun canProceed(error: SslError): Boolean =
-        canProceed(error, KotlinFallbackHnsLocalCertificateVerifier)
-
     fun canProceed(
         error: SslError,
         certificateVerifier: HnsLocalCertificateDerVerifier,

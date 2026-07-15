@@ -28,4 +28,17 @@ for shared_crate in hns-browser-runtime hns-loopback-proxy; do
   fi
 done
 
+legacy_android_protocol_pattern='KotlinFallbackBrowserProxy|LoopbackProxyServer|LocalTlsHnsConnectTerminator|HnsLocalCertificateRegistry|KotlinFallbackHnsLocalCertificateVerifier|nativeLocalTlsCertificate|local_tls_certificate_bundle|HnsWebSocketBridge|HnsWebSocketFrameCodec|HnsWebSocketRequestPolicy|HnsWebSocketShim|nativeGatewayHttpUpgradeTunnel|httpUpgradeTunnel'
+if matches="$(grep -RInE \
+  --include='*.kt' \
+  --include='*.rs' \
+  "$legacy_android_protocol_pattern" \
+  "$ROOT_DIR/android/app/src" \
+  "$ROOT_DIR/rust/crates/android-ffi" \
+  "$ROOT_DIR/rust/crates/hns-browser-runtime" || true)" && [[ -n "$matches" ]]; then
+  echo "ERROR: obsolete Android protocol or compatibility bridge code is present." >&2
+  printf '%s\n' "$matches" >&2
+  exit 1
+fi
+
 echo "Shared runtime and proxy boundary checks passed"

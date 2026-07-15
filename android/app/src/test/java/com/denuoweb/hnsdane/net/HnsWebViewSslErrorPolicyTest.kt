@@ -1,17 +1,10 @@
 package com.denuoweb.hnsdane.net
 
-import org.junit.After
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.security.MessageDigest
 
 class HnsWebViewSslErrorPolicyTest {
-    @After
-    fun clearFallbackCertificatePins() {
-        HnsLocalCertificateRegistry.clear()
-    }
-
     @Test
     fun pinnedLocalCertificatesAreEligibleForWebSocketSslErrors() {
         assertTrue(HnsWebViewSslErrorPolicy.isEligiblePinnedLocalCertificateUrl("wss://welcome/socket"))
@@ -144,37 +137,6 @@ class HnsWebViewSslErrorPolicyTest {
             ),
         )
         assertFalse(icannVerifierCalled)
-    }
-
-    @Test
-    fun namedKotlinFallbackVerifierUsesTheExistingRegistryPin() {
-        HnsLocalCertificateRegistry.clear()
-        HnsLocalCertificateRegistry.trustHostCertificate(
-            "Welcome.",
-            MessageDigest.getInstance("SHA-256").digest(EXPECTED_CERTIFICATE_DER),
-        )
-
-        assertTrue(
-            HnsWebViewSslErrorPolicy.canProceed(
-                "https://welcome/",
-                EXPECTED_CERTIFICATE_DER,
-                KotlinFallbackHnsLocalCertificateVerifier,
-            ),
-        )
-        assertFalse(
-            HnsWebViewSslErrorPolicy.canProceed(
-                "https://other/",
-                EXPECTED_CERTIFICATE_DER,
-                KotlinFallbackHnsLocalCertificateVerifier,
-            ),
-        )
-        assertFalse(
-            HnsWebViewSslErrorPolicy.canProceed(
-                "https://welcome/",
-                OTHER_CERTIFICATE_DER,
-                KotlinFallbackHnsLocalCertificateVerifier,
-            ),
-        )
     }
 
     private fun exactVerifier(

@@ -62,7 +62,6 @@ use thiserror::Error;
 pub const DEFAULT_RESOURCE_CACHE_LIMIT_BYTES: usize = 50 * 1024 * 1024;
 pub const MAX_GATEWAY_HEADER_TEXT_BYTES: usize = 64 * 1024;
 pub const MAX_BROWSER_PROXY_RESOLUTION_TRACE_JSON_BYTES: usize = 64 * 1024;
-pub const LOCAL_TLS_CERT_FINGERPRINT_BYTES: usize = 32;
 const DNS_CLASS_IN: u16 = 1;
 const DNS_OPT_RECORD_TYPE: u16 = 41;
 const DNS_RCODE_NOERROR: u8 = 0;
@@ -232,12 +231,6 @@ impl GatewayHttpResponse {
     pub fn into_bytes(self) -> Vec<u8> {
         self.encoded_http
     }
-}
-
-struct GeneratedLocalCertificate {
-    certificate_der: Vec<u8>,
-    private_key_pkcs8_der: Vec<u8>,
-    certificate_sha256: [u8; LOCAL_TLS_CERT_FINGERPRINT_BYTES],
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -2848,7 +2841,7 @@ pub fn core_version() -> &'static str {
 }
 
 pub fn diagnostics_json() -> String {
-    r#"{"core":"hns-dane-browser-rust-core","version":"__VERSION__","features":["header-hash","header-pow-validation","header-mainnet-difficulty-retarget","header-mainnet-checkpoints","header-canonical-height-index","hns-name-hash","hns-dotted-root-label","urkel-proof-verification","urkel-proof-value-handoff","hns-name-state-resource-extraction","hns-resource-decoder","hns-authoritative-doh-rfc8484","hns-resource-provider-adapter","hns-memory-resource-provider","hns-sqlite-resource-provider","hns-negative-cache","hns-ttl-cache-lru","hns-resource-cache-stats","hns-resource-cache-eviction","hns-resource-cache-cap-enforcement","hns-resource-cache-chain-anchors","hns-resource-cache-reorg-invalidation","hns-resource-cache-current-tip","hns-proof-backed-resolver-boundary","hns-delegating-resolver-boundary","hns-proof-backed-ns-address-hydration","hns-authoritative-dnssec-delegated-resolver","android-hns-doh-compat-resolver","dns-wire","dns-svcb-https","dnssec-ds-dnskey-link","dnssec-ds-sha1","dnssec-ds-sha384","dnssec-rrsig-signed-data","dnssec-canonical-name-rdata","dnssec-ecdsa-p256-verify","dnssec-ecdsa-p384-verify","dnssec-rsa-sha1-verify","dnssec-rsa-sha256-sha512-verify","dnssec-ed25519-verify","dnssec-signed-rrset-validation","dnssec-delegated-chain-validation","dnssec-delegated-no-data-validation","dnssec-delegated-name-error-validation","dnssec-delegated-cname-chain","dnssec-child-referral-validation","dnssec-child-cname-chain","dnssec-child-no-data-validation","dnssec-child-name-error-validation","dnssec-nsec-denial-validation","dnssec-nsec3-denial-validation","dnssec-nxdomain-name-error-validation","dane-policy","dane-certificate-chain-policy","x509-spki-extraction","x509-stateless-dane-evidence","hip17-experimental-urkel-extension","rfc9102-authentication-chain-parser","p2p-codec","p2p-tcp-peer-connection","p2p-static-peer-source","p2p-dns-seed-source","p2p-getaddr-peer-discovery","p2p-discovery-rotation","p2p-peer-diversity","p2p-sqlite-peer-store","sync-coordinator","sync-header-runner","sync-multi-batch-header-runner","sync-parallel-peer-probing","sync-ranged-peer-rotation","sync-checkpoint-prefetch","sync-proof-scheduler","android-native-sync-once","android-sync-status","android-sync-outcome-status","android-sync-progress-heights","android-sync-high-batch-catchup","android-clear-resolver-cache","android-persistent-gateway-resolver","android-gateway-live-proof-fetch","android-gateway-header-forwarding","android-gateway-range-forwarding","android-gateway-body-forwarding","android-gateway-file-body-stream","android-webview-hns-intercept","android-service-worker-hns-intercept","android-hns-redirect-follow","android-actionable-hns-errors","hns-name-not-found-error","gateway-policy","gateway-hns-address-required","gateway-tlsa-service-scope","gateway-delegated-origin-address-lookup","gateway-origin-address-query","gateway-https-service-query","gateway-svcb-alpn-policy","gateway-actionable-nameserver-errors","gateway-cname-address-routing","android-proxy-gateway-hook","android-random-loopback-proxy-port","android-local-hns-connect-certs","hns-websocket-native-tunnel","http-origin-transport","http-origin-connection-pooling","http2-origin-transport","http3-origin-transport","http-origin-response-framing","https-rustls-transport","https-tls-session-resumption","https-alt-svc-promotion","dane-tls-policy"],"securityDefault":"fail-closed"}"#
+    r#"{"core":"hns-dane-browser-rust-core","version":"__VERSION__","features":["header-hash","header-pow-validation","header-mainnet-difficulty-retarget","header-mainnet-checkpoints","header-canonical-height-index","hns-name-hash","hns-dotted-root-label","urkel-proof-verification","urkel-proof-value-handoff","hns-name-state-resource-extraction","hns-resource-decoder","hns-authoritative-doh-rfc8484","hns-resource-provider-adapter","hns-memory-resource-provider","hns-sqlite-resource-provider","hns-negative-cache","hns-ttl-cache-lru","hns-resource-cache-stats","hns-resource-cache-eviction","hns-resource-cache-cap-enforcement","hns-resource-cache-chain-anchors","hns-resource-cache-reorg-invalidation","hns-resource-cache-current-tip","hns-proof-backed-resolver-boundary","hns-delegating-resolver-boundary","hns-proof-backed-ns-address-hydration","hns-authoritative-dnssec-delegated-resolver","android-hns-doh-compat-resolver","dns-wire","dns-svcb-https","dnssec-ds-dnskey-link","dnssec-ds-sha1","dnssec-ds-sha384","dnssec-rrsig-signed-data","dnssec-canonical-name-rdata","dnssec-ecdsa-p256-verify","dnssec-ecdsa-p384-verify","dnssec-rsa-sha1-verify","dnssec-rsa-sha256-sha512-verify","dnssec-ed25519-verify","dnssec-signed-rrset-validation","dnssec-delegated-chain-validation","dnssec-delegated-no-data-validation","dnssec-delegated-name-error-validation","dnssec-delegated-cname-chain","dnssec-child-referral-validation","dnssec-child-cname-chain","dnssec-child-no-data-validation","dnssec-child-name-error-validation","dnssec-nsec-denial-validation","dnssec-nsec3-denial-validation","dnssec-nxdomain-name-error-validation","dane-policy","dane-certificate-chain-policy","x509-spki-extraction","x509-stateless-dane-evidence","hip17-experimental-urkel-extension","rfc9102-authentication-chain-parser","p2p-codec","p2p-tcp-peer-connection","p2p-static-peer-source","p2p-dns-seed-source","p2p-getaddr-peer-discovery","p2p-discovery-rotation","p2p-peer-diversity","p2p-sqlite-peer-store","sync-coordinator","sync-header-runner","sync-multi-batch-header-runner","sync-parallel-peer-probing","sync-ranged-peer-rotation","sync-checkpoint-prefetch","sync-proof-scheduler","android-native-sync-once","android-sync-status","android-sync-outcome-status","android-sync-progress-heights","android-sync-high-batch-catchup","android-clear-resolver-cache","android-persistent-gateway-resolver","android-gateway-live-proof-fetch","android-gateway-header-forwarding","android-gateway-range-forwarding","android-gateway-body-forwarding","android-gateway-file-body-stream","android-webview-hns-intercept","android-service-worker-hns-intercept","android-hns-redirect-follow","android-actionable-hns-errors","hns-name-not-found-error","gateway-policy","gateway-hns-address-required","gateway-tlsa-service-scope","gateway-delegated-origin-address-lookup","gateway-origin-address-query","gateway-https-service-query","gateway-svcb-alpn-policy","gateway-actionable-nameserver-errors","gateway-cname-address-routing","android-proxy-gateway-hook","android-random-loopback-proxy-port","rust-loopback-local-hns-connect-certs","hns-websocket-native-tunnel","http-origin-transport","http-origin-connection-pooling","http2-origin-transport","http3-origin-transport","http-origin-response-framing","https-rustls-transport","https-tls-session-resumption","https-alt-svc-promotion","dane-tls-policy"],"securityDefault":"fail-closed"}"#
         .replace("__VERSION__", env!("CARGO_PKG_VERSION"))
 }
 
@@ -2909,85 +2902,6 @@ pub fn reset_headers_from_peers_for_network(data_dir: &str, network: NetworkKind
     reset_headers_from_peers_inner(data_dir, network)
         .unwrap_or_else(|error| NativeSyncStatus::error_for(network, error))
         .to_json()
-}
-
-pub fn local_tls_certificate_bundle(host: &str) -> Option<Vec<u8>> {
-    let certificate = generate_local_tls_certificate(host).ok()?;
-    let mut bundle = Vec::with_capacity(
-        4 + certificate.certificate_der.len()
-            + 4
-            + certificate.private_key_pkcs8_der.len()
-            + LOCAL_TLS_CERT_FINGERPRINT_BYTES,
-    );
-    bundle.extend(
-        u32::try_from(certificate.certificate_der.len())
-            .ok()?
-            .to_be_bytes(),
-    );
-    bundle.extend(&certificate.certificate_der);
-    bundle.extend(
-        u32::try_from(certificate.private_key_pkcs8_der.len())
-            .ok()?
-            .to_be_bytes(),
-    );
-    bundle.extend(&certificate.private_key_pkcs8_der);
-    bundle.extend(certificate.certificate_sha256);
-    Some(bundle)
-}
-
-fn generate_local_tls_certificate(host: &str) -> Result<GeneratedLocalCertificate, RuntimeError> {
-    let host = normalized_local_tls_host(host).ok_or_else(|| {
-        RuntimeError::InvalidConfiguration("local TLS host is invalid".to_owned())
-    })?;
-    let rcgen::CertifiedKey { cert, signing_key } = rcgen::generate_simple_self_signed(vec![host])
-        .map_err(|error| RuntimeError::Operation(format!("generate local certificate: {error}")))?;
-    let certificate_der = cert.der().as_ref().to_vec();
-    let private_key_pkcs8_der = signing_key.serialize_der();
-    let certificate_sha256 = Sha256::digest(&certificate_der).into();
-    Ok(GeneratedLocalCertificate {
-        certificate_der,
-        private_key_pkcs8_der,
-        certificate_sha256,
-    })
-}
-
-fn normalized_local_tls_host(host: &str) -> Option<String> {
-    let normalized = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    if normalized.is_empty() || normalized.len() > 253 {
-        return None;
-    }
-    if normalized.contains(':') || normalized.starts_with('[') || normalized.ends_with(']') {
-        return None;
-    }
-    if is_ipv4_literal(&normalized) {
-        return None;
-    }
-    let labels = normalized.split('.').collect::<Vec<_>>();
-    if labels.iter().any(|label| !valid_local_tls_label(label)) {
-        return None;
-    }
-    Some(normalized)
-}
-
-fn is_ipv4_literal(host: &str) -> bool {
-    let parts = host.split('.').collect::<Vec<_>>();
-    parts.len() == 4
-        && parts.iter().all(|part| {
-            !part.is_empty()
-                && part.len() <= 3
-                && part.bytes().all(|byte| byte.is_ascii_digit())
-                && part.parse::<u8>().is_ok()
-        })
-}
-
-fn valid_local_tls_label(label: &str) -> bool {
-    !label.is_empty()
-        && label.len() <= 63
-        && label
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        && !label.starts_with('-')
-        && !label.ends_with('-')
 }
 
 fn sync_once_with_options(
@@ -7143,23 +7057,6 @@ mod tests {
     }
 
     #[test]
-    fn generated_local_certificate_matches_legacy_bundle() {
-        let certificate = generate_local_tls_certificate("example").unwrap();
-        assert!(!certificate.certificate_der.is_empty());
-        assert!(!certificate.private_key_pkcs8_der.is_empty());
-        assert_eq!(
-            Sha256::digest(&certificate.certificate_der).as_slice(),
-            certificate.certificate_sha256
-        );
-
-        let bundle = local_tls_certificate_bundle("example").unwrap();
-        let (cert_der, key_der, fingerprint) = parse_local_tls_bundle(&bundle);
-        assert!(!cert_der.is_empty());
-        assert!(!key_der.is_empty());
-        assert_eq!(Sha256::digest(cert_der).as_slice(), fingerprint);
-    }
-
-    #[test]
     fn diagnostics_reports_fail_closed_security() {
         let diagnostics = diagnostics_json();
 
@@ -7280,8 +7177,8 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_reports_android_connect_certificate_generation() {
-        assert!(diagnostics_json().contains(r#""android-local-hns-connect-certs""#));
+    fn diagnostics_reports_rust_loopback_connect_certificate_generation() {
+        assert!(diagnostics_json().contains(r#""rust-loopback-local-hns-connect-certs""#));
     }
 
     #[test]
@@ -7295,42 +7192,6 @@ mod tests {
         assert!(diagnostics_json().contains(r#""gateway-https-service-query""#));
         assert!(diagnostics_json().contains(r#""gateway-svcb-alpn-policy""#));
         assert!(diagnostics_json().contains(r#""gateway-actionable-nameserver-errors""#));
-    }
-
-    #[test]
-    fn local_tls_certificate_bundle_contains_cert_key_and_fingerprint() {
-        let bundle = local_tls_certificate_bundle("Welcome.").unwrap();
-        let (cert_der, key_der, fingerprint) = parse_local_tls_bundle(&bundle);
-
-        assert!(cert_der.len() > 128);
-        assert!(key_der.len() > 64);
-        assert_eq!(fingerprint, Sha256::digest(cert_der).as_slice());
-    }
-
-    #[test]
-    fn local_tls_certificate_bundle_rejects_invalid_hosts() {
-        assert!(local_tls_certificate_bundle("").is_none());
-        assert!(local_tls_certificate_bundle("127.0.0.1").is_none());
-        assert!(local_tls_certificate_bundle("[::1]").is_none());
-        assert!(local_tls_certificate_bundle("-bad").is_none());
-        assert!(local_tls_certificate_bundle("bad_label").is_none());
-    }
-
-    fn parse_local_tls_bundle(bundle: &[u8]) -> (&[u8], &[u8], &[u8]) {
-        let cert_len = u32::from_be_bytes(bundle[0..4].try_into().unwrap()) as usize;
-        let cert_start = 4;
-        let cert_end = cert_start + cert_len;
-        let key_len =
-            u32::from_be_bytes(bundle[cert_end..cert_end + 4].try_into().unwrap()) as usize;
-        let key_start = cert_end + 4;
-        let key_end = key_start + key_len;
-        let fingerprint_end = key_end + LOCAL_TLS_CERT_FINGERPRINT_BYTES;
-        assert_eq!(fingerprint_end, bundle.len());
-        (
-            &bundle[cert_start..cert_end],
-            &bundle[key_start..key_end],
-            &bundle[key_end..fingerprint_end],
-        )
     }
 
     #[test]

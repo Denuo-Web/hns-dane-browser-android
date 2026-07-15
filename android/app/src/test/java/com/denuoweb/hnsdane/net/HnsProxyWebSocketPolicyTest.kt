@@ -14,7 +14,7 @@ class HnsProxyWebSocketPolicyTest {
         assertTrue(script.contains("!inPageScope(targetHost, pageHost)"))
         assertTrue(script.contains("HNS WebSocket target is outside the active proxy scope"))
         assertTrue(script.contains("window.WebSocket = ProxyScopedWebSocket"))
-        assertFalse(script.contains(HnsWebSocketShim.JS_OBJECT_NAME))
+        assertFalse(script.contains("hnsWebSocketBridge"))
         assertFalse(script.contains("postMessage"))
     }
 

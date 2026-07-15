@@ -62,7 +62,6 @@ import com.denuoweb.hnsdane.net.DisabledServiceWorkerClient
 import com.denuoweb.hnsdane.net.BrowserProxyCoordinator
 import com.denuoweb.hnsdane.net.BrowserProxyLifecycleWorker
 import com.denuoweb.hnsdane.net.BrowserProxyRoute
-import com.denuoweb.hnsdane.net.DefaultLocalBrowserProxyFactory
 import com.denuoweb.hnsdane.net.GatewayEventLog
 import com.denuoweb.hnsdane.net.HnsProxyController
 import com.denuoweb.hnsdane.net.HnsServiceWorkerGatewayClient
@@ -72,8 +71,10 @@ import com.denuoweb.hnsdane.net.HnsNativeDownloadFetcher
 import com.denuoweb.hnsdane.net.HnsProxyWebSocketPolicy
 import com.denuoweb.hnsdane.net.HnsWebViewGatewayInterceptor
 import com.denuoweb.hnsdane.net.HnsWebViewSslErrorPolicy
+import com.denuoweb.hnsdane.net.LocalBrowserProxyFactory
 import com.denuoweb.hnsdane.net.NativeBridge
 import com.denuoweb.hnsdane.net.ProcessServiceWorkerClientOwnership
+import com.denuoweb.hnsdane.net.RustBrowserProxy
 import com.denuoweb.hnsdane.net.RustBrowserProxyConfig
 import com.denuoweb.hnsdane.net.ServiceWorkerClientOwnershipGate
 import com.denuoweb.hnsdane.net.blockedHnsProxyResponse
@@ -144,7 +145,7 @@ class MainActivity : ComponentActivity() {
         val proxyController = HnsProxyController(this)
         proxyCoordinator = BrowserProxyCoordinator(
             overrideController = proxyController,
-            proxyFactory = DefaultLocalBrowserProxyFactory(),
+            proxyFactory = LocalBrowserProxyFactory(RustBrowserProxy::start),
             workerExecutor = BrowserProxyLifecycleWorker,
             callbackExecutor = ContextCompat.getMainExecutor(this),
             onAvailabilityChanged = { available ->

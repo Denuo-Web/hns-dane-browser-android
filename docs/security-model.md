@@ -53,7 +53,7 @@ The app follows the Android security checklist as a platform baseline:
 - App backup and device-transfer extraction are disabled for files, databases, shared preferences, root storage, and external app data. Browser history, download records, diagnostics, resolver cache, and sync/cache state remain app-local unless the user explicitly exports or shares data.
 - Normal browsing does not enable `file://` or `content://` WebView access. User-initiated downloads use Android DownloadManager into public Downloads, but the system-visible download description does not include the full URL.
 - Network Security Config denies cleartext by default and allows cleartext only for the loopback gateway. The gateway binds randomized `127.0.0.1` ports only while scoped HNS proxy support is needed.
-- WebView JavaScript is enabled for browser compatibility, but no `addJavascriptInterface` bridge is exposed to untrusted content. The HNS WebSocket `WebMessageListener` path validates main-frame origin, active HNS page scope, target HNS host scope, and cleartext downgrade policy before opening a native tunnel.
+- WebView JavaScript is enabled for browser compatibility, but no `addJavascriptInterface` or `WebMessageListener` bridge is exposed to untrusted content. Allowed WebSockets remain Chromium-native and traverse the scoped Rust proxy; a document-start policy rejects cross-scope HNS targets before network admission.
 - Gateway diagnostic persistence is bounded and stores sanitized stage, host, status, and reason fields only; URL paths, query strings, headers, and bodies are not persisted in default diagnostics.
 - Release builds are non-debuggable, minified, resource-shrunk, and require upload-signing configuration before Play release bundle verification can pass.
 
@@ -149,7 +149,7 @@ The app follows the Android privacy checklist as a platform baseline:
 - No proxy request body should be forwarded or dropped unless HTTP/1.1 framing is unambiguous and supported.
 - No origin HTTP response body should be accepted unless HTTP/1.1 framing is unambiguous and supported.
 - No decoded chunked origin response should be exposed to WebView with stale `Transfer-Encoding` or mismatched `Content-Length` framing; native gateway file-backed bodies are returned with fixed decoded lengths.
-- No WebView SSL error should call `proceed()` unless the requested URL is an HNS HTTPS URL and the presented certificate's SHA-256 fingerprint exactly matches the local certificate generated and pinned for that HNS host.
+- No WebView SSL error should call `proceed()` unless the requested URL is an HNS HTTPS URL and the presented certificate's full DER bytes match the exact host and currently published Rust proxy generation.
 - No HNS WebSocket or HTTP Upgrade request should be silently downgraded to a normal GET by stripping hop-by-hop Upgrade headers; these requests must enter the native stream tunnel after HNS resolution, HTTPS/SVCB policy, and DANE validation, and fail closed if the native tunnel path is unavailable or validation fails.
 - No WebView JavaScript/native bridge should be exposed to untrusted web content; browser UI/native operations must remain outside page script reachability.
 - No WebView `file://` or `content://` access should be enabled for normal browsing; app assets must use safe app-asset origins or native response interception.
