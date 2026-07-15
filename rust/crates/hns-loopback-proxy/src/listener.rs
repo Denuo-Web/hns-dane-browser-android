@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::io;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -18,14 +18,29 @@ pub(crate) type ClientHandler =
 pub(crate) type RejectionHandler =
     dyn Fn(TcpStream, SocketAddr, CancellationToken) + Send + Sync + 'static;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ListenerExitReason {
+    Requested,
+    ListenerFailure,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ListenerExitPhase {
+    FailureDetected,
+    Quiesced(ListenerExitReason),
+}
+
+pub(crate) type ListenerExitHandler = dyn Fn(ListenerExitPhase) + Send + Sync + 'static;
+
 /// A loopback listener whose accept thread owns every client worker.
 ///
 /// Client handlers must finish when their cancellation token is cancelled or
 /// their stream is shut down. From an external control thread,
 /// [`OwnedListener::stop`] joins all work before returning instead of leaving
 /// detached threads behind. A callback may request a reentrant stop, which
-/// returns after cancellation so the callback can unwind; the external owner
-/// must retain the listener and later join it through `stop` or `drop`.
+/// returns after cancellation so the callback can unwind. A later external
+/// stop joins the listener; if the callback releases the final owner, a reaper
+/// thread joins it after the callback unwinds.
 pub(crate) struct OwnedListener {
     local_addr: SocketAddr,
     cancellation: CancellationToken,
@@ -41,6 +56,7 @@ impl OwnedListener {
         cancellation: CancellationToken,
         client_handler: Arc<ClientHandler>,
         rejection_handler: Arc<RejectionHandler>,
+        exit_handler: Arc<ListenerExitHandler>,
     ) -> io::Result<Self> {
         Self::start_with_spawner(
             bind_addr,
@@ -48,6 +64,7 @@ impl OwnedListener {
             cancellation,
             client_handler,
             rejection_handler,
+            exit_handler,
             |builder, task| builder.spawn(task),
         )
     }
@@ -58,6 +75,7 @@ impl OwnedListener {
         cancellation: CancellationToken,
         client_handler: Arc<ClientHandler>,
         rejection_handler: Arc<RejectionHandler>,
+        exit_handler: Arc<ListenerExitHandler>,
         spawn: S,
     ) -> io::Result<Self>
     where
@@ -81,6 +99,7 @@ impl OwnedListener {
         let local_addr = listener.local_addr()?;
         let limiter = ActiveClientLimiter::new(max_active_clients);
         let controls = Arc::new(ClientControls::default());
+        let reaper = accept_reaper()?;
 
         let task_cancellation = cancellation.clone();
         let task_limiter = limiter.clone();
@@ -93,6 +112,7 @@ impl OwnedListener {
                 task_controls,
                 client_handler,
                 rejection_handler,
+                exit_handler,
             );
         });
         let handle = spawn(
@@ -105,7 +125,7 @@ impl OwnedListener {
             cancellation,
             limiter,
             controls,
-            accept_thread: AcceptThread::new(handle),
+            accept_thread: AcceptThread::new(handle, reaper),
         })
     }
 
@@ -123,23 +143,33 @@ impl OwnedListener {
     /// this method more than once is safe. Returns whether all owned threads
     /// were joined by this call (`false` only for a reentrant callback call).
     pub(crate) fn stop(&self) -> bool {
-        self.cancellation.cancel();
-        shutdown_controls(self.controls.begin_stop());
+        self.request_stop();
         // Joining from the accept thread would self-join. Joining from one of
         // its workers would cycle because accept-loop cleanup joins workers.
-        // Cancellation is enough here; the external owner later joins the
-        // accept thread through its ordinary stop/drop path.
+        // Cancellation is enough here; an external owner later joins the
+        // accept thread, or final owned-thread drop hands it to the reaper.
         if OwnedThreadMarker::is_current(&self.controls) {
             return false;
         }
         self.accept_thread.join();
         true
     }
+
+    /// Linearizes cancellation and socket shutdown without attempting joins.
+    pub(crate) fn request_stop(&self) {
+        self.cancellation.cancel();
+        shutdown_controls(self.controls.begin_stop());
+    }
 }
 
 impl Drop for OwnedListener {
     fn drop(&mut self) {
-        let _joined = self.stop();
+        self.request_stop();
+        if OwnedThreadMarker::is_current(&self.controls) {
+            self.accept_thread.handoff_to_reaper();
+        } else {
+            self.accept_thread.join();
+        }
     }
 }
 
@@ -148,6 +178,7 @@ type AcceptTask = Box<dyn FnOnce() + Send + 'static>;
 struct AcceptThread {
     state: Mutex<AcceptThreadState>,
     joined: Condvar,
+    reaper: Arc<AcceptReaper>,
 }
 
 struct AcceptThreadState {
@@ -156,13 +187,14 @@ struct AcceptThreadState {
 }
 
 impl AcceptThread {
-    fn new(handle: JoinHandle<()>) -> Self {
+    fn new(handle: JoinHandle<()>, reaper: Arc<AcceptReaper>) -> Self {
         Self {
             state: Mutex::new(AcceptThreadState {
                 handle: Some(handle),
                 joining: false,
             }),
             joined: Condvar::new(),
+            reaper,
         }
     }
 
@@ -189,6 +221,71 @@ impl AcceptThread {
         let mut state = lock_recover(&self.state);
         state.joining = false;
         self.joined.notify_all();
+    }
+
+    fn handoff_to_reaper(&self) {
+        let handle = {
+            let mut state = lock_recover(&self.state);
+            if state.joining {
+                return;
+            }
+            state.handle.take()
+        };
+
+        let Some(handle) = handle else {
+            return;
+        };
+        self.reaper.enqueue(handle);
+    }
+}
+
+static ACCEPT_REAPER: OnceLock<Result<Arc<AcceptReaper>, String>> = OnceLock::new();
+
+#[derive(Default)]
+struct AcceptReaper {
+    pending: Mutex<Vec<JoinHandle<()>>>,
+    available: Condvar,
+}
+
+impl AcceptReaper {
+    fn start() -> Result<Arc<Self>, String> {
+        let reaper = Arc::new(Self::default());
+        let task_reaper = Arc::clone(&reaper);
+        let service = thread::Builder::new()
+            .name("hns-loopback-reaper".to_owned())
+            .spawn(move || task_reaper.run())
+            .map_err(|error| error.to_string())?;
+        // This single process-lifetime service owns no proxy work itself. Its
+        // queue receives accept handles only when their final owner is being
+        // dropped from an accept or client callback.
+        drop(service);
+        Ok(reaper)
+    }
+
+    fn enqueue(&self, handle: JoinHandle<()>) {
+        lock_recover(&self.pending).push(handle);
+        self.available.notify_one();
+    }
+
+    fn run(&self) -> ! {
+        loop {
+            let mut pending = lock_recover(&self.pending);
+            let handle = loop {
+                if let Some(handle) = pending.pop() {
+                    break handle;
+                }
+                pending = wait_recover(&self.available, pending);
+            };
+            drop(pending);
+            let _result = handle.join();
+        }
+    }
+}
+
+fn accept_reaper() -> io::Result<Arc<AcceptReaper>> {
+    match ACCEPT_REAPER.get_or_init(AcceptReaper::start) {
+        Ok(reaper) => Ok(Arc::clone(reaper)),
+        Err(message) => Err(io::Error::other(message.clone())),
     }
 }
 
@@ -286,7 +383,30 @@ fn accept_loop(
     controls: Arc<ClientControls>,
     client_handler: Arc<ClientHandler>,
     rejection_handler: Arc<RejectionHandler>,
+    exit_handler: Arc<ListenerExitHandler>,
 ) {
+    accept_loop_with(
+        move || listener.accept(),
+        cancellation,
+        limiter,
+        controls,
+        client_handler,
+        rejection_handler,
+        exit_handler,
+    );
+}
+
+fn accept_loop_with<A>(
+    mut accept: A,
+    cancellation: CancellationToken,
+    limiter: ActiveClientLimiter,
+    controls: Arc<ClientControls>,
+    client_handler: Arc<ClientHandler>,
+    rejection_handler: Arc<RejectionHandler>,
+    exit_handler: Arc<ListenerExitHandler>,
+) where
+    A: FnMut() -> io::Result<(TcpStream, SocketAddr)>,
+{
     let _owned_thread = OwnedThreadMarker::enter(&controls);
     // In unwind-enabled builds this guard is also the unexpected-panic path:
     // it cancels, closes every registered socket, and joins every worker.
@@ -296,11 +416,12 @@ fn accept_loop(
         Arc::clone(&controls),
     );
     let mut next_worker_id = 0_u64;
+    let mut exit_reason = ListenerExitReason::Requested;
 
     while !cancellation.is_cancelled() {
         workers.reap_finished();
 
-        match listener.accept() {
+        match accept() {
             Ok((stream, peer_addr)) => {
                 // BSD-family accept(2) implementations can inherit the
                 // listener's O_NONBLOCK flag. Client handlers intentionally
@@ -359,9 +480,31 @@ fn accept_loop(
                 cancellation.wait_cancelled_timeout(ACCEPT_RETRY_INTERVAL);
             }
             Err(error) if is_transient_accept_error(&error) => {}
-            Err(_) => break,
+            Err(_) => {
+                // `cancel` is the linearization point distinguishing an
+                // unexpected listener failure from an ordinary stop that
+                // happened to race this accept result.
+                if !cancellation.cancel() {
+                    break;
+                }
+                shutdown_controls(controls.begin_stop());
+                notify_listener_exit(&exit_handler, ListenerExitPhase::FailureDetected);
+                exit_reason = ListenerExitReason::ListenerFailure;
+                break;
+            }
         }
     }
+
+    // Release the accept source before reporting quiescence, then join every
+    // worker. Keep the owned-thread marker installed during the callback so
+    // reentrant stop requests cannot attempt to join this accept thread.
+    drop(accept);
+    drop(workers);
+    notify_listener_exit(&exit_handler, ListenerExitPhase::Quiesced(exit_reason));
+}
+
+fn notify_listener_exit(exit_handler: &Arc<ListenerExitHandler>, phase: ListenerExitPhase) {
+    let _result = catch_unwind(AssertUnwindSafe(|| exit_handler(phase)));
 }
 
 fn is_transient_accept_error(error: &io::Error) -> bool {
@@ -446,7 +589,7 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::{Ipv4Addr, TcpListener};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -469,6 +612,7 @@ mod tests {
             CancellationToken::new(),
             client_handler,
             rejection_handler,
+            noop_failure_handler(),
         )
         .unwrap();
 
@@ -497,6 +641,7 @@ mod tests {
             CancellationToken::new(),
             client_handler,
             Arc::new(|_, _, _| {}),
+            noop_failure_handler(),
         )
         .unwrap();
         let mut client = TcpStream::connect(listener.local_addr()).unwrap();
@@ -527,6 +672,7 @@ mod tests {
             CancellationToken::new(),
             client_handler,
             rejection_handler,
+            noop_failure_handler(),
         )
         .unwrap();
 
@@ -559,6 +705,7 @@ mod tests {
             cancellation.clone(),
             client_handler,
             Arc::new(|_, _, _| {}),
+            noop_failure_handler(),
         )
         .unwrap();
 
@@ -590,6 +737,7 @@ mod tests {
             CancellationToken::new(),
             client_handler,
             Arc::new(|_, _, _| {}),
+            noop_failure_handler(),
         )
         .unwrap();
         let mut client = TcpStream::connect(listener.local_addr()).unwrap();
@@ -621,6 +769,7 @@ mod tests {
             cancellation.clone(),
             client_handler,
             Arc::new(|_, _, _| {}),
+            noop_failure_handler(),
         )
         .unwrap();
 
@@ -650,6 +799,7 @@ mod tests {
             CancellationToken::new(),
             Arc::new(|_, _, _| {}),
             rejection_handler,
+            noop_failure_handler(),
         )
         .unwrap();
         let _client = TcpStream::connect(listener.local_addr()).unwrap();
@@ -683,6 +833,7 @@ mod tests {
                 CancellationToken::new(),
                 client_handler,
                 Arc::new(|_, _, _| {}),
+                noop_failure_handler(),
             )
             .unwrap(),
         );
@@ -717,6 +868,7 @@ mod tests {
                 CancellationToken::new(),
                 Arc::new(|_, _, _| {}),
                 rejection_handler,
+                noop_failure_handler(),
             )
             .unwrap(),
         );
@@ -741,6 +893,7 @@ mod tests {
             CancellationToken::new(),
             client_handler,
             Arc::new(|_, _, _| {}),
+            noop_failure_handler(),
         )
         .unwrap();
 
@@ -768,6 +921,7 @@ mod tests {
             CancellationToken::new(),
             Arc::new(|_, _, _| {}),
             rejection_handler,
+            noop_failure_handler(),
         )
         .unwrap();
 
@@ -787,6 +941,7 @@ mod tests {
             CancellationToken::new(),
             Arc::new(|_, _, _| {}),
             Arc::new(|_, _, _| {}),
+            noop_failure_handler(),
         )
         .unwrap();
         let started = std::time::Instant::now();
@@ -813,6 +968,7 @@ mod tests {
             cancellation.clone(),
             client_handler,
             Arc::new(|_, _, _| {}),
+            noop_failure_handler(),
         )
         .unwrap();
         let _client = TcpStream::connect(listener.local_addr()).unwrap();
@@ -822,6 +978,64 @@ mod tests {
 
         assert!(cancellation.is_cancelled());
         finished_rx.recv_timeout(TEST_TIMEOUT).unwrap();
+    }
+
+    #[test]
+    fn final_owner_drop_from_a_client_callback_is_reaped() {
+        let owner = Arc::new(Mutex::new(None::<std::sync::Weak<OwnedListener>>));
+        let callback_owner = Arc::clone(&owner);
+        let (upgraded_tx, upgraded_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let (quiesced_tx, quiesced_rx) = mpsc::channel();
+        let client_handler: Arc<ClientHandler> = Arc::new(move |_, _, _| {
+            let listener = callback_owner
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .upgrade()
+                .unwrap();
+            upgraded_tx.send(()).unwrap();
+            release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(TEST_TIMEOUT)
+                .unwrap();
+            drop(listener);
+            finished_tx.send(()).unwrap();
+        });
+        let listener = Arc::new(
+            OwnedListener::start(
+                loopback_any(),
+                1,
+                CancellationToken::new(),
+                client_handler,
+                Arc::new(|_, _, _| {}),
+                Arc::new(move |phase| {
+                    if matches!(phase, ListenerExitPhase::Quiesced(_)) {
+                        quiesced_tx.send(phase).unwrap();
+                    }
+                }),
+            )
+            .unwrap(),
+        );
+        let address = listener.local_addr();
+        *owner.lock().unwrap() = Some(Arc::downgrade(&listener));
+
+        let client = TcpStream::connect(address).unwrap();
+        upgraded_rx.recv_timeout(TEST_TIMEOUT).unwrap();
+        drop(listener);
+        drop(client);
+        release_tx.send(()).unwrap();
+        finished_rx.recv_timeout(TEST_TIMEOUT).unwrap();
+        assert_eq!(
+            quiesced_rx.recv_timeout(TEST_TIMEOUT).unwrap(),
+            ListenerExitPhase::Quiesced(ListenerExitReason::Requested)
+        );
+
+        wait_until_rebindable(address);
     }
 
     #[test]
@@ -844,6 +1058,7 @@ mod tests {
             cancellation.clone(),
             client_handler,
             rejection_handler,
+            noop_failure_handler(),
         );
 
         assert!(result.is_err());
@@ -864,6 +1079,7 @@ mod tests {
             cancellation.clone(),
             Arc::new(|_, _, _| {}),
             Arc::new(|_, _, _| {}),
+            noop_failure_handler(),
             |_builder, _task| Err(io::Error::other("forced spawn failure")),
         );
 
@@ -881,6 +1097,7 @@ mod tests {
             CancellationToken::new(),
             Arc::new(|_, _, _| {}),
             Arc::new(|_, _, _| {}),
+            noop_failure_handler(),
         );
 
         assert!(result.is_err());
@@ -897,6 +1114,7 @@ mod tests {
             cancellation,
             Arc::new(|_, _, _| {}),
             Arc::new(|_, _, _| {}),
+            noop_failure_handler(),
         );
 
         assert!(result.is_err());
@@ -918,8 +1136,146 @@ mod tests {
         )));
     }
 
+    #[test]
+    fn fatal_accept_failure_reports_detection_then_worker_quiescence() {
+        let (server_stream, client_stream, peer_addr) = connected_stream_pair();
+        let cancellation = CancellationToken::new();
+        let limiter = ActiveClientLimiter::new(1);
+        let controls = Arc::new(ClientControls::default());
+        let worker_finished = Arc::new(AtomicBool::new(false));
+        let handler_finished = Arc::clone(&worker_finished);
+        let client_handler: Arc<ClientHandler> = Arc::new(move |mut stream, _, _| {
+            let mut byte = [0_u8; 1];
+            let _result = stream.read(&mut byte);
+            handler_finished.store(true, Ordering::Release);
+        });
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let callback_events = Arc::clone(&events);
+        let callback_cancellation = cancellation.clone();
+        let callback_limiter = limiter.clone();
+        let callback_finished = Arc::clone(&worker_finished);
+        let exit_handler: Arc<ListenerExitHandler> = Arc::new(move |phase| {
+            callback_events.lock().unwrap().push((
+                phase,
+                callback_cancellation.is_cancelled(),
+                callback_limiter.active(),
+                callback_finished.load(Ordering::Acquire),
+            ));
+        });
+        let mut accepted = Some((server_stream, peer_addr));
+
+        accept_loop_with(
+            move || {
+                accepted
+                    .take()
+                    .map(Ok)
+                    .unwrap_or_else(|| Err(io::Error::other("forced fatal accept failure")))
+            },
+            cancellation.clone(),
+            limiter,
+            controls,
+            client_handler,
+            Arc::new(|_, _, _| {}),
+            exit_handler,
+        );
+        drop(client_stream);
+
+        assert!(cancellation.is_cancelled());
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].0, ListenerExitPhase::FailureDetected);
+        assert!(events[0].1);
+        assert_eq!(
+            events[1].0,
+            ListenerExitPhase::Quiesced(ListenerExitReason::ListenerFailure)
+        );
+        assert!(events[1].1);
+        assert_eq!(events[1].2, 0);
+        assert!(events[1].3);
+    }
+
+    #[test]
+    fn requested_stop_wins_a_race_with_a_fatal_accept_result() {
+        let cancellation = CancellationToken::new();
+        let accept_cancellation = cancellation.clone();
+        let phases = Arc::new(Mutex::new(Vec::new()));
+        let callback_phases = Arc::clone(&phases);
+
+        accept_loop_with(
+            move || {
+                accept_cancellation.cancel();
+                Err(io::Error::other("fatal result after requested stop"))
+            },
+            cancellation.clone(),
+            ActiveClientLimiter::new(1),
+            Arc::new(ClientControls::default()),
+            Arc::new(|_, _, _| {}),
+            Arc::new(|_, _, _| {}),
+            Arc::new(move |phase| {
+                callback_phases.lock().unwrap().push(phase);
+            }),
+        );
+
+        assert!(cancellation.is_cancelled());
+        assert_eq!(
+            phases.lock().unwrap().as_slice(),
+            &[ListenerExitPhase::Quiesced(ListenerExitReason::Requested)]
+        );
+    }
+
+    #[test]
+    fn panicking_failure_callback_cannot_suppress_quiesced_notification() {
+        let cancellation = CancellationToken::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = Arc::clone(&calls);
+
+        accept_loop_with(
+            || Err(io::Error::other("forced fatal accept failure")),
+            cancellation,
+            ActiveClientLimiter::new(1),
+            Arc::new(ClientControls::default()),
+            Arc::new(|_, _, _| {}),
+            Arc::new(|_, _, _| {}),
+            Arc::new(move |phase| {
+                callback_calls.fetch_add(1, Ordering::Relaxed);
+                if phase == ListenerExitPhase::FailureDetected {
+                    panic!("forced failure callback panic");
+                }
+            }),
+        );
+
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
     fn loopback_any() -> SocketAddr {
         SocketAddr::from((Ipv4Addr::LOCALHOST, 0))
+    }
+
+    fn noop_failure_handler() -> Arc<ListenerExitHandler> {
+        Arc::new(|_| {})
+    }
+
+    fn connected_stream_pair() -> (TcpStream, TcpStream, SocketAddr) {
+        let listener = TcpListener::bind(loopback_any()).unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, peer_addr) = listener.accept().unwrap();
+        (server, client, peer_addr)
+    }
+
+    fn wait_until_rebindable(address: SocketAddr) {
+        let deadline = std::time::Instant::now() + TEST_TIMEOUT;
+        loop {
+            match TcpListener::bind(address) {
+                Ok(listener) => {
+                    drop(listener);
+                    return;
+                }
+                Err(_) => {
+                    assert!(std::time::Instant::now() < deadline);
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
     }
 
     fn wait_for_active_count(listener: &OwnedListener, expected: usize) {

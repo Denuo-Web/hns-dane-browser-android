@@ -18,8 +18,8 @@ artifacts. Inclusion here does not imply endorsement by the component authors.
 Generator schema: 1
 Generated input SHA-256:
   scripts/generate-third-party-notices.py = a6fc09cfc0e98246f5592881cf8ef7edb0289c2d89ea36869e49c6a3a8ff5246
-  rust/Cargo.toml = e0fb39971db2fe0f967d9aada9e8d82b0630db4f498e12aed9b472ebceb50878
-  rust/Cargo.lock = 1d3be7c108a4a8850a5244499e3f88683606fe6d1c882da282cfa09153d4a16d
+  rust/Cargo.toml = 79297cdf2212f8dad5b1ce9e2b711b3caeb8a383b5409a33b949579d675b09c6
+  rust/Cargo.lock = 478bc0a21d6486d2e0ca54c6c5da6f1d9489afe09b21608713e55c1424c242ea
   android/gradle/libs.versions.toml = e38501dbbb112b0fa54e67c21f5ecb7d31cd3dfd20e67082cb5be43114c37143
   android/app/gradle.lockfile = 5578fb9e14cb0a44e8e35c6aa2d13026271a2491a47ad2f78681ad0c7adcac98
   android/gradle/verification-metadata.xml = e8d96e747c3b055e3a8252082cecaf335aa2721eb0b0c14dcc647814ced1e3f6
@@ -31,7 +31,7 @@ Generated input SHA-256:
   rust/crates/hns-dane/Cargo.toml = e101a2c614120830bc2ead4b56f1cb7604cef15fda4104bc819060a562aa8d29
   rust/crates/hns-dnssec/Cargo.toml = 06c0ed11d5b80a3ff2f1780e9642e9986b13ecf1f34755cf1cd1d94b6a043cf0
   rust/crates/hns-gateway/Cargo.toml = 9a83a52cd9fe6b5c58546f2e14a7de725cda1d52fca19c208f74000c70d0f05d
-  rust/crates/hns-loopback-proxy/Cargo.toml = 5bb47fb491644aac8768e2fce02cc38b8a9ffecf25eddd5e4337a82d5e616ceb
+  rust/crates/hns-loopback-proxy/Cargo.toml = af0d4f4b7c0bdad24e5d491048fb570309e71236052dc87e8d8b654561484c4e
   rust/crates/hns-p2p/Cargo.toml = 258102d8a57156c891835f9b18d2ec6d784ca78578392f4374d9f45c231458f0
   rust/crates/hns-resolver/Cargo.toml = 16aa3b64add8d2eae595d11f23d1c618ce8ea574d5695b35fd7d1c106fef8a1b
   rust/crates/hns-sync/Cargo.toml = e573dd5bb30b3a6f89a00cb01929b268849e5d54b7c4b9cebad6dc937d8fa2e3

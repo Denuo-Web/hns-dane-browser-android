@@ -16,7 +16,9 @@ pub mod rate_limit;
 pub mod response;
 pub mod server;
 
+mod certificate;
 mod listener;
+mod tls;
 
 pub use auth::{
     AuthorizationGenerationError, PROXY_AUTHENTICATE_HEADER, PROXY_AUTHORIZATION_HEADER,
@@ -26,6 +28,7 @@ pub use backend::{
     BackendError, CancellationToken, ProxyBackend, ProxyHeader, ProxyRequest, ProxyRequestBody,
     ProxyResponse, ProxyResponseBody, ProxyResponseHead,
 };
+pub use certificate::{CertificateSha256, LocalCertificatePin};
 pub use config::{
     LoopbackBind, ProxyConfig, ProxyInstanceId, ProxyLimits, ProxyLimitsError, ProxySessionId,
     ProxyTimeouts, ProxyTimeoutsError, SessionIdGenerationError,

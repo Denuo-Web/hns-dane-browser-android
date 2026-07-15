@@ -5,6 +5,7 @@ use crate::backend::{
     BackendError, CancellationToken, ProxyBackend, ProxyHeader, ProxyRequest, ProxyRequestBody,
     ProxyResponse, ProxyResponseBody,
 };
+use crate::certificate::LocalTlsIdentityStore;
 use crate::config::{ProxyConfig, ProxyLimits, ProxyTimeouts};
 use crate::endpoint::ProxyEndpoint;
 use crate::event::{
@@ -13,24 +14,30 @@ use crate::event::{
 };
 use crate::host::HostScopeError;
 use crate::http1::{
-    AbsoluteTarget, BodyFraming, Http1Error, RequestHead, RequestTarget, Scheme,
+    AbsoluteTarget, Authority, BodyFraming, Http1Error, RequestHead, RequestTarget, Scheme,
     determine_body_framing, read_request_body, read_request_head, sanitize_forward_headers,
 };
-use crate::listener::{ClientHandler, OwnedListener, RejectionHandler};
+use crate::listener::{
+    ClientHandler, ListenerExitHandler, ListenerExitPhase, ListenerExitReason, OwnedListener,
+    RejectionHandler,
+};
 use crate::rate_limit::{
     RateLimitConfig, RateLimitConfigError, RateLimitDecision, RateLimitScope, RequestRateLimiter,
 };
 use crate::response::{encode_response_head, sanitize_response_headers};
+use crate::tls::{TlsStream, accept_local_tls};
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex as StdMutex};
+use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
 const RESPONSE_COPY_BUFFER_BYTES: usize = 16 * 1024;
+const CONNECT_ESTABLISHED_RESPONSE: &[u8] = b"HTTP/1.1 200 Connection Established\r\n\r\n";
 
 /// Failure to start a proxy generation. No listener or credential is retained
 /// after this error is returned.
@@ -48,10 +55,10 @@ pub enum ProxyError {
 pub struct RunningProxy {
     endpoint: ProxyEndpoint,
     listener: OwnedListener,
+    tls_identities: Arc<LocalTlsIdentityStore>,
     observer: Arc<dyn ProxyObserver>,
     generation: u64,
-    stop_requested: AtomicBool,
-    stop_completed: AtomicBool,
+    stop_state: Arc<ProxyStopState>,
 }
 
 impl RunningProxy {
@@ -70,6 +77,8 @@ impl RunningProxy {
         let rate_limiter =
             RequestRateLimiter::new(rate_limit_config(limits)).map_err(ProxyError::RateLimit)?;
         let cancellation = CancellationToken::new();
+        let tls_identities = Arc::new(LocalTlsIdentityStore::new(config.instance().clone()));
+        let stop_state = Arc::new(ProxyStopState::new());
         let context = Arc::new(ServerContext {
             authorization: Arc::clone(&authorization),
             scope: config.scope().clone(),
@@ -79,6 +88,7 @@ impl RunningProxy {
             observer: Arc::clone(&observer),
             generation,
             rate_limiter,
+            tls_identities: Arc::clone(&tls_identities),
         });
 
         let client_context = Arc::clone(&context);
@@ -103,6 +113,12 @@ impl RunningProxy {
             );
             let _result = stream.shutdown(Shutdown::Both);
         });
+        let exit_handler = listener_exit_handler(
+            Arc::clone(&tls_identities),
+            Arc::clone(&observer),
+            generation,
+            Arc::clone(&stop_state),
+        );
 
         let listener = OwnedListener::start(
             SocketAddr::V4(config.bind().socket_addr()),
@@ -110,6 +126,7 @@ impl RunningProxy {
             cancellation,
             client_handler,
             rejection_handler,
+            exit_handler,
         )
         .map_err(ProxyError::Listener)?;
         let endpoint = ProxyEndpoint::new(
@@ -126,14 +143,15 @@ impl RunningProxy {
                 },
             },
         );
+        stop_state.publish_listening();
 
         Ok(Self {
             endpoint,
             listener,
+            tls_identities,
             observer,
             generation,
-            stop_requested: AtomicBool::new(false),
-            stop_completed: AtomicBool::new(false),
+            stop_state,
         })
     }
 
@@ -146,7 +164,31 @@ impl RunningProxy {
     }
 
     pub fn is_stopped(&self) -> bool {
-        self.stop_completed.load(Ordering::Acquire)
+        self.stop_state.completed.load(Ordering::Acquire)
+    }
+
+    /// Returns informational, generation-bound pin metadata after an
+    /// authenticated CONNECT has prepared this exact canonical host. The pin
+    /// cannot authorize certificate DER; native trust hooks must call
+    /// [`Self::matches_local_certificate`] through this live proxy handle.
+    pub fn local_certificate_pin(&self, host: &str) -> Option<crate::LocalCertificatePin> {
+        if self.stop_state.requested.load(Ordering::Acquire) {
+            return None;
+        }
+        let host = crate::NormalizedHost::parse(host).ok()?;
+        self.tls_identities.pin(&host)
+    }
+
+    /// Verifies browser challenge DER against the active generation's exact
+    /// host identity. Unknown, malformed, oversized, or stopped lookups fail.
+    pub fn matches_local_certificate(&self, host: &str, certificate_der: &[u8]) -> bool {
+        if self.stop_state.requested.load(Ordering::Acquire) {
+            return false;
+        }
+        let Ok(host) = crate::NormalizedHost::parse(host) else {
+            return false;
+        };
+        self.tls_identities.matches_der(&host, certificate_der)
     }
 
     /// Cancels socket/backend work and, from an external control thread, joins
@@ -154,28 +196,172 @@ impl RunningProxy {
     /// safe. A reentrant observer callback requests cancellation; the next
     /// external call completes the join.
     pub fn stop(&self) {
-        if !self.stop_requested.swap(true, Ordering::AcqRel) {
-            observe(
-                self.observer.as_ref(),
-                ProxyEvent::Lifecycle {
-                    generation: self.generation,
-                    event: LifecycleEvent::Stopping,
-                },
-            );
+        self.stop_state.requested.store(true, Ordering::Release);
+        self.listener.request_stop();
+        self.tls_identities.deactivate();
+        if !self
+            .stop_state
+            .announcement
+            .announce(self.observer.as_ref(), self.generation)
+        {
+            return;
         }
         let joined = self.listener.stop();
-        if joined && !self.stop_completed.swap(true, Ordering::AcqRel) {
-            observe(
+        if joined {
+            self.stop_state.complete(
                 self.observer.as_ref(),
+                self.generation,
+                StopReason::Requested,
+            );
+        }
+    }
+}
+
+struct ProxyStopState {
+    requested: AtomicBool,
+    completed: AtomicBool,
+    announcement: StopAnnouncement,
+    listening_published: StdMutex<bool>,
+    listening_changed: Condvar,
+}
+
+impl ProxyStopState {
+    fn new() -> Self {
+        Self {
+            requested: AtomicBool::new(false),
+            completed: AtomicBool::new(false),
+            announcement: StopAnnouncement::new(),
+            listening_published: StdMutex::new(false),
+            listening_changed: Condvar::new(),
+        }
+    }
+
+    fn publish_listening(&self) {
+        let mut published = self
+            .listening_published
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *published = true;
+        self.listening_changed.notify_all();
+    }
+
+    fn wait_for_listening(&self) {
+        let mut published = self
+            .listening_published
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while !*published {
+            published = self
+                .listening_changed
+                .wait(published)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+
+    fn complete(&self, observer: &dyn ProxyObserver, generation: u64, reason: StopReason) {
+        if !self.completed.swap(true, Ordering::AcqRel) {
+            observe(
+                observer,
                 ProxyEvent::Lifecycle {
-                    generation: self.generation,
-                    event: LifecycleEvent::Stopped {
-                        reason: StopReason::Requested,
-                    },
+                    generation,
+                    event: LifecycleEvent::Stopped { reason },
                 },
             );
         }
     }
+}
+
+struct StopAnnouncement {
+    state: StdMutex<StopAnnouncementState>,
+    emitted: Condvar,
+}
+
+impl StopAnnouncement {
+    fn new() -> Self {
+        Self {
+            state: StdMutex::new(StopAnnouncementState::Pending),
+            emitted: Condvar::new(),
+        }
+    }
+
+    /// Emits `Stopping` exactly once before any concurrent caller can join and
+    /// emit `Stopped`. A reentrant call from that observer returns after
+    /// revocation instead of waiting on its own announcement.
+    fn announce(&self, observer: &dyn ProxyObserver, generation: u64) -> bool {
+        let current = std::thread::current().id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            match &*state {
+                StopAnnouncementState::Pending => {
+                    *state = StopAnnouncementState::Emitting(current);
+                    drop(state);
+                    observe(
+                        observer,
+                        ProxyEvent::Lifecycle {
+                            generation,
+                            event: LifecycleEvent::Stopping,
+                        },
+                    );
+                    let mut state = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    *state = StopAnnouncementState::Emitted;
+                    self.emitted.notify_all();
+                    return true;
+                }
+                StopAnnouncementState::Emitting(owner) if *owner == current => return false,
+                StopAnnouncementState::Emitting(_) => {
+                    state = self
+                        .emitted
+                        .wait(state)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+                StopAnnouncementState::Emitted => return true,
+            }
+        }
+    }
+}
+
+fn listener_exit_handler(
+    tls_identities: Arc<LocalTlsIdentityStore>,
+    observer: Arc<dyn ProxyObserver>,
+    generation: u64,
+    stop_state: Arc<ProxyStopState>,
+) -> Arc<ListenerExitHandler> {
+    Arc::new(move |phase| match phase {
+        ListenerExitPhase::FailureDetected => {
+            stop_state.requested.store(true, Ordering::Release);
+            tls_identities.deactivate();
+            stop_state.wait_for_listening();
+            let _announced = stop_state
+                .announcement
+                .announce(observer.as_ref(), generation);
+        }
+        ListenerExitPhase::Quiesced(reason) => {
+            stop_state.requested.store(true, Ordering::Release);
+            tls_identities.deactivate();
+            stop_state.wait_for_listening();
+            let _announced = stop_state
+                .announcement
+                .announce(observer.as_ref(), generation);
+            let reason = match reason {
+                ListenerExitReason::Requested => StopReason::Requested,
+                ListenerExitReason::ListenerFailure => StopReason::ListenerFailure,
+            };
+            stop_state.complete(observer.as_ref(), generation, reason);
+        }
+    })
+}
+
+#[derive(Debug)]
+enum StopAnnouncementState {
+    Pending,
+    Emitting(ThreadId),
+    Emitted,
 }
 
 impl fmt::Debug for RunningProxy {
@@ -186,7 +372,7 @@ impl fmt::Debug for RunningProxy {
             .field("active_clients", &self.active_clients())
             .field(
                 "stop_requested",
-                &self.stop_requested.load(Ordering::Acquire),
+                &self.stop_state.requested.load(Ordering::Acquire),
             )
             .field("stop_completed", &self.is_stopped())
             .finish()
@@ -208,6 +394,7 @@ struct ServerContext {
     observer: Arc<dyn ProxyObserver>,
     generation: u64,
     rate_limiter: RequestRateLimiter,
+    tls_identities: Arc<LocalTlsIdentityStore>,
 }
 
 fn handle_client(
@@ -298,20 +485,26 @@ fn handle_client(
 
     observe_request(context, &canonical_host, method, RequestPhase::Accepted);
 
-    if matches!(&target, RequestTarget::Connect(_)) {
-        reject_scoped_request(
+    match target {
+        RequestTarget::Absolute(absolute) => handle_direct_http(
             &mut stream,
-            context,
+            &head,
+            &absolute,
             &canonical_host,
             method,
-            501,
-            "HNS HTTPS Termination Unavailable",
-            RequestRejectionReason::InvalidRequest,
-        );
-        return;
-    }
-    let RequestTarget::Absolute(absolute) = target else {
-        reject_scoped_request(
+            &cancellation,
+            context,
+        ),
+        RequestTarget::Connect(authority) => handle_connect(
+            stream,
+            &head,
+            authority,
+            canonical_host,
+            method,
+            &cancellation,
+            context,
+        ),
+        RequestTarget::Origin(_) => reject_scoped_request(
             &mut stream,
             context,
             &canonical_host,
@@ -319,10 +512,71 @@ fn handle_client(
             400,
             "Bad Request",
             RequestRejectionReason::InvalidRequest,
+        ),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HttpRoute<'a> {
+    scheme: Scheme,
+    authority: &'a Authority,
+    path_and_query: &'a str,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_direct_http(
+    stream: &mut TcpStream,
+    head: &RequestHead,
+    absolute: &AbsoluteTarget,
+    canonical_host: &crate::NormalizedHost,
+    method: ObservedMethod,
+    cancellation: &CancellationToken,
+    context: &ServerContext,
+) {
+    if matches!(absolute.scheme(), Scheme::Ws | Scheme::Wss) || requests_upgrade(head) {
+        reject_scoped_request(
+            stream,
+            context,
+            canonical_host,
+            method,
+            501,
+            "HNS Protocol Upgrade Unsupported",
+            RequestRejectionReason::InvalidRequest,
         );
         return;
+    }
+
+    if !admit_rate(stream, context, canonical_host, method) {
+        return;
+    }
+
+    let route = HttpRoute {
+        scheme: absolute.scheme(),
+        authority: absolute.authority(),
+        path_and_query: absolute.path_and_query(),
     };
-    if matches!(absolute.scheme(), Scheme::Ws | Scheme::Wss) || requests_upgrade(&head) {
+    handle_admitted_http(
+        stream,
+        head,
+        route,
+        canonical_host,
+        method,
+        cancellation,
+        context,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_connect(
+    mut stream: TcpStream,
+    head: &RequestHead,
+    authority: Authority,
+    canonical_host: crate::NormalizedHost,
+    method: ObservedMethod,
+    cancellation: &CancellationToken,
+    context: &ServerContext,
+) {
+    if requests_upgrade(head) {
         reject_scoped_request(
             &mut stream,
             context,
@@ -334,33 +588,18 @@ fn handle_client(
         );
         return;
     }
-
-    match context
-        .rate_limiter
-        .check(canonical_host.as_str(), Instant::now())
-    {
-        RateLimitDecision::Allowed => {}
-        RateLimitDecision::Limited { scope, retry_after } => {
-            let reason = match scope {
-                RateLimitScope::Global => RequestRejectionReason::GlobalRateLimit,
-                RateLimitScope::Host => RequestRejectionReason::HostRateLimit,
-            };
-            observe_request(
-                context,
-                &canonical_host,
-                method,
-                RequestPhase::Rejected { reason },
-            );
-            let _result = write_error_response(
-                &mut stream,
-                429,
-                "Too Many Requests",
-                &[("Retry-After", retry_after_seconds(retry_after).to_string())],
-            );
-            return;
-        }
+    if head.header_values("expect").next().is_some() {
+        reject_scoped_request(
+            &mut stream,
+            context,
+            &canonical_host,
+            method,
+            417,
+            "Expectation Failed",
+            RequestRejectionReason::InvalidRequest,
+        );
+        return;
     }
-
     let framing = match determine_body_framing(head.headers()) {
         Ok(framing) => framing,
         Err(error) => {
@@ -368,58 +607,18 @@ fn handle_client(
             return;
         }
     };
-    if matches!(
-        framing,
-        BodyFraming::ContentLength(length) if length > context.limits.max_body_bytes()
-    ) {
-        reject_http_request(
+    if !matches!(framing, BodyFraming::None | BodyFraming::ContentLength(0)) {
+        reject_scoped_request(
             &mut stream,
             context,
             &canonical_host,
             method,
-            &Http1Error::BodyTooLarge,
+            400,
+            "HNS CONNECT Body Unsupported",
+            RequestRejectionReason::InvalidRequest,
         );
         return;
     }
-    let expects_continue = match expects_continue(&head) {
-        Ok(expects) => expects,
-        Err(()) => {
-            reject_scoped_request(
-                &mut stream,
-                context,
-                &canonical_host,
-                method,
-                417,
-                "Expectation Failed",
-                RequestRejectionReason::InvalidRequest,
-            );
-            return;
-        }
-    };
-    let forward_headers = match build_forward_headers(&head, &absolute, &canonical_host) {
-        Ok(headers) => headers,
-        Err(error) => {
-            reject_http_request(&mut stream, context, &canonical_host, method, &error);
-            return;
-        }
-    };
-
-    if expects_continue
-        && !matches!(framing, BodyFraming::None)
-        && stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").is_err()
-    {
-        return;
-    }
-    let body = {
-        let mut reader = DeadlineReader::new(&mut stream, context.timeouts.socket_timeout());
-        match read_request_body(&mut reader, framing, context.limits.max_body_bytes()) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                reject_http_request(&mut stream, context, &canonical_host, method, &error);
-                return;
-            }
-        }
-    };
     if cancellation.is_cancelled() {
         observe_request(
             context,
@@ -431,13 +630,294 @@ fn handle_client(
         );
         return;
     }
+    if !admit_rate(&mut stream, context, &canonical_host, method) {
+        return;
+    }
+
+    let identity = match context.tls_identities.prepare(&canonical_host) {
+        Ok(identity) => identity,
+        Err(_error) => {
+            reject_scoped_request(
+                &mut stream,
+                context,
+                &canonical_host,
+                method,
+                503,
+                "HNS Local TLS Unavailable",
+                RequestRejectionReason::InvalidRequest,
+            );
+            return;
+        }
+    };
+    debug_assert_eq!(identity.pin().host(), &canonical_host);
+    let started = Instant::now();
+    if stream.write_all(CONNECT_ESTABLISHED_RESPONSE).is_err() || stream.flush().is_err() {
+        return;
+    }
+
+    let mut tls = match accept_local_tls(
+        stream,
+        &identity,
+        &canonical_host,
+        context.timeouts.socket_timeout(),
+        cancellation,
+    ) {
+        Ok(tls) => tls,
+        Err(_error) => {
+            let reason = if cancellation.is_cancelled() {
+                RequestRejectionReason::Cancelled
+            } else {
+                RequestRejectionReason::InvalidRequest
+            };
+            observe_request(
+                context,
+                &canonical_host,
+                method,
+                RequestPhase::Rejected { reason },
+            );
+            return;
+        }
+    };
+    observe_request(
+        context,
+        &canonical_host,
+        method,
+        RequestPhase::Completed {
+            status_code: 200,
+            elapsed: started.elapsed(),
+        },
+    );
+    handle_connected_http(&mut tls, &authority, &canonical_host, cancellation, context);
+    tls.conn.send_close_notify();
+    let _result = tls.flush();
+}
+
+fn handle_connected_http(
+    stream: &mut TlsStream,
+    connected_to: &Authority,
+    outer_host: &crate::NormalizedHost,
+    cancellation: &CancellationToken,
+    context: &ServerContext,
+) {
+    let head = {
+        let mut reader = DeadlineReader::new(stream, context.timeouts.request_header_timeout());
+        match read_request_head(&mut reader, context.limits.max_header_bytes()) {
+            Ok(head) => head,
+            Err(error) => {
+                reject_http_request(stream, context, outer_host, ObservedMethod::Other, &error);
+                return;
+            }
+        }
+    };
+    let method = ObservedMethod::from_token(head.method());
+    let target = match head.validated_target(Some(connected_to)) {
+        Ok(target) => target,
+        Err(error) => {
+            reject_http_request(stream, context, outer_host, method, &error);
+            return;
+        }
+    };
+    let canonical_host = match context.scope.authorize(target.authority().host()) {
+        Ok(host) if host == *outer_host && target.authority().port() == connected_to.port() => host,
+        Ok(_) | Err(_) => {
+            reject_scoped_request(
+                stream,
+                context,
+                outer_host,
+                method,
+                403,
+                "HNS Proxy Scope Denied",
+                RequestRejectionReason::HostOutsideScope,
+            );
+            return;
+        }
+    };
+    observe_request(context, &canonical_host, method, RequestPhase::Accepted);
+
+    if requests_upgrade(&head) {
+        reject_scoped_request(
+            stream,
+            context,
+            &canonical_host,
+            method,
+            501,
+            "HNS Protocol Upgrade Unsupported",
+            RequestRejectionReason::InvalidRequest,
+        );
+        return;
+    }
+    match target {
+        RequestTarget::Origin(origin) => handle_admitted_http(
+            stream,
+            &head,
+            HttpRoute {
+                scheme: Scheme::Https,
+                authority: origin.authority(),
+                path_and_query: origin.path_and_query(),
+            },
+            &canonical_host,
+            method,
+            cancellation,
+            context,
+        ),
+        RequestTarget::Absolute(absolute) if absolute.scheme() == Scheme::Https => {
+            handle_admitted_http(
+                stream,
+                &head,
+                HttpRoute {
+                    scheme: Scheme::Https,
+                    authority: absolute.authority(),
+                    path_and_query: absolute.path_and_query(),
+                },
+                &canonical_host,
+                method,
+                cancellation,
+                context,
+            );
+        }
+        RequestTarget::Absolute(_) | RequestTarget::Connect(_) => reject_scoped_request(
+            stream,
+            context,
+            &canonical_host,
+            method,
+            501,
+            "HNS Protocol Upgrade Unsupported",
+            RequestRejectionReason::InvalidRequest,
+        ),
+    }
+}
+
+fn admit_rate<W: Write + ?Sized>(
+    stream: &mut W,
+    context: &ServerContext,
+    canonical_host: &crate::NormalizedHost,
+    method: ObservedMethod,
+) -> bool {
+    match context
+        .rate_limiter
+        .check(canonical_host.as_str(), Instant::now())
+    {
+        RateLimitDecision::Allowed => true,
+        RateLimitDecision::Limited { scope, retry_after } => {
+            let reason = match scope {
+                RateLimitScope::Global => RequestRejectionReason::GlobalRateLimit,
+                RateLimitScope::Host => RequestRejectionReason::HostRateLimit,
+            };
+            observe_request(
+                context,
+                canonical_host,
+                method,
+                RequestPhase::Rejected { reason },
+            );
+            let _result = write_error_response(
+                stream,
+                429,
+                "Too Many Requests",
+                &[("Retry-After", retry_after_seconds(retry_after).to_string())],
+            );
+            false
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_admitted_http<S: ClientIo + ?Sized>(
+    stream: &mut S,
+    head: &RequestHead,
+    route: HttpRoute<'_>,
+    canonical_host: &crate::NormalizedHost,
+    method: ObservedMethod,
+    cancellation: &CancellationToken,
+    context: &ServerContext,
+) {
+    let framing = match determine_body_framing(head.headers()) {
+        Ok(framing) => framing,
+        Err(error) => {
+            reject_http_request(stream, context, canonical_host, method, &error);
+            return;
+        }
+    };
+    if matches!(
+        framing,
+        BodyFraming::ContentLength(length) if length > context.limits.max_body_bytes()
+    ) {
+        reject_http_request(
+            stream,
+            context,
+            canonical_host,
+            method,
+            &Http1Error::BodyTooLarge,
+        );
+        return;
+    }
+    let expects_continue = match expects_continue(head) {
+        Ok(expects) => expects,
+        Err(()) => {
+            reject_scoped_request(
+                stream,
+                context,
+                canonical_host,
+                method,
+                417,
+                "Expectation Failed",
+                RequestRejectionReason::InvalidRequest,
+            );
+            return;
+        }
+    };
+    let forward_headers = match build_forward_headers(head, route, canonical_host) {
+        Ok(headers) => headers,
+        Err(error) => {
+            reject_http_request(stream, context, canonical_host, method, &error);
+            return;
+        }
+    };
+
+    if expects_continue
+        && !matches!(framing, BodyFraming::None)
+        && (stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").is_err() || stream.flush().is_err())
+    {
+        return;
+    }
+    let body = {
+        let mut reader = DeadlineReader::new(stream, context.timeouts.socket_timeout());
+        match read_request_body(&mut reader, framing, context.limits.max_body_bytes()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                reject_http_request(stream, context, canonical_host, method, &error);
+                return;
+            }
+        }
+    };
+    if stream.clear_client_read_deadline().is_err() {
+        observe_request(
+            context,
+            canonical_host,
+            method,
+            RequestPhase::Rejected {
+                reason: RequestRejectionReason::InvalidRequest,
+            },
+        );
+        return;
+    }
+    if cancellation.is_cancelled() {
+        observe_request(
+            context,
+            canonical_host,
+            method,
+            RequestPhase::Rejected {
+                reason: RequestRejectionReason::Cancelled,
+            },
+        );
+        return;
+    }
 
     let request = ProxyRequest {
         method: head.method().to_owned(),
-        scheme: absolute.scheme().as_str().to_owned(),
+        scheme: route.scheme.as_str().to_owned(),
         host: canonical_host.as_str().to_owned(),
-        port: absolute.authority().port(),
-        path_and_query: absolute.path_and_query().to_owned(),
+        port: route.authority.port(),
+        path_and_query: route.path_and_query.to_owned(),
         headers: forward_headers,
         body: if body.is_empty() {
             ProxyRequestBody::Empty
@@ -446,19 +926,19 @@ fn handle_client(
         },
     };
     execute_backend(
-        &mut stream,
+        stream,
         context,
-        &canonical_host,
+        canonical_host,
         method,
         head.method(),
         request,
-        &cancellation,
+        cancellation,
     );
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_backend(
-    stream: &mut TcpStream,
+fn execute_backend<W: Write + ?Sized>(
+    stream: &mut W,
     context: &ServerContext,
     host: &crate::NormalizedHost,
     method: ObservedMethod,
@@ -534,8 +1014,8 @@ fn observe_invalid_response(
     );
 }
 
-fn write_backend_response(
-    stream: &mut TcpStream,
+fn write_backend_response<W: Write + ?Sized>(
+    stream: &mut W,
     request_method: &str,
     response: ProxyResponse,
     cancellation: &CancellationToken,
@@ -567,8 +1047,8 @@ fn write_backend_response(
     write_response_body(stream, body, cancellation)
 }
 
-fn write_response_body(
-    stream: &mut TcpStream,
+fn write_response_body<W: Write + ?Sized>(
+    stream: &mut W,
     body: ProxyResponseBody,
     cancellation: &CancellationToken,
 ) -> Result<(), WriteBackendError> {
@@ -588,8 +1068,8 @@ fn write_response_body(
     }
 }
 
-fn copy_exact_response(
-    stream: &mut TcpStream,
+fn copy_exact_response<W: Write + ?Sized>(
+    stream: &mut W,
     reader: &mut dyn Read,
     mut remaining: u64,
     cancellation: &CancellationToken,
@@ -626,7 +1106,7 @@ enum WriteBackendError {
 
 fn build_forward_headers(
     head: &RequestHead,
-    target: &AbsoluteTarget,
+    route: HttpRoute<'_>,
     host: &crate::NormalizedHost,
 ) -> Result<Vec<ProxyHeader>, Http1Error> {
     let mut headers: Vec<_> = sanitize_forward_headers(head.headers())?
@@ -638,11 +1118,11 @@ fn build_forward_headers(
         })
         .map(|header| ProxyHeader::new(header.name(), header.value()))
         .collect();
-    let default_port = target.scheme().default_port();
-    let host_value = if target.authority().port() == default_port {
+    let default_port = route.scheme.default_port();
+    let host_value = if route.authority.port() == default_port {
         host.as_str().to_owned()
     } else {
-        format!("{}:{}", host.as_str(), target.authority().port())
+        format!("{}:{}", host.as_str(), route.authority.port())
     };
     headers.push(ProxyHeader::new("Host", host_value));
     Ok(headers)
@@ -667,8 +1147,8 @@ fn requests_upgrade(head: &RequestHead) -> bool {
             .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
 }
 
-fn reject_http_request(
-    stream: &mut TcpStream,
+fn reject_http_request<W: Write + ?Sized>(
+    stream: &mut W,
     context: &ServerContext,
     host: &crate::NormalizedHost,
     method: ObservedMethod,
@@ -692,8 +1172,8 @@ fn reject_http_request(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn reject_scoped_request(
-    stream: &mut TcpStream,
+fn reject_scoped_request<W: Write + ?Sized>(
+    stream: &mut W,
     context: &ServerContext,
     host: &crate::NormalizedHost,
     method: ObservedMethod,
@@ -778,8 +1258,8 @@ fn retry_after_seconds(duration: Duration) -> u64 {
     duration.as_secs() + u64::from(duration.subsec_nanos() != 0)
 }
 
-fn write_error_response(
-    stream: &mut TcpStream,
+fn write_error_response<W: Write + ?Sized>(
+    stream: &mut W,
     status: u16,
     reason: &'static str,
     extra_headers: &[(&'static str, String)],
@@ -797,30 +1277,61 @@ fn write_error_response(
     }
     response.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
     response.extend_from_slice(body);
-    stream.write_all(&response)
+    stream.write_all(&response)?;
+    stream.flush()
 }
 
-struct DeadlineReader<'a> {
-    stream: &'a mut TcpStream,
+trait ClientIo: Read + Write {
+    fn set_client_read_deadline(&mut self, deadline: Instant) -> io::Result<()>;
+
+    fn clear_client_read_deadline(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl ClientIo for TcpStream {
+    fn set_client_read_deadline(&mut self, deadline: Instant) -> io::Result<()> {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "request deadline elapsed"))?;
+        TcpStream::set_read_timeout(self, Some(remaining))
+    }
+}
+
+impl ClientIo for TlsStream {
+    fn set_client_read_deadline(&mut self, deadline: Instant) -> io::Result<()> {
+        self.sock.set_request_deadline(deadline);
+        Ok(())
+    }
+
+    fn clear_client_read_deadline(&mut self) -> io::Result<()> {
+        self.sock.clear_request_deadline()
+    }
+}
+
+struct DeadlineReader<'a, S: ClientIo + ?Sized> {
+    stream: &'a mut S,
     deadline: Instant,
 }
 
-impl<'a> DeadlineReader<'a> {
-    fn new(stream: &'a mut TcpStream, timeout: Duration) -> Self {
+impl<'a, S: ClientIo + ?Sized> DeadlineReader<'a, S> {
+    fn new(stream: &'a mut S, timeout: Duration) -> Self {
         let now = Instant::now();
         let deadline = now.checked_add(timeout).unwrap_or(now);
         Self { stream, deadline }
     }
 }
 
-impl Read for DeadlineReader<'_> {
+impl<S: ClientIo + ?Sized> Read for DeadlineReader<'_, S> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let remaining = self
-            .deadline
-            .checked_duration_since(Instant::now())
-            .filter(|remaining| !remaining.is_zero())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "request deadline elapsed"))?;
-        self.stream.set_read_timeout(Some(remaining))?;
+        if Instant::now() >= self.deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "request deadline elapsed",
+            ));
+        }
+        self.stream.set_client_read_deadline(self.deadline)?;
         self.stream.read(buffer)
     }
 }
@@ -863,6 +1374,12 @@ fn observe(observer: &dyn ProxyObserver, event: ProxyEvent) {
 mod tests {
     use super::*;
     use crate::{NoopProxyObserver, ProxyInstanceId, ProxyResponseHead, ProxySessionId};
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+    use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+    use rustls::{
+        ClientConfig, ClientConnection, DigitallySignedStruct, Error as RustlsError,
+        SignatureScheme, StreamOwned,
+    };
     use std::io::Cursor;
     use std::sync::{Mutex, mpsc};
     use std::thread;
@@ -979,6 +1496,65 @@ mod tests {
         }
     }
 
+    struct CooperativeStreamBackend {
+        read_started: Mutex<Option<mpsc::Sender<()>>>,
+    }
+
+    impl ProxyBackend for CooperativeStreamBackend {
+        fn execute(
+            &self,
+            _request: ProxyRequest,
+            cancellation: &CancellationToken,
+        ) -> Result<ProxyResponse, BackendError> {
+            let read_started = self
+                .read_started
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            Ok(ProxyResponse {
+                head: ProxyResponseHead {
+                    status_code: 200,
+                    reason_phrase: "OK".to_owned(),
+                    headers: vec![],
+                },
+                body: ProxyResponseBody::Stream {
+                    expected_len: 1,
+                    reader: Box::new(CooperativeCancellationReader {
+                        cancellation: cancellation.clone(),
+                        read_started,
+                    }),
+                },
+            })
+        }
+    }
+
+    struct CooperativeCancellationReader {
+        cancellation: CancellationToken,
+        read_started: Option<mpsc::Sender<()>>,
+    }
+
+    impl Read for CooperativeCancellationReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            if let Some(read_started) = self.read_started.take() {
+                let _result = read_started.send(());
+            }
+            if self
+                .cancellation
+                .wait_cancelled_timeout(Duration::from_secs(5))
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "proxy generation cancelled",
+                ))
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "test cancellation did not arrive",
+                ))
+            }
+        }
+    }
+
     struct AcceptedObserver(mpsc::Sender<()>);
 
     impl ProxyObserver for AcceptedObserver {
@@ -1006,7 +1582,11 @@ mod tests {
         stream.write_all(request).unwrap();
         stream.shutdown(Shutdown::Write).unwrap();
         let mut response = Vec::new();
-        stream.read_to_end(&mut response).unwrap();
+        match stream.read_to_end(&mut response) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {}
+            Err(error) => panic!("unable to read proxy response: {error}"),
+        }
         response
     }
 
@@ -1040,6 +1620,163 @@ mod tests {
             "Proxy-Authorization: {}\r\n",
             proxy.endpoint().authorization_header_value()
         )
+    }
+
+    #[derive(Debug)]
+    struct CapturingCertificateVerifier {
+        certificate_der: Arc<Mutex<Option<Vec<u8>>>>,
+    }
+
+    impl ServerCertVerifier for CapturingCertificateVerifier {
+        fn verify_server_cert(
+            &self,
+            end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<ServerCertVerified, RustlsError> {
+            *self
+                .certificate_der
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some(end_entity.as_ref().to_vec());
+            Ok(ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            certificate: &CertificateDer<'_>,
+            signature: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, RustlsError> {
+            rustls::crypto::verify_tls12_signature(
+                message,
+                certificate,
+                signature,
+                &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+            )
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            certificate: &CertificateDer<'_>,
+            signature: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, RustlsError> {
+            rustls::crypto::verify_tls13_signature(
+                message,
+                certificate,
+                signature,
+                &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+            )
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    fn tls_client_config(
+        certificate_der: Arc<Mutex<Option<Vec<u8>>>>,
+        alpn_protocols: &[&[u8]],
+        enable_sni: bool,
+    ) -> Arc<ClientConfig> {
+        let mut config =
+            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(CapturingCertificateVerifier {
+                    certificate_der,
+                }))
+                .with_no_client_auth();
+        config.enable_sni = enable_sni;
+        config.alpn_protocols = alpn_protocols
+            .iter()
+            .map(|protocol| protocol.to_vec())
+            .collect();
+        Arc::new(config)
+    }
+
+    fn read_response_head(input: &mut impl Read) -> io::Result<Vec<u8>> {
+        let mut response = Vec::new();
+        let mut byte = [0_u8; 1];
+        while response.len() < ProxyLimits::DEFAULT_MAX_HEADER_BYTES {
+            if input.read(&mut byte)? == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "response ended before its head",
+                ));
+            }
+            response.push(byte[0]);
+            if response.ends_with(b"\r\n\r\n") {
+                return Ok(response);
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "response head exceeded the test limit",
+        ))
+    }
+
+    fn begin_authenticated_connect(proxy: &RunningProxy, authority: &str) -> TcpStream {
+        let mut stream = TcpStream::connect(proxy.endpoint().address()).unwrap();
+        stream.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+        stream.set_write_timeout(Some(TEST_TIMEOUT)).unwrap();
+        let request = format!(
+            "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n{}\r\n",
+            auth_header(proxy)
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        let response = read_response_head(&mut stream).unwrap();
+        assert_eq!(response_status(&response), 200, "{response:?}");
+        stream
+    }
+
+    fn complete_tls_handshake(
+        stream: TcpStream,
+        server_name: &str,
+        enable_sni: bool,
+        alpn_protocols: &[&[u8]],
+    ) -> io::Result<(StreamOwned<ClientConnection, TcpStream>, Vec<u8>)> {
+        let certificate_der = Arc::new(Mutex::new(None));
+        let config = tls_client_config(Arc::clone(&certificate_der), alpn_protocols, enable_sni);
+        let server_name = ServerName::try_from(server_name.to_owned())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+        let connection = ClientConnection::new(config, server_name)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let mut tls = StreamOwned::new(connection, stream);
+        while tls.conn.is_handshaking() {
+            tls.conn.complete_io(&mut tls.sock)?;
+        }
+        let certificate_der = certificate_der
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| io::Error::other("server did not present a certificate"))?;
+        Ok((tls, certificate_der))
+    }
+
+    fn send_tls_request(
+        proxy: &RunningProxy,
+        authority: &str,
+        certificate_host: &str,
+        request: &[u8],
+    ) -> (Vec<u8>, Vec<u8>) {
+        let stream = begin_authenticated_connect(proxy, authority);
+        assert!(proxy.local_certificate_pin(certificate_host).is_some());
+        let (mut tls, certificate_der) =
+            complete_tls_handshake(stream, certificate_host, true, &[b"h2", b"http/1.1"]).unwrap();
+        assert_eq!(tls.conn.alpn_protocol(), Some(b"http/1.1".as_slice()));
+        tls.write_all(request).unwrap();
+        tls.flush().unwrap();
+        let mut response = Vec::new();
+        tls.read_to_end(&mut response).unwrap();
+        (response, certificate_der)
     }
 
     fn wait_for_active_clients(proxy: &RunningProxy, expected: usize) {
@@ -1095,6 +1832,246 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_stop_emits_lifecycle_events_once_and_in_order() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let event_sink = Arc::clone(&events);
+        let observer = move |event: &ProxyEvent| {
+            if let ProxyEvent::Lifecycle { event, .. } = event {
+                event_sink
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(*event);
+            }
+        };
+        let proxy = Arc::new(
+            RunningProxy::start(test_config(), Arc::new(UnusedBackend), Arc::new(observer))
+                .unwrap(),
+        );
+        let barrier = Arc::new(std::sync::Barrier::new(9));
+        let callers: Vec<_> = (0..8)
+            .map(|_| {
+                let proxy = Arc::clone(&proxy);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    proxy.stop();
+                })
+            })
+            .collect();
+        barrier.wait();
+        for caller in callers {
+            caller.join().unwrap();
+        }
+
+        assert!(proxy.is_stopped());
+        assert_eq!(
+            *events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![
+                LifecycleEvent::Listening {
+                    port: proxy.endpoint().port(),
+                },
+                LifecycleEvent::Stopping,
+                LifecycleEvent::Stopped {
+                    reason: StopReason::Requested,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn stopping_observer_can_reenter_running_proxy_stop() {
+        let proxy_slot = Arc::new(Mutex::new(None::<std::sync::Weak<RunningProxy>>));
+        let observer_slot = Arc::clone(&proxy_slot);
+        let observer = move |event: &ProxyEvent| {
+            if matches!(
+                event,
+                ProxyEvent::Lifecycle {
+                    event: LifecycleEvent::Stopping,
+                    ..
+                }
+            ) {
+                let proxy = observer_slot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .as_ref()
+                    .and_then(std::sync::Weak::upgrade);
+                if let Some(proxy) = proxy {
+                    proxy.stop();
+                }
+            }
+        };
+        let proxy = Arc::new(
+            RunningProxy::start(test_config(), Arc::new(UnusedBackend), Arc::new(observer))
+                .unwrap(),
+        );
+        *proxy_slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::downgrade(&proxy));
+
+        proxy.stop();
+
+        assert!(proxy.is_stopped());
+        assert_eq!(proxy.active_clients(), 0);
+    }
+
+    #[test]
+    fn final_running_proxy_owner_dropped_from_callback_is_reaped_and_stopped() {
+        let proxy_slot = Arc::new(Mutex::new(None::<std::sync::Weak<RunningProxy>>));
+        let observer_slot = Arc::clone(&proxy_slot);
+        let (upgraded_tx, upgraded_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        let (released_tx, released_rx) = mpsc::channel();
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let event_sink = Arc::clone(&events);
+        let observer = move |event: &ProxyEvent| {
+            if let ProxyEvent::Lifecycle { event, .. } = event {
+                event_sink
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(*event);
+                if matches!(event, LifecycleEvent::Stopped { .. }) {
+                    let _result = stopped_tx.send(());
+                }
+                return;
+            }
+            if matches!(
+                event,
+                ProxyEvent::Request {
+                    phase: RequestPhase::Accepted,
+                    ..
+                }
+            ) {
+                let proxy = observer_slot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .as_ref()
+                    .and_then(std::sync::Weak::upgrade)
+                    .unwrap();
+                upgraded_tx.send(()).unwrap();
+                release_rx
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .recv_timeout(TEST_TIMEOUT)
+                    .unwrap();
+                drop(proxy);
+                released_tx.send(()).unwrap();
+            }
+        };
+        let proxy = Arc::new(
+            RunningProxy::start(test_config(), Arc::new(UnusedBackend), Arc::new(observer))
+                .unwrap(),
+        );
+        *proxy_slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::downgrade(&proxy));
+        let address = proxy.endpoint().address();
+        let request = format!(
+            "GET http://welcome/ HTTP/1.1\r\nHost: welcome\r\n{}\r\n",
+            auth_header(&proxy)
+        );
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(request.as_bytes()).unwrap();
+        client.flush().unwrap();
+        upgraded_rx.recv_timeout(TEST_TIMEOUT).unwrap();
+
+        drop(proxy);
+        release_tx.send(()).unwrap();
+        released_rx.recv_timeout(TEST_TIMEOUT).unwrap();
+        drop(client);
+        stopped_rx.recv_timeout(TEST_TIMEOUT).unwrap();
+        assert_eq!(
+            *events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![
+                LifecycleEvent::Listening {
+                    port: address.port(),
+                },
+                LifecycleEvent::Stopping,
+                LifecycleEvent::Stopped {
+                    reason: StopReason::Requested,
+                },
+            ]
+        );
+
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        loop {
+            match std::net::TcpListener::bind(address) {
+                Ok(listener) => {
+                    drop(listener);
+                    break;
+                }
+                Err(_) => {
+                    assert!(Instant::now() < deadline);
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn listener_failure_revokes_pins_and_reports_quiescence_once() {
+        let instance = ProxyInstanceId::new(ProxySessionId::generate().unwrap(), 71);
+        let identities = Arc::new(LocalTlsIdentityStore::new(instance));
+        let host = crate::NormalizedHost::parse("welcome").unwrap();
+        drop(identities.prepare(&host).unwrap());
+        assert!(identities.pin(&host).is_some());
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let event_sink = Arc::clone(&events);
+        let observer: Arc<dyn ProxyObserver> = Arc::new(move |event: &ProxyEvent| {
+            if let ProxyEvent::Lifecycle { event, .. } = event {
+                event_sink
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(*event);
+            }
+        });
+        let stop_state = Arc::new(ProxyStopState::new());
+        stop_state.publish_listening();
+        let handler = listener_exit_handler(
+            Arc::clone(&identities),
+            Arc::clone(&observer),
+            71,
+            Arc::clone(&stop_state),
+        );
+
+        handler(ListenerExitPhase::FailureDetected);
+        assert!(stop_state.requested.load(Ordering::Acquire));
+        assert!(!stop_state.completed.load(Ordering::Acquire));
+        assert!(identities.pin(&host).is_none());
+        assert_eq!(
+            *events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![LifecycleEvent::Stopping]
+        );
+
+        handler(ListenerExitPhase::Quiesced(
+            ListenerExitReason::ListenerFailure,
+        ));
+        handler(ListenerExitPhase::Quiesced(
+            ListenerExitReason::ListenerFailure,
+        ));
+        assert!(stop_state.completed.load(Ordering::Acquire));
+        assert_eq!(
+            *events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![
+                LifecycleEvent::Stopping,
+                LifecycleEvent::Stopped {
+                    reason: StopReason::ListenerFailure,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn authentication_precedes_target_validation_and_rejects_duplicates() {
         let backend = Arc::new(RecordingBackend::new(ResponsePlan::plain(b"unused")));
         let proxy = start_recording_proxy(Arc::clone(&backend));
@@ -1127,6 +2104,45 @@ mod tests {
         );
         assert_eq!(response_status(&send_raw(&proxy, request.as_bytes())), 400);
         assert_eq!(backend.request_count(), 0);
+        proxy.stop();
+    }
+
+    #[test]
+    fn rate_limited_connect_does_not_generate_or_publish_an_identity() {
+        let limits = ProxyLimits::new(
+            ProxyLimits::DEFAULT_MAX_HEADER_BYTES,
+            ProxyLimits::DEFAULT_MAX_BODY_BYTES,
+            ProxyLimits::DEFAULT_MAX_ACTIVE_CLIENTS,
+            1,
+            1,
+            ProxyLimits::DEFAULT_MAX_TRACKED_HOSTS,
+            ProxyLimits::DEFAULT_RATE_WINDOW,
+        )
+        .unwrap();
+        let config = ProxyConfig::with_controls(
+            ProxyInstanceId::new(ProxySessionId::generate().unwrap(), 1),
+            crate::HostScope::new("welcome").unwrap(),
+            limits,
+            ProxyTimeouts::default(),
+            crate::LoopbackBind::Ipv4,
+        );
+        let proxy =
+            RunningProxy::start(config, Arc::new(UnusedBackend), Arc::new(NoopProxyObserver))
+                .unwrap();
+
+        let admitted = format!(
+            "GET http://welcome/ HTTP/1.1\r\nHost: welcome\r\n{}\r\n",
+            auth_header(&proxy)
+        );
+        assert_eq!(response_status(&send_raw(&proxy, admitted.as_bytes())), 500);
+        assert!(proxy.local_certificate_pin("welcome").is_none());
+
+        let limited = format!(
+            "CONNECT welcome:443 HTTP/1.1\r\nHost: welcome:443\r\n{}\r\n",
+            auth_header(&proxy)
+        );
+        assert_eq!(response_status(&send_raw(&proxy, limited.as_bytes())), 429);
+        assert!(proxy.local_certificate_pin("welcome").is_none());
         proxy.stop();
     }
 
@@ -1283,14 +2299,364 @@ mod tests {
     }
 
     #[test]
-    fn connect_upgrade_and_out_of_scope_targets_never_reach_the_backend() {
+    fn connect_rejections_before_200_never_publish_a_pin_or_reach_the_backend() {
+        let backend = Arc::new(RecordingBackend::new(ResponsePlan::plain(b"unused")));
+        let proxy = start_recording_proxy(Arc::clone(&backend));
+        let valid = proxy.endpoint().authorization_header_value();
+        let cases = [
+            (
+                "CONNECT welcome:443 HTTP/1.1\r\nHost: welcome:443\r\n\r\n".to_owned(),
+                407,
+            ),
+            (
+                "CONNECT welcome:443 HTTP/1.1\r\nHost: welcome:443\r\nProxy-Authorization: Basic d3Jvbmc6d3Jvbmc=\r\n\r\n"
+                    .to_owned(),
+                407,
+            ),
+            (
+                format!(
+                    "CONNECT welcome:443 HTTP/1.1\r\nHost: welcome:443\r\nProxy-Authorization: {valid}\r\nProxy-Authorization: {valid}\r\n\r\n"
+                ),
+                407,
+            ),
+            (
+                format!(
+                    "CONNECT other:443 HTTP/1.1\r\nHost: other:443\r\n{}\r\n",
+                    auth_header(&proxy)
+                ),
+                403,
+            ),
+            (
+                format!(
+                    "CONNECT welcome:443 HTTP/1.1\r\nHost: sub.welcome:443\r\n{}\r\n",
+                    auth_header(&proxy)
+                ),
+                400,
+            ),
+            (
+                format!(
+                    "CONNECT welcome:443 HTTP/1.1\r\nHost: welcome:443\r\n{}Content-Length: 1\r\n\r\nx",
+                    auth_header(&proxy)
+                ),
+                400,
+            ),
+            (
+                format!(
+                    "CONNECT welcome:443 HTTP/1.1\r\nHost: welcome:443\r\n{}Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+                    auth_header(&proxy)
+                ),
+                400,
+            ),
+            (
+                format!(
+                    "CONNECT welcome:443 HTTP/1.1\r\nHost: welcome:443\r\n{}Expect: 100-continue\r\nContent-Length: 0\r\n\r\n",
+                    auth_header(&proxy)
+                ),
+                417,
+            ),
+        ];
+
+        for (request, expected_status) in cases {
+            let response = send_raw(&proxy, request.as_bytes());
+            assert_eq!(response_status(&response), expected_status, "{request:?}");
+            assert!(proxy.local_certificate_pin("welcome").is_none());
+            assert!(proxy.local_certificate_pin("other").is_none());
+            assert!(!proxy.matches_local_certificate("welcome", b"not-a-certificate"));
+        }
+        assert_eq!(backend.request_count(), 0);
+        proxy.stop();
+    }
+
+    #[test]
+    fn exact_sni_get_and_post_use_https_routes_and_sanitize_both_header_boundaries() {
+        let backend = Arc::new(RecordingBackend::new(ResponsePlan::Fixed {
+            headers: vec![
+                ProxyHeader::new("Content-Type", "text/plain"),
+                ProxyHeader::new("X-Origin-Keep", "yes"),
+                ProxyHeader::new("X-HNS-Security-Path", "dane"),
+                ProxyHeader::new("Alt-Svc", "h3=\":443\""),
+                ProxyHeader::new("Connection", "X-Origin-Hop"),
+                ProxyHeader::new("X-Origin-Hop", "remove"),
+            ],
+            body: b"tls-ok".to_vec(),
+        }));
+        let proxy = start_recording_proxy(Arc::clone(&backend));
+
+        let get = b"GET /asset?q=1 HTTP/1.1\r\nHost: welcome\r\nProxy-Authorization: forged\r\nProxy-Future: secret\r\nX-HNS-Forged: secret\r\nConnection: close, X-Remove\r\nX-Remove: secret\r\nAuthorization: Bearer origin-secret\r\nX-Keep: yes\r\n\r\n";
+        let (get_response, get_certificate) =
+            send_tls_request(&proxy, "welcome:443", "welcome", get);
+        assert_eq!(response_status(&get_response), 200);
+        let (get_head, get_body) = response_parts(&get_response);
+        assert_eq!(get_body, b"tls-ok");
+        let lower_get_head = get_head.to_ascii_lowercase();
+        assert!(lower_get_head.contains("x-origin-keep: yes\r\n"));
+        for forbidden in ["x-hns-", "alt-svc", "x-origin-hop"] {
+            assert!(!lower_get_head.contains(forbidden), "{get_head}");
+        }
+        assert!(proxy.matches_local_certificate("welcome", &get_certificate));
+        assert!(!proxy.matches_local_certificate("sub.welcome", &get_certificate));
+
+        let post_head = b"POST /submit?q=2 HTTP/1.1\r\nHost: sub.welcome:8443\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nProxy-Future: secret\r\nX-HNS-Forged: secret\r\nX-Keep: post\r\n\r\n";
+        let mut post = post_head.to_vec();
+        post.extend_from_slice(b"payload");
+        let (post_response, post_certificate) =
+            send_tls_request(&proxy, "sub.welcome:8443", "sub.welcome", &post);
+        assert_eq!(response_status(&post_response), 200);
+        assert!(proxy.matches_local_certificate("sub.welcome", &post_certificate));
+        assert!(!proxy.matches_local_certificate("welcome", &post_certificate));
+
+        let requests = backend.take_requests();
+        assert_eq!(requests.len(), 2);
+        let get_request = &requests[0];
+        assert_eq!(get_request.method, "GET");
+        assert_eq!(get_request.scheme, "https");
+        assert_eq!(get_request.host, "welcome");
+        assert_eq!(get_request.port, 443);
+        assert_eq!(get_request.path_and_query, "/asset?q=1");
+        assert!(get_request.body.is_empty());
+        assert!(get_request.headers.iter().any(|header| {
+            header.name.eq_ignore_ascii_case("host") && header.value == "welcome"
+        }));
+        assert!(get_request.headers.iter().any(|header| {
+            header.name.eq_ignore_ascii_case("authorization")
+                && header.value == "Bearer origin-secret"
+        }));
+
+        let post_request = &requests[1];
+        assert_eq!(post_request.method, "POST");
+        assert_eq!(post_request.scheme, "https");
+        assert_eq!(post_request.host, "sub.welcome");
+        assert_eq!(post_request.port, 8443);
+        assert_eq!(post_request.path_and_query, "/submit?q=2");
+        assert_eq!(post_request.body.as_bytes(), b"payload");
+        assert!(post_request.headers.iter().any(|header| {
+            header.name.eq_ignore_ascii_case("host") && header.value == "sub.welcome:8443"
+        }));
+
+        for request in requests {
+            assert!(!request.headers.iter().any(|header| {
+                let name = header.name.to_ascii_lowercase();
+                name.starts_with("proxy-")
+                    || name.starts_with("x-hns-")
+                    || matches!(
+                        name.as_str(),
+                        "connection" | "content-length" | "transfer-encoding" | "x-remove"
+                    )
+            }));
+        }
+        proxy.stop();
+    }
+
+    #[test]
+    fn wrong_or_missing_sni_and_h2_only_never_reach_the_backend() {
+        let backend = Arc::new(RecordingBackend::new(ResponsePlan::plain(b"unused")));
+        let proxy = start_recording_proxy(Arc::clone(&backend));
+        let cases: [(&str, bool, &[&[u8]]); 3] = [
+            ("other.welcome", true, &[b"http/1.1"]),
+            ("welcome", false, &[b"http/1.1"]),
+            ("welcome", true, &[b"h2"]),
+        ];
+
+        for (server_name, enable_sni, alpn_protocols) in cases {
+            let stream = begin_authenticated_connect(&proxy, "welcome:443");
+            assert!(proxy.local_certificate_pin("welcome").is_some());
+            assert!(
+                complete_tls_handshake(stream, server_name, enable_sni, alpn_protocols).is_err(),
+                "unexpectedly accepted SNI={server_name:?}, enabled={enable_sni}, ALPN={alpn_protocols:?}"
+            );
+        }
+        assert_eq!(backend.request_count(), 0);
+        proxy.stop();
+    }
+
+    #[test]
+    fn invalid_connected_targets_never_reach_the_backend() {
+        let backend = Arc::new(RecordingBackend::new(ResponsePlan::plain(b"unused")));
+        let proxy = start_recording_proxy(Arc::clone(&backend));
+        let cases: [(&str, &str, &[u8], u16); 6] = [
+            (
+                "welcome:443",
+                "welcome",
+                b"GET / HTTP/1.1\r\nHost: other.welcome\r\n\r\n",
+                400,
+            ),
+            (
+                "welcome:8443",
+                "welcome",
+                b"GET / HTTP/1.1\r\nHost: welcome\r\n\r\n",
+                400,
+            ),
+            (
+                "welcome:443",
+                "welcome",
+                b"GET http://welcome/ HTTP/1.1\r\nHost: welcome\r\n\r\n",
+                400,
+            ),
+            (
+                "welcome:443",
+                "welcome",
+                b"CONNECT welcome:443 HTTP/1.1\r\nHost: welcome:443\r\n\r\n",
+                400,
+            ),
+            (
+                "welcome:443",
+                "welcome",
+                b"GET /socket HTTP/1.1\r\nHost: welcome\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+                501,
+            ),
+            (
+                "welcome:443",
+                "welcome",
+                b"GET wss://welcome/socket HTTP/1.1\r\nHost: welcome\r\n\r\n",
+                501,
+            ),
+        ];
+
+        for (authority, server_name, request, expected_status) in cases {
+            let (response, _certificate) =
+                send_tls_request(&proxy, authority, server_name, request);
+            assert_eq!(
+                response_status(&response),
+                expected_status,
+                "authority={authority:?}, request={request:?}"
+            );
+        }
+        assert_eq!(backend.request_count(), 0);
+        proxy.stop();
+    }
+
+    #[test]
+    fn certificate_pins_are_generation_bound_and_revoked_on_stop() {
+        let session = ProxySessionId::generate().unwrap();
+        let first_backend = Arc::new(RecordingBackend::new(ResponsePlan::plain(b"first")));
+        let second_backend = Arc::new(RecordingBackend::new(ResponsePlan::plain(b"second")));
+        let first = RunningProxy::start(
+            ProxyConfig::new(
+                ProxyInstanceId::new(session.clone(), 1),
+                crate::HostScope::new("welcome").unwrap(),
+            ),
+            first_backend,
+            Arc::new(NoopProxyObserver),
+        )
+        .unwrap();
+        let second = RunningProxy::start(
+            ProxyConfig::new(
+                ProxyInstanceId::new(session, 2),
+                crate::HostScope::new("welcome").unwrap(),
+            ),
+            second_backend,
+            Arc::new(NoopProxyObserver),
+        )
+        .unwrap();
+        let request = b"GET / HTTP/1.1\r\nHost: welcome\r\n\r\n";
+
+        let (first_response, first_certificate) =
+            send_tls_request(&first, "welcome:443", "welcome", request);
+        let (second_response, second_certificate) =
+            send_tls_request(&second, "welcome:443", "welcome", request);
+        assert_eq!(response_status(&first_response), 200);
+        assert_eq!(response_status(&second_response), 200);
+        let first_pin = first.local_certificate_pin("welcome").unwrap();
+        let second_pin = second.local_certificate_pin("welcome").unwrap();
+        assert_eq!(first_pin.instance().generation(), 1);
+        assert_eq!(second_pin.instance().generation(), 2);
+        assert_ne!(
+            first_pin.certificate_sha256(),
+            second_pin.certificate_sha256()
+        );
+        assert!(first.matches_local_certificate("welcome", &first_certificate));
+        assert!(!first.matches_local_certificate("welcome", &second_certificate));
+        assert!(second.matches_local_certificate("welcome", &second_certificate));
+        assert!(!second.matches_local_certificate("welcome", &first_certificate));
+
+        first.stop();
+        assert!(first.local_certificate_pin("welcome").is_none());
+        assert!(!first.matches_local_certificate("welcome", &first_certificate));
+        assert!(second.local_certificate_pin("welcome").is_some());
+        assert!(second.matches_local_certificate("welcome", &second_certificate));
+        second.stop();
+        assert!(second.local_certificate_pin("welcome").is_none());
+        assert!(!second.matches_local_certificate("welcome", &second_certificate));
+    }
+
+    #[test]
+    fn stop_interrupts_a_partial_client_hello_and_revokes_its_pin() {
+        let backend = Arc::new(RecordingBackend::new(ResponsePlan::plain(b"unused")));
+        let proxy = start_recording_proxy(Arc::clone(&backend));
+        let mut stream = begin_authenticated_connect(&proxy, "welcome:443");
+        assert!(proxy.local_certificate_pin("welcome").is_some());
+        stream
+            .write_all(b"\x16\x03\x03\x00\x40\x01\x00\x00")
+            .unwrap();
+        stream.flush().unwrap();
+        wait_for_active_clients(&proxy, 1);
+
+        let started = Instant::now();
+        proxy.stop();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(proxy.is_stopped());
+        assert_eq!(proxy.active_clients(), 0);
+        assert_eq!(backend.request_count(), 0);
+        assert!(proxy.local_certificate_pin("welcome").is_none());
+        assert!(!proxy.matches_local_certificate("welcome", b"not-a-certificate"));
+        assert_connection_closed(stream);
+    }
+
+    #[test]
+    fn stop_joins_tls_clients_stalled_in_inner_headers_and_bodies() {
+        let header_backend = Arc::new(RecordingBackend::new(ResponsePlan::plain(b"unused")));
+        let header_proxy = start_recording_proxy(Arc::clone(&header_backend));
+        let header_stream = begin_authenticated_connect(&header_proxy, "welcome:443");
+        let (mut header_tls, _certificate) =
+            complete_tls_handshake(header_stream, "welcome", true, &[b"http/1.1"]).unwrap();
+        header_tls
+            .write_all(b"GET / HTTP/1.1\r\nHost: wel")
+            .unwrap();
+        header_tls.flush().unwrap();
+        wait_for_active_clients(&header_proxy, 1);
+
+        let started = Instant::now();
+        header_proxy.stop();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(header_proxy.active_clients(), 0);
+        assert_eq!(header_backend.request_count(), 0);
+        assert!(!matches!(header_tls.read(&mut [0_u8; 1]), Ok(1..)));
+
+        let body_backend = Arc::new(RecordingBackend::new(ResponsePlan::plain(b"unused")));
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let body_proxy = RunningProxy::start(
+            test_config(),
+            body_backend.clone(),
+            Arc::new(AcceptedObserver(accepted_tx)),
+        )
+        .unwrap();
+        let body_stream = begin_authenticated_connect(&body_proxy, "welcome:443");
+        let (mut body_tls, _certificate) =
+            complete_tls_handshake(body_stream, "welcome", true, &[b"http/1.1"]).unwrap();
+        body_tls
+            .write_all(b"POST / HTTP/1.1\r\nHost: welcome\r\nContent-Length: 12\r\n\r\nshort")
+            .unwrap();
+        body_tls.flush().unwrap();
+        accepted_rx.recv_timeout(TEST_TIMEOUT).unwrap();
+        accepted_rx.recv_timeout(TEST_TIMEOUT).unwrap();
+
+        let started = Instant::now();
+        body_proxy.stop();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(body_proxy.active_clients(), 0);
+        assert_eq!(body_backend.request_count(), 0);
+        assert!(!matches!(body_tls.read(&mut [0_u8; 1]), Ok(1..)));
+    }
+
+    #[test]
+    fn upgrades_and_out_of_scope_targets_never_reach_the_backend() {
         let backend = Arc::new(RecordingBackend::new(ResponsePlan::plain(b"unused")));
         let proxy = start_recording_proxy(Arc::clone(&backend));
         let auth = auth_header(&proxy);
         let cases = [
             (
-                format!("CONNECT welcome:443 HTTP/1.1\r\nHost: welcome:443\r\n{auth}\r\n"),
-                501,
+                format!("CONNECT other:443 HTTP/1.1\r\nHost: other:443\r\n{auth}\r\n"),
+                403,
             ),
             (
                 format!(
@@ -1387,6 +2753,37 @@ mod tests {
         assert_eq!(body_proxy.active_clients(), 0);
         assert_eq!(body_backend.request_count(), 0);
         assert_connection_closed(partial_body);
+    }
+
+    #[test]
+    fn stop_joins_a_cooperative_backend_response_stream_read() {
+        let (read_started_tx, read_started_rx) = mpsc::channel();
+        let backend = Arc::new(CooperativeStreamBackend {
+            read_started: Mutex::new(Some(read_started_tx)),
+        });
+        let proxy =
+            RunningProxy::start(test_config(), backend, Arc::new(NoopProxyObserver)).unwrap();
+        let mut client = TcpStream::connect(proxy.endpoint().address()).unwrap();
+        client.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+        client.set_write_timeout(Some(TEST_TIMEOUT)).unwrap();
+        let request = format!(
+            "GET http://welcome/stream HTTP/1.1\r\nHost: welcome\r\n{}\r\n",
+            auth_header(&proxy)
+        );
+        client.write_all(request.as_bytes()).unwrap();
+        client.flush().unwrap();
+        read_started_rx.recv_timeout(TEST_TIMEOUT).unwrap();
+        let response_head = read_response_head(&mut client).unwrap();
+        assert_eq!(response_status(&response_head), 200);
+        wait_for_active_clients(&proxy, 1);
+
+        let started = Instant::now();
+        proxy.stop();
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(proxy.is_stopped());
+        assert_eq!(proxy.active_clients(), 0);
+        assert_connection_closed(client);
     }
 
     #[test]
