@@ -697,6 +697,9 @@ class LoopbackProxyAuthorization private constructor(
         internal fun createForTest(realm: String, username: String, password: String): LoopbackProxyAuthorization =
             LoopbackProxyAuthorization(realm, username, password)
 
+        internal fun createForNative(realm: String, username: String, password: String): LoopbackProxyAuthorization =
+            LoopbackProxyAuthorization(realm, username, password)
+
         private fun randomToken(bytes: Int): String =
             ByteArray(bytes).also(random::nextBytes).let(Base64.getUrlEncoder().withoutPadding()::encodeToString)
     }

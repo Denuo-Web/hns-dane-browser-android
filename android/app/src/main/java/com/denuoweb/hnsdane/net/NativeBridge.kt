@@ -246,11 +246,60 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge, LocalTlsCertificateProvid
         clientOutput,
     )
 
+    internal fun startRustProxy(config: RustBrowserProxyConfig): LocalBrowserProxyEndpoint? = withRuntime(
+        dataDir = config.dataDir,
+        network = config.network,
+        unavailable = null,
+        createFailure = { null },
+    ) { runtimeHandle ->
+        val policyRevision = nativeRuntimeSetPolicy(
+            runtimeHandle,
+            config.strictHnsMode,
+            config.dohResolverUrl,
+            config.statelessDaneCertificates,
+        )
+        if (policyRevision <= 0L) {
+            null
+        } else {
+            val bundle = nativeRuntimeStartProxy(runtimeHandle, config.scopeHost) ?: return@withRuntime null
+            parseRustProxyEndpointBundle(bundle) ?: run {
+                rustProxyHandleFromBundle(bundle)?.let(::nativeProxyDestroy)
+                null
+            }
+        }
+    }
+
+    internal fun requestRustProxyStop(endpoint: LocalBrowserProxyEndpoint): Boolean =
+        isLoaded && nativeProxyRequestStop(
+            endpoint.nativeHandle,
+            endpoint.instanceId.sessionId,
+            endpoint.instanceId.generation,
+        )
+
+    internal fun destroyRustProxy(nativeHandle: Long) {
+        if (isLoaded && nativeHandle > 0L) {
+            nativeProxyDestroy(nativeHandle)
+        }
+    }
+
+    internal fun rustProxyMatchesLocalCertificate(
+        endpoint: LocalBrowserProxyEndpoint,
+        host: String,
+        certificateDer: ByteArray,
+    ): Boolean = isLoaded && nativeProxyMatchesLocalCertificate(
+        endpoint.nativeHandle,
+        endpoint.instanceId.sessionId,
+        endpoint.instanceId.generation,
+        host,
+        certificateDer,
+    )
+
     fun closeRuntimes() {
         if (!isLoaded) return
         val writeLock = runtimeLifecycleLock.writeLock()
         writeLock.lock()
         try {
+            nativeProxyDestroyAll()
             runtimeHandles.values.forEach(::nativeRuntimeDestroy)
             runtimeHandles.clear()
         } finally {
@@ -308,6 +357,33 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge, LocalTlsCertificateProvid
     private external fun nativeRuntimeResetHeadersFromPeers(handle: Long): String
 
     private external fun nativeRuntimeHnsProofDetails(handle: Long, host: String): String
+
+    private external fun nativeRuntimeSetPolicy(
+        handle: Long,
+        strictHnsMode: Boolean,
+        dohResolverUrl: String,
+        statelessDaneCertificates: Boolean,
+    ): Long
+
+    private external fun nativeRuntimeStartProxy(handle: Long, scopeRoot: String): ByteArray?
+
+    private external fun nativeProxyRequestStop(
+        handle: Long,
+        sessionId: String,
+        generation: Long,
+    ): Boolean
+
+    private external fun nativeProxyDestroy(handle: Long)
+
+    private external fun nativeProxyDestroyAll()
+
+    private external fun nativeProxyMatchesLocalCertificate(
+        handle: Long,
+        sessionId: String,
+        generation: Long,
+        host: String,
+        certificateDer: ByteArray,
+    ): Boolean
 
     private external fun nativeSyncOnce(dataDir: String, network: String): String
 

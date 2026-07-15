@@ -200,10 +200,18 @@ impl RunningProxy {
     /// the listener and every client worker. Repeated and concurrent calls are
     /// safe. A reentrant observer callback requests cancellation; the next
     /// external call completes the join.
-    pub fn stop(&self) {
+    pub fn request_stop(&self) {
         self.stop_state.requested.store(true, Ordering::Release);
         self.listener.request_stop();
         self.tls_identities.deactivate();
+    }
+
+    /// Requests immediate revocation and cancellation, then joins the listener
+    /// and every client worker. Platform UI threads may call
+    /// [`Self::request_stop`] first and complete this blocking join on a
+    /// lifecycle worker.
+    pub fn stop(&self) {
+        self.request_stop();
         if !self
             .stop_state
             .announcement
@@ -2283,6 +2291,23 @@ mod tests {
         first.stop();
         second.stop();
         assert!(first.is_stopped());
+    }
+
+    #[test]
+    fn request_stop_revokes_admission_before_the_blocking_join() {
+        let proxy = RunningProxy::start(
+            test_config(),
+            Arc::new(UnusedBackend),
+            Arc::new(NoopProxyObserver),
+        )
+        .unwrap();
+
+        proxy.request_stop();
+        assert!(proxy.local_certificate_pin("welcome").is_none());
+        assert!(!proxy.matches_local_certificate("welcome", b"certificate"));
+
+        proxy.stop();
+        assert!(proxy.is_stopped());
     }
 
     #[test]

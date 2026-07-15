@@ -18,9 +18,11 @@ use hns_dane::{
 };
 use hns_gateway::{Gateway, GatewayConfig, GatewayError, GatewayRequest, HnsHttpsMode};
 use hns_loopback_proxy::{
-    BackendError as ProxyBackendError, CancellationToken as ProxyCancellationToken, ProxyBackend,
-    ProxyHeader, ProxyRequest as LoopbackProxyRequest, ProxyRequestBody, ProxyResponse,
-    ProxyResponseBody, ProxyResponseHead, ProxyTunnel, ProxyTunnelOpen,
+    BackendError as ProxyBackendError, CancellationToken as ProxyCancellationToken, HostScope,
+    HostScopeError, NoopProxyObserver, ProxyBackend, ProxyError, ProxyHeader, ProxyInstanceId,
+    ProxyRequest as LoopbackProxyRequest, ProxyRequestBody, ProxyResponse, ProxyResponseBody,
+    ProxyResponseHead, ProxySessionId, ProxyTunnel, ProxyTunnelOpen, RunningProxy,
+    SessionIdGenerationError,
 };
 use hns_p2p::{
     DnsSeedPeerSource, HeaderSyncSession, PeerConnection, PeerSource, SqlitePeerStore,
@@ -244,6 +246,94 @@ pub enum RuntimeError {
     Synchronization(&'static str),
 }
 
+/// Failure to start one authenticated, immutable-scope browser proxy
+/// generation from a shared runtime.
+#[derive(Debug, Error)]
+pub enum BrowserProxyError {
+    #[error("invalid browser proxy scope")]
+    Scope(#[from] HostScopeError),
+    #[error("unable to generate a browser proxy session identifier")]
+    Session(#[from] SessionIdGenerationError),
+    #[error("browser proxy generation counter is exhausted")]
+    GenerationExhausted,
+    #[error("unable to start the browser proxy")]
+    Start(#[from] ProxyError),
+}
+
+/// One Rust-owned proxy generation backed by this runtime's resolver,
+/// persistent stores, policy, and origin transport.
+pub struct BrowserProxy {
+    running: RunningProxy,
+}
+
+impl BrowserProxy {
+    pub fn port(&self) -> u16 {
+        self.running.endpoint().port()
+    }
+
+    /// Explicit credential accessors are intended only for a native browser's
+    /// in-memory proxy-authentication callback.
+    pub fn authorization_realm(&self) -> &str {
+        self.running.endpoint().realm()
+    }
+
+    pub fn authorization_username(&self) -> &str {
+        self.running.endpoint().username()
+    }
+
+    pub fn authorization_password(&self) -> &str {
+        self.running.endpoint().password()
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.running.endpoint().instance().generation()
+    }
+
+    /// Opaque, non-credential runtime session identity used with
+    /// [`Self::generation`] to reject stale native lifecycle callbacks.
+    pub fn session_id(&self) -> &str {
+        self.running.endpoint().instance().session().as_str()
+    }
+
+    pub fn matches_instance(&self, session_id: &str, generation: u64) -> bool {
+        self.session_id() == session_id && self.generation() == generation
+    }
+
+    /// Validates challenge DER against the exact host identity retained by
+    /// this live generation. Stopped, unknown, malformed, and stale matches
+    /// fail closed inside `hns-loopback-proxy`.
+    pub fn matches_local_certificate(&self, host: &str, certificate_der: &[u8]) -> bool {
+        self.running
+            .matches_local_certificate(host, certificate_der)
+    }
+
+    pub fn stop(&self) {
+        self.running.stop();
+    }
+
+    /// Revokes credentials and local-certificate authorization, closes active
+    /// sockets, and cancels backend work without waiting for worker joins.
+    pub fn request_stop(&self) {
+        self.running.request_stop();
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.running.is_stopped()
+    }
+}
+
+impl std::fmt::Debug for BrowserProxy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BrowserProxy")
+            .field("generation", &self.generation())
+            .field("port", &self.port())
+            .field("credentials", &"[REDACTED]")
+            .field("stopped", &self.is_stopped())
+            .finish()
+    }
+}
+
 #[derive(Clone)]
 pub struct BrowserRuntime {
     inner: Arc<RuntimeInner>,
@@ -269,6 +359,8 @@ struct RuntimeInner {
     transport: TcpHttpTransport,
     coordination: Arc<RuntimeCoordination>,
     policy_revision: AtomicU64,
+    proxy_session: OnceLock<ProxySessionId>,
+    proxy_generation: AtomicU64,
 }
 
 struct RuntimeCoordination {
@@ -351,6 +443,8 @@ impl BrowserRuntime {
                 transport: TcpHttpTransport::default(),
                 coordination,
                 policy_revision: AtomicU64::new(0),
+                proxy_session: OnceLock::new(),
+                proxy_generation: AtomicU64::new(0),
             }),
         })
     }
@@ -408,6 +502,34 @@ impl BrowserRuntime {
         RuntimeProxyBackend {
             runtime: self.clone(),
         }
+    }
+
+    /// Starts a fresh authenticated IPv4 loopback proxy restricted to the
+    /// exact HNS scope root and its subdomains. Every call receives fresh
+    /// credentials and a monotonically increasing runtime generation.
+    pub fn start_proxy(&self, scope_root: &str) -> Result<BrowserProxy, BrowserProxyError> {
+        let scope = HostScope::new(scope_root)?;
+        let generation = self
+            .inner
+            .proxy_generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_add(1)
+            })
+            .map_err(|_| BrowserProxyError::GenerationExhausted)?
+            + 1;
+        let session = if let Some(session) = self.inner.proxy_session.get() {
+            session.clone()
+        } else {
+            let generated = ProxySessionId::generate()?;
+            self.inner.proxy_session.get_or_init(|| generated).clone()
+        };
+        let instance = ProxyInstanceId::new(session, generation);
+        let running = RunningProxy::start(
+            hns_loopback_proxy::ProxyConfig::new(instance, scope),
+            Arc::new(self.proxy_backend()),
+            Arc::new(NoopProxyObserver),
+        )?;
+        Ok(BrowserProxy { running })
     }
 
     pub fn sync_once(&self) -> Result<SyncStatus, RuntimeError> {
@@ -6035,6 +6157,7 @@ mod tests {
     fn browser_runtime_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<BrowserRuntime>();
+        assert_send_sync::<BrowserProxy>();
         assert_send_sync::<RuntimeProxyBackend>();
         let data_dir = temp_dir_path("runtime-proxy-debug");
         assert_eq!(
@@ -6046,6 +6169,64 @@ mod tests {
             ),
             "RuntimeProxyBackend(<redacted runtime>)"
         );
+        cleanup_dir(&data_dir);
+    }
+
+    #[test]
+    fn browser_runtime_starts_fresh_authenticated_proxy_generations() {
+        let data_dir = temp_dir_path("browser-runtime-proxy-session");
+        let runtime =
+            BrowserRuntime::open(RuntimeConfiguration::new(&data_dir, NetworkKind::Regtest))
+                .unwrap();
+
+        let first = runtime.start_proxy("welcome").unwrap();
+        assert_ne!(first.port(), 0);
+        assert_eq!(first.generation(), 1);
+        assert!(first.matches_instance(first.session_id(), 1));
+        assert!(!first.matches_instance("stale-session", 1));
+        assert!(!first.matches_instance(first.session_id(), 2));
+        assert_eq!(first.authorization_username(), "hns-browser");
+        assert!(!first.authorization_realm().is_empty());
+        assert!(!first.authorization_password().is_empty());
+        let debug = format!("{first:?}");
+        assert!(!debug.contains(first.session_id()));
+        assert!(!debug.contains(first.authorization_realm()));
+        assert!(!debug.contains(first.authorization_password()));
+
+        let mut unauthenticated = TcpStream::connect((Ipv4Addr::LOCALHOST, first.port())).unwrap();
+        unauthenticated
+            .write_all(b"GET http://welcome/ HTTP/1.1\r\nHost: welcome\r\n\r\n")
+            .unwrap();
+        let mut response = Vec::new();
+        unauthenticated.read_to_end(&mut response).unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 407 Proxy Authentication Required\r\n"));
+
+        let second = runtime.start_proxy("welcome").unwrap();
+        assert_eq!(second.generation(), 2);
+        assert_eq!(first.session_id(), second.session_id());
+        assert_ne!(first.port(), second.port());
+        assert_ne!(
+            first.authorization_password(),
+            second.authorization_password()
+        );
+        first.stop();
+        second.stop();
+        assert!(first.is_stopped());
+        assert!(second.is_stopped());
+        cleanup_dir(&data_dir);
+    }
+
+    #[test]
+    fn browser_runtime_proxy_rejects_non_hns_scope_before_binding() {
+        let data_dir = temp_dir_path("browser-runtime-proxy-scope");
+        let runtime =
+            BrowserRuntime::open(RuntimeConfiguration::new(&data_dir, NetworkKind::Regtest))
+                .unwrap();
+
+        assert!(matches!(
+            runtime.start_proxy("example.com"),
+            Err(BrowserProxyError::Scope(HostScopeError::NotHns))
+        ));
         cleanup_dir(&data_dir);
     }
 
