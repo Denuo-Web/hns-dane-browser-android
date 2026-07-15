@@ -27,7 +27,14 @@ object HnsLocalCertificateRegistry {
     }
 
     fun hasPinnedCertificate(host: String, certificate: X509Certificate): Boolean {
-        return hasPinnedFingerprint(host, sha256(certificate.encoded))
+        return hasPinnedCertificateDer(host, certificate.encoded)
+    }
+
+    internal fun hasPinnedCertificateDer(host: String, certificateDer: ByteArray): Boolean {
+        if (certificateDer.isEmpty()) {
+            return false
+        }
+        return hasPinnedFingerprint(host, sha256(certificateDer))
     }
 
     @Synchronized

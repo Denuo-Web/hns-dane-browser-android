@@ -1,12 +1,27 @@
 package com.denuoweb.hnsdane.net
 
+import com.denuoweb.hnsdane.core.HnsPageResolverPolicy
+import com.denuoweb.hnsdane.core.HnsPageSecurityPath
+import com.denuoweb.hnsdane.core.HnsPageTlsPolicy
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
+import java.util.Locale
 
 internal interface LocalBrowserProxy {
     val endpoint: LocalBrowserProxyEndpoint
     val scopeHost: String
 
     fun matchesLocalCertificate(host: String, certificateDer: ByteArray): Boolean
+
+    /**
+     * Consumes the latest typed status for this live generation and exact main-frame host.
+     * Call only after the matching navigation completes and gate the result on this proxy identity.
+     */
+    fun takeMainFrameStatus(host: String): LocalBrowserProxyStatus?
+
+    /** Clears status retained for an earlier navigation before loading the same host again. */
+    fun discardMainFrameStatus(host: String)
 
     /** Revokes admission and local-certificate trust without waiting for native workers to join. */
     fun requestStop()
@@ -48,6 +63,20 @@ internal class RustBrowserProxyConfig(
     val statelessDaneCertificates: Boolean,
 )
 
+internal class LocalBrowserProxyStatus(
+    internal val sequence: Long,
+    val statusCode: Int,
+    val tlsPolicy: HnsPageTlsPolicy?,
+    val resolverPolicy: HnsPageResolverPolicy?,
+    val securityPath: HnsPageSecurityPath?,
+    val resolutionTraceJson: String?,
+) {
+    override fun toString(): String =
+        "LocalBrowserProxyStatus(statusCode=$statusCode, tlsPolicy=$tlsPolicy, " +
+            "resolverPolicy=$resolverPolicy, securityPath=$securityPath, " +
+            "resolutionTrace=[REDACTED])"
+}
+
 internal interface RustBrowserProxyNativeApi {
     fun start(config: RustBrowserProxyConfig): LocalBrowserProxyEndpoint?
 
@@ -59,6 +88,16 @@ internal interface RustBrowserProxyNativeApi {
         endpoint: LocalBrowserProxyEndpoint,
         host: String,
         certificateDer: ByteArray,
+    ): Boolean
+
+    fun takeMainFrameStatus(
+        endpoint: LocalBrowserProxyEndpoint,
+        host: String,
+    ): LocalBrowserProxyStatus?
+
+    fun discardMainFrameStatus(
+        endpoint: LocalBrowserProxyEndpoint,
+        host: String,
     ): Boolean
 }
 
@@ -78,6 +117,16 @@ internal object NativeRustBrowserProxyApi : RustBrowserProxyNativeApi {
         host: String,
         certificateDer: ByteArray,
     ): Boolean = NativeBridge.rustProxyMatchesLocalCertificate(endpoint, host, certificateDer)
+
+    override fun takeMainFrameStatus(
+        endpoint: LocalBrowserProxyEndpoint,
+        host: String,
+    ): LocalBrowserProxyStatus? = NativeBridge.takeRustProxyMainFrameStatus(endpoint, host)
+
+    override fun discardMainFrameStatus(
+        endpoint: LocalBrowserProxyEndpoint,
+        host: String,
+    ): Boolean = NativeBridge.discardRustProxyMainFrameStatus(endpoint, host)
 }
 
 internal class RustBrowserProxy private constructor(
@@ -93,7 +142,27 @@ internal class RustBrowserProxy private constructor(
         synchronized(lifecycleLock) {
             if (stopRequested || destroyed) return false
         }
-        return nativeApi.matchesLocalCertificate(endpoint, host, certificateDer)
+        val matches = nativeApi.matchesLocalCertificate(endpoint, host, certificateDer)
+        return synchronized(lifecycleLock) {
+            !stopRequested && !destroyed && matches
+        }
+    }
+
+    override fun takeMainFrameStatus(host: String): LocalBrowserProxyStatus? {
+        synchronized(lifecycleLock) {
+            if (stopRequested || destroyed) return null
+        }
+        val status = nativeApi.takeMainFrameStatus(endpoint, host)
+        return synchronized(lifecycleLock) {
+            status.takeIf { !stopRequested && !destroyed }
+        }
+    }
+
+    override fun discardMainFrameStatus(host: String) {
+        synchronized(lifecycleLock) {
+            if (stopRequested || destroyed) return
+        }
+        nativeApi.discardMainFrameStatus(endpoint, host)
     }
 
     override fun requestStop() {
@@ -106,6 +175,9 @@ internal class RustBrowserProxy private constructor(
             }
         }
         if (shouldRequest) {
+            // Local trust/status checks remain revoked even if native reports
+            // that this exact instance was already absent. The lifecycle
+            // worker still calls joinAndDestroy to consume the handle.
             nativeApi.requestStop(endpoint)
         }
     }
@@ -166,6 +238,83 @@ internal fun rustProxyHandleFromBundle(bundle: ByteArray): Long? {
         .takeIf { it > 0L }
 }
 
+internal fun parseRustProxyStatusBundle(
+    bundle: ByteArray,
+    endpoint: LocalBrowserProxyEndpoint,
+    expectedHost: String,
+): LocalBrowserProxyStatus? {
+    if (bundle.size !in MIN_PROXY_STATUS_BUNDLE_BYTES..MAX_PROXY_STATUS_BUNDLE_BYTES) return null
+    val cursor = ProxyEndpointBundleCursor(bundle)
+    if (!cursor.readBytes(PROXY_STATUS_MAGIC.size).contentEquals(PROXY_STATUS_MAGIC)) return null
+    if (cursor.readUnsignedByte() != PROXY_STATUS_VERSION) return null
+    if (cursor.readLong() != endpoint.instanceId.generation) return null
+    val sequence = cursor.readLong().takeIf { it > 0L } ?: return null
+    val statusCode = cursor.readUnsignedShort().takeIf { it in 100..599 } ?: return null
+    if (cursor.readUnsignedByte() != 1) return null
+    val tlsPolicy = when (cursor.readUnsignedByte()) {
+        0 -> null
+        1 -> HnsPageTlsPolicy.Dane
+        2 -> HnsPageTlsPolicy.WebPkiFallback
+        else -> return null
+    }
+    val resolverPolicy = when (cursor.readUnsignedByte()) {
+        0 -> null
+        1 -> HnsPageResolverPolicy.HnsDohCompatibility
+        else -> return null
+    }
+    val securityPath = when (cursor.readUnsignedByte()) {
+        0 -> null
+        1 -> HnsPageSecurityPath.DaneAuthoritativeDoh
+        2 -> HnsPageSecurityPath.DaneAuthoritativeDns53
+        3 -> HnsPageSecurityPath.DaneThirdPartyDoh
+        4 -> HnsPageSecurityPath.StatelessDane
+        5 -> HnsPageSecurityPath.DaneIcannDoh
+        6 -> HnsPageSecurityPath.HnsAuthoritativeDoh
+        7 -> HnsPageSecurityPath.HnsAuthoritativeDns53
+        8 -> HnsPageSecurityPath.HnsThirdPartyDoh
+        else -> return null
+    }
+    val host = cursor.readAscii(MAX_PROXY_STATUS_HOST_BYTES) ?: return null
+    val canonicalExpectedHost = canonicalProxyStatusHost(expectedHost) ?: return null
+    if (host != canonicalExpectedHost || canonicalProxyStatusHost(host) != host) return null
+    val traceLength = cursor.readUnsignedInt()
+    if (traceLength !in 0..MAX_PROXY_STATUS_TRACE_BYTES.toLong()) return null
+    val traceJson = if (traceLength == 0L) {
+        null
+    } else {
+        cursor.readUtf8(traceLength.toInt()) ?: return null
+    }
+    if (!cursor.isComplete()) return null
+    return LocalBrowserProxyStatus(
+        sequence = sequence,
+        statusCode = statusCode,
+        tlsPolicy = tlsPolicy,
+        resolverPolicy = resolverPolicy,
+        securityPath = securityPath,
+        resolutionTraceJson = traceJson,
+    )
+}
+
+private fun canonicalProxyStatusHost(host: String): String? {
+    val canonical = host.trim().trimEnd('.').lowercase(Locale.US)
+    if (canonical.isEmpty() || canonical.length > MAX_PROXY_STATUS_HOST_BYTES || !canonical.all(Char::isAscii)) {
+        return null
+    }
+    if (canonical.split('.').any { label ->
+            label.isEmpty() ||
+                label.length > 63 ||
+                !label.first().isLetterOrDigit() ||
+                !label.last().isLetterOrDigit() ||
+                !label.all { it.isLetterOrDigit() || it == '-' }
+        }
+    ) {
+        return null
+    }
+    return canonical
+}
+
+private fun Char.isAscii(): Boolean = code in 0..0x7f
+
 private class ProxyEndpointBundleCursor(
     private val bytes: ByteArray,
     private var offset: Int = 0,
@@ -187,6 +336,14 @@ private class ProxyEndpointBundleCursor(
         return result
     }
 
+    fun readUnsignedInt(): Long {
+        val value = readBytes(4)
+        if (value.size != 4) return -1
+        var result = 0L
+        value.forEach { byte -> result = (result shl 8) or (byte.toLong() and 0xff) }
+        return result
+    }
+
     fun readAscii(maxBytes: Int): String? {
         val length = readUnsignedShort()
         if (length !in 1..maxBytes) return null
@@ -202,11 +359,26 @@ private class ProxyEndpointBundleCursor(
         return bytes.copyOfRange(offset, offset + length).also { offset += length }
     }
 
+    fun readUtf8(length: Int): String? {
+        val value = readBytes(length)
+        if (value.size != length) return null
+        return runCatching {
+            StandardCharsets.UTF_8
+                .newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(value))
+                .toString()
+        }.getOrNull()
+    }
+
     fun isComplete(): Boolean = offset == bytes.size
 }
 
 private val PROXY_ENDPOINT_MAGIC = byteArrayOf('H'.code.toByte(), 'N'.code.toByte(), 'S'.code.toByte(), 'P'.code.toByte())
 private const val PROXY_ENDPOINT_VERSION = 1
+private val PROXY_STATUS_MAGIC = byteArrayOf('H'.code.toByte(), 'N'.code.toByte(), 'S'.code.toByte(), 'S'.code.toByte())
+private const val PROXY_STATUS_VERSION = 1
 private const val PROXY_HANDLE_OFFSET = 5
 private const val PROXY_HANDLE_END_OFFSET = PROXY_HANDLE_OFFSET + 8
 private const val MIN_PROXY_ENDPOINT_BUNDLE_BYTES = 35
@@ -215,3 +387,7 @@ private const val MAX_PROXY_SESSION_BYTES = 64
 private const val MAX_PROXY_REALM_BYTES = 128
 private const val MAX_PROXY_USERNAME_BYTES = 64
 private const val MAX_PROXY_PASSWORD_BYTES = 256
+private const val MIN_PROXY_STATUS_BUNDLE_BYTES = 34
+private const val MAX_PROXY_STATUS_BUNDLE_BYTES = 64 * 1024
+private const val MAX_PROXY_STATUS_HOST_BYTES = 253
+private const val MAX_PROXY_STATUS_TRACE_BYTES = MAX_PROXY_STATUS_BUNDLE_BYTES

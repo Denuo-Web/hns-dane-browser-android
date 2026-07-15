@@ -20,8 +20,208 @@ const TUNNEL_COPY_BUFFER_BYTES: usize = 16 * 1024;
 const MAX_LOCAL_CERTIFICATE_DER_BYTES: usize = 64 * 1024;
 const PROXY_ENDPOINT_BUNDLE_MAGIC: &[u8; 4] = b"HNSP";
 const PROXY_ENDPOINT_BUNDLE_VERSION: u8 = 1;
+const PROXY_STATUS_BUNDLE_MAGIC: &[u8; 4] = b"HNSS";
+const PROXY_STATUS_BUNDLE_VERSION: u8 = 1;
+const MAX_PROXY_STATUS_BUNDLE_BYTES: usize = 64 * 1024;
+const MAX_PROXY_STATUS_HOSTS: usize = 8;
+const MAX_PROXY_STATUS_RETAINED_TRACE_BYTES: usize = 64 * 1024;
+const MAX_ANDROID_PROXY_HANDLES: usize = 8;
 static NEXT_PROXY_HANDLE: AtomicU64 = AtomicU64::new(1);
-static PROXY_HANDLES: OnceLock<Mutex<HashMap<jlong, Arc<BrowserProxy>>>> = OnceLock::new();
+static PROXY_HANDLES: OnceLock<Mutex<HashMap<jlong, Arc<AndroidProxyRecord>>>> = OnceLock::new();
+
+struct AndroidProxyRecord {
+    proxy: BrowserProxy,
+    statuses: Arc<AndroidProxyStatusMailbox>,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+struct AndroidProxyStatus {
+    generation: u64,
+    host: String,
+    status_code: u16,
+    likely_main_frame: bool,
+    tls_policy: Option<BrowserProxyTlsPolicy>,
+    resolver_policy: Option<BrowserProxyResolverPolicy>,
+    security_path: Option<BrowserProxySecurityPath>,
+    resolution_trace_json: Option<String>,
+}
+
+impl From<&BrowserProxyStatus> for AndroidProxyStatus {
+    fn from(status: &BrowserProxyStatus) -> Self {
+        Self {
+            generation: status.generation(),
+            host: status.host().to_owned(),
+            status_code: status.status_code(),
+            likely_main_frame: status.is_likely_main_frame(),
+            tls_policy: status.tls_policy(),
+            resolver_policy: status.resolver_policy(),
+            security_path: status.security_path(),
+            resolution_trace_json: status.resolution_trace_json().map(str::to_owned),
+        }
+    }
+}
+
+impl std::fmt::Debug for AndroidProxyStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AndroidProxyStatus")
+            .field("generation", &self.generation)
+            .field("host", &self.host)
+            .field("status_code", &self.status_code)
+            .field("likely_main_frame", &self.likely_main_frame)
+            .field("tls_policy", &self.tls_policy)
+            .field("resolver_policy", &self.resolver_policy)
+            .field("security_path", &self.security_path)
+            .field(
+                "resolution_trace_bytes",
+                &self.resolution_trace_json.as_ref().map(String::len),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+struct PendingAndroidProxyStatus {
+    sequence: u64,
+    status: AndroidProxyStatus,
+}
+
+struct AndroidProxyStatusMailboxState {
+    active: bool,
+    next_sequence: u64,
+    retained_trace_bytes: usize,
+    latest_by_host: HashMap<String, PendingAndroidProxyStatus>,
+}
+
+struct AndroidProxyStatusMailbox {
+    state: Mutex<AndroidProxyStatusMailboxState>,
+}
+
+impl AndroidProxyStatusMailbox {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(AndroidProxyStatusMailboxState {
+                active: true,
+                next_sequence: 0,
+                retained_trace_bytes: 0,
+                latest_by_host: HashMap::new(),
+            }),
+        }
+    }
+
+    fn deactivate(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.active = false;
+        state.retained_trace_bytes = 0;
+        state.latest_by_host.clear();
+    }
+
+    fn peek_matching(&self, generation: u64, host: &str) -> Option<PendingAndroidProxyStatus> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.active {
+            return None;
+        }
+        state
+            .latest_by_host
+            .get(host)
+            .filter(|pending| pending.status.generation == generation)
+            .cloned()
+    }
+
+    fn acknowledge_matching(&self, generation: u64, host: &str, sequence: u64) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.active
+            || !state.latest_by_host.get(host).is_some_and(|pending| {
+                pending.sequence == sequence && pending.status.generation == generation
+            })
+        {
+            return false;
+        }
+        if let Some(removed) = state.latest_by_host.remove(host) {
+            state.retained_trace_bytes = state
+                .retained_trace_bytes
+                .saturating_sub(proxy_status_trace_bytes(&removed.status));
+        }
+        true
+    }
+
+    fn discard_matching(&self, generation: u64, host: &str) -> bool {
+        let pending = self.peek_matching(generation, host);
+        pending.is_some_and(|pending| self.acknowledge_matching(generation, host, pending.sequence))
+    }
+
+    fn record_status(&self, mut status: AndroidProxyStatus) {
+        if !status.likely_main_frame {
+            return;
+        }
+        if proxy_status_trace_bytes(&status) > MAX_PROXY_STATUS_RETAINED_TRACE_BYTES {
+            status.resolution_trace_json = None;
+        }
+        let host = status.host.clone();
+        let trace_bytes = proxy_status_trace_bytes(&status);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.active {
+            return;
+        }
+        if state.next_sequence == u64::MAX {
+            state.next_sequence = 0;
+            state.retained_trace_bytes = 0;
+            state.latest_by_host.clear();
+        }
+        state.next_sequence += 1;
+        let sequence = state.next_sequence;
+
+        if let Some(previous) = state.latest_by_host.remove(&host) {
+            state.retained_trace_bytes = state
+                .retained_trace_bytes
+                .saturating_sub(proxy_status_trace_bytes(&previous.status));
+        }
+        while state.latest_by_host.len() >= MAX_PROXY_STATUS_HOSTS
+            || state.retained_trace_bytes.saturating_add(trace_bytes)
+                > MAX_PROXY_STATUS_RETAINED_TRACE_BYTES
+        {
+            let Some(oldest_host) = state
+                .latest_by_host
+                .iter()
+                .min_by_key(|(_, pending)| pending.sequence)
+                .map(|(candidate, _)| candidate.clone())
+            else {
+                break;
+            };
+            if let Some(removed) = state.latest_by_host.remove(&oldest_host) {
+                state.retained_trace_bytes = state
+                    .retained_trace_bytes
+                    .saturating_sub(proxy_status_trace_bytes(&removed.status));
+            }
+        }
+        state.retained_trace_bytes = state.retained_trace_bytes.saturating_add(trace_bytes);
+        state
+            .latest_by_host
+            .insert(host, PendingAndroidProxyStatus { sequence, status });
+    }
+}
+
+impl BrowserProxyStatusObserver for AndroidProxyStatusMailbox {
+    fn observe_status(&self, status: &BrowserProxyStatus) {
+        self.record_status(AndroidProxyStatus::from(status));
+    }
+}
+
+fn proxy_status_trace_bytes(status: &AndroidProxyStatus) -> usize {
+    status.resolution_trace_json.as_ref().map_or(0, String::len)
+}
 
 fn runtime_error_message(error: RuntimeError) -> String {
     match error {
@@ -46,7 +246,7 @@ fn runtime_from_handle(handle: jlong) -> Option<BrowserRuntime> {
     unsafe { runtime.as_ref().cloned() }
 }
 
-fn proxy_registry() -> &'static Mutex<HashMap<jlong, Arc<BrowserProxy>>> {
+fn proxy_registry() -> &'static Mutex<HashMap<jlong, Arc<AndroidProxyRecord>>> {
     PROXY_HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -59,22 +259,28 @@ fn next_proxy_handle() -> Option<jlong> {
     jlong::try_from(handle).ok().filter(|handle| *handle != 0)
 }
 
-fn register_proxy(proxy: BrowserProxy) -> Option<(jlong, Arc<BrowserProxy>)> {
+fn register_proxy(
+    proxy: BrowserProxy,
+    statuses: Arc<AndroidProxyStatusMailbox>,
+) -> Option<(jlong, Arc<AndroidProxyRecord>)> {
     let handle = next_proxy_handle()?;
-    let proxy = Arc::new(proxy);
+    let record = Arc::new(AndroidProxyRecord { proxy, statuses });
     let mut registry = proxy_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if registry.len() >= MAX_ANDROID_PROXY_HANDLES {
+        return None;
+    }
     match registry.entry(handle) {
         std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(Arc::clone(&proxy));
+            entry.insert(Arc::clone(&record));
         }
         std::collections::hash_map::Entry::Occupied(_) => return None,
     }
-    Some((handle, proxy))
+    Some((handle, record))
 }
 
-fn proxy_from_handle(handle: jlong) -> Option<Arc<BrowserProxy>> {
+fn proxy_from_handle(handle: jlong) -> Option<Arc<AndroidProxyRecord>> {
     if handle <= 0 {
         return None;
     }
@@ -85,7 +291,7 @@ fn proxy_from_handle(handle: jlong) -> Option<Arc<BrowserProxy>> {
         .cloned()
 }
 
-fn remove_proxy(handle: jlong) -> Option<Arc<BrowserProxy>> {
+fn remove_proxy(handle: jlong) -> Option<Arc<AndroidProxyRecord>> {
     if handle <= 0 {
         return None;
     }
@@ -96,14 +302,15 @@ fn remove_proxy(handle: jlong) -> Option<Arc<BrowserProxy>> {
 }
 
 fn destroy_proxy(handle: jlong) -> bool {
-    let Some(proxy) = proxy_from_handle(handle) else {
+    let Some(record) = proxy_from_handle(handle) else {
         return false;
     };
-    proxy.request_stop();
-    let Some(proxy) = remove_proxy(handle) else {
+    record.statuses.deactivate();
+    record.proxy.request_stop();
+    let Some(record) = remove_proxy(handle) else {
         return false;
     };
-    proxy.stop();
+    record.proxy.stop();
     true
 }
 
@@ -114,11 +321,12 @@ fn destroy_all_proxies() {
         .drain()
         .map(|(_, proxy)| proxy)
         .collect();
-    for proxy in &proxies {
-        proxy.request_stop();
+    for record in &proxies {
+        record.statuses.deactivate();
+        record.proxy.request_stop();
     }
-    for proxy in proxies {
-        proxy.stop();
+    for record in proxies {
+        record.proxy.stop();
     }
 }
 
@@ -140,6 +348,105 @@ fn proxy_endpoint_bundle(handle: jlong, proxy: &BrowserProxy) -> Option<Vec<u8>>
         bundle.extend_from_slice(value.as_bytes());
     }
     Some(bundle)
+}
+
+fn canonical_proxy_status_host(host: &str) -> Option<String> {
+    let host = host.trim().trim_end_matches('.');
+    if host.is_empty() || host.len() > 253 || !host.is_ascii() {
+        return None;
+    }
+    for label in host.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return None;
+        }
+        let bytes = label.as_bytes();
+        if !bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+            || !bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+            || !bytes
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
+        {
+            return None;
+        }
+    }
+    Some(host.to_ascii_lowercase())
+}
+
+fn proxy_tls_policy_code(policy: Option<BrowserProxyTlsPolicy>) -> Option<u8> {
+    match policy {
+        None => Some(0),
+        Some(BrowserProxyTlsPolicy::Dane) => Some(1),
+        Some(BrowserProxyTlsPolicy::WebPkiFallback) => Some(2),
+        Some(_) => None,
+    }
+}
+
+fn proxy_resolver_policy_code(policy: Option<BrowserProxyResolverPolicy>) -> Option<u8> {
+    match policy {
+        None => Some(0),
+        Some(BrowserProxyResolverPolicy::HnsDohCompatibility) => Some(1),
+        Some(_) => None,
+    }
+}
+
+fn proxy_security_path_code(path: Option<BrowserProxySecurityPath>) -> Option<u8> {
+    match path {
+        None => Some(0),
+        Some(BrowserProxySecurityPath::DaneAuthoritativeDoh) => Some(1),
+        Some(BrowserProxySecurityPath::DaneAuthoritativeDns53) => Some(2),
+        Some(BrowserProxySecurityPath::DaneThirdPartyDoh) => Some(3),
+        Some(BrowserProxySecurityPath::StatelessDane) => Some(4),
+        Some(BrowserProxySecurityPath::DaneIcannDoh) => Some(5),
+        Some(BrowserProxySecurityPath::HnsAuthoritativeDoh) => Some(6),
+        Some(BrowserProxySecurityPath::HnsAuthoritativeDns53) => Some(7),
+        Some(BrowserProxySecurityPath::HnsThirdPartyDoh) => Some(8),
+        Some(_) => None,
+    }
+}
+
+fn proxy_status_bundle(pending: &PendingAndroidProxyStatus) -> Option<Vec<u8>> {
+    let status = &pending.status;
+    if pending.sequence == 0 || status.generation == 0 || !(100..=599).contains(&status.status_code)
+    {
+        return None;
+    }
+    let host = canonical_proxy_status_host(&status.host)?;
+    if host != status.host {
+        return None;
+    }
+    let host_length = u16::try_from(host.len()).ok()?;
+    let fixed_length = PROXY_STATUS_BUNDLE_MAGIC.len()
+        + 1
+        + std::mem::size_of::<u64>()
+        + std::mem::size_of::<u64>()
+        + std::mem::size_of::<u16>()
+        + 4
+        + std::mem::size_of::<u16>()
+        + host.len()
+        + std::mem::size_of::<u32>();
+    let trace = status
+        .resolution_trace_json
+        .as_deref()
+        .filter(|trace| fixed_length.saturating_add(trace.len()) <= MAX_PROXY_STATUS_BUNDLE_BYTES);
+    let trace_length = u32::try_from(trace.map_or(0, str::len)).ok()?;
+
+    let mut bundle = Vec::with_capacity(fixed_length + trace.map_or(0, str::len));
+    bundle.extend_from_slice(PROXY_STATUS_BUNDLE_MAGIC);
+    bundle.push(PROXY_STATUS_BUNDLE_VERSION);
+    bundle.extend_from_slice(&status.generation.to_be_bytes());
+    bundle.extend_from_slice(&pending.sequence.to_be_bytes());
+    bundle.extend_from_slice(&status.status_code.to_be_bytes());
+    bundle.push(u8::from(status.likely_main_frame));
+    bundle.push(proxy_tls_policy_code(status.tls_policy)?);
+    bundle.push(proxy_resolver_policy_code(status.resolver_policy)?);
+    bundle.push(proxy_security_path_code(status.security_path)?);
+    bundle.extend_from_slice(&host_length.to_be_bytes());
+    bundle.extend_from_slice(host.as_bytes());
+    bundle.extend_from_slice(&trace_length.to_be_bytes());
+    if let Some(trace) = trace {
+        bundle.extend_from_slice(trace.as_bytes());
+    }
+    (bundle.len() <= MAX_PROXY_STATUS_BUNDLE_BYTES).then_some(bundle)
 }
 
 struct JniGatewayHttpRequest<'local> {
@@ -748,13 +1055,17 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeS
         .zip(env.get_string(&scope_root).ok())
         .and_then(|(runtime, scope_root)| {
             let scope_root = scope_root.to_string_lossy();
-            runtime.start_proxy(&scope_root).ok()
+            let statuses = Arc::new(AndroidProxyStatusMailbox::new());
+            runtime
+                .start_proxy_with_observer(&scope_root, statuses.clone())
+                .ok()
+                .map(|proxy| (proxy, statuses))
         })
-        .and_then(register_proxy);
-    let Some((proxy_handle, proxy)) = result else {
+        .and_then(|(proxy, statuses)| register_proxy(proxy, statuses));
+    let Some((proxy_handle, record)) = result else {
         return std::ptr::null_mut();
     };
-    let Some(bundle) = proxy_endpoint_bundle(proxy_handle, &proxy) else {
+    let Some(bundle) = proxy_endpoint_bundle(proxy_handle, &record.proxy) else {
         let _destroyed = destroy_proxy(proxy_handle);
         return std::ptr::null_mut();
     };
@@ -775,17 +1086,21 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeProxyReq
     session_id: JString<'_>,
     generation: jlong,
 ) -> jboolean {
-    let Some(proxy) = proxy_from_handle(handle) else {
+    let Some(record) = proxy_from_handle(handle) else {
         return 0;
     };
     let (Ok(session_id), Ok(generation)) = (env.get_string(&session_id), u64::try_from(generation))
     else {
         return 0;
     };
-    if !proxy.matches_instance(&session_id.to_string_lossy(), generation) {
+    if !record
+        .proxy
+        .matches_instance(&session_id.to_string_lossy(), generation)
+    {
         return 0;
     }
-    proxy.request_stop();
+    record.statuses.deactivate();
+    record.proxy.request_stop();
     1
 }
 
@@ -807,6 +1122,87 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeProxyDes
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeProxyTakeMainFrameStatus(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    session_id: JString<'_>,
+    generation: jlong,
+    host: JString<'_>,
+) -> jbyteArray {
+    let Some(record) = proxy_from_handle(handle) else {
+        return std::ptr::null_mut();
+    };
+    let (Ok(session_id), Ok(generation), Ok(host)) = (
+        env.get_string(&session_id),
+        u64::try_from(generation),
+        env.get_string(&host),
+    ) else {
+        return std::ptr::null_mut();
+    };
+    if !record
+        .proxy
+        .matches_instance(&session_id.to_string_lossy(), generation)
+    {
+        return std::ptr::null_mut();
+    }
+    let Some(host) = canonical_proxy_status_host(&host.to_string_lossy()) else {
+        return std::ptr::null_mut();
+    };
+    let Some(pending) = record.statuses.peek_matching(generation, &host) else {
+        return std::ptr::null_mut();
+    };
+    let Some(bundle) = proxy_status_bundle(&pending) else {
+        return std::ptr::null_mut();
+    };
+    let Ok(array) = env.byte_array_from_slice(&bundle) else {
+        return std::ptr::null_mut();
+    };
+    if !record
+        .statuses
+        .acknowledge_matching(generation, &host, pending.sequence)
+    {
+        return std::ptr::null_mut();
+    }
+    array.into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeProxyDiscardMainFrameStatus(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    session_id: JString<'_>,
+    generation: jlong,
+    host: JString<'_>,
+) -> jboolean {
+    let Some(record) = proxy_from_handle(handle) else {
+        return 0;
+    };
+    let (Ok(session_id), Ok(generation), Ok(host)) = (
+        env.get_string(&session_id),
+        u64::try_from(generation),
+        env.get_string(&host),
+    ) else {
+        return 0;
+    };
+    if !record
+        .proxy
+        .matches_instance(&session_id.to_string_lossy(), generation)
+    {
+        return 0;
+    }
+    let Some(host) = canonical_proxy_status_host(&host.to_string_lossy()) else {
+        return 0;
+    };
+    if record.statuses.discard_matching(generation, &host) {
+        1
+    } else {
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeProxyMatchesLocalCertificate(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -816,14 +1212,17 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeProxyMat
     host: JString<'_>,
     certificate_der: JByteArray<'_>,
 ) -> jboolean {
-    let Some(proxy) = proxy_from_handle(handle) else {
+    let Some(record) = proxy_from_handle(handle) else {
         return 0;
     };
     let (Ok(session_id), Ok(generation)) = (env.get_string(&session_id), u64::try_from(generation))
     else {
         return 0;
     };
-    if !proxy.matches_instance(&session_id.to_string_lossy(), generation) {
+    if !record
+        .proxy
+        .matches_instance(&session_id.to_string_lossy(), generation)
+    {
         return 0;
     }
     let Ok(length) = env.get_array_length(&certificate_der) else {
@@ -845,7 +1244,10 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeProxyMat
     if host.len() > 253 {
         return 0;
     }
-    if proxy.matches_local_certificate(&host, &certificate_der) {
+    if record
+        .proxy
+        .matches_local_certificate(&host, &certificate_der)
+    {
         1
     } else {
         0
@@ -1081,12 +1483,17 @@ mod tests {
             BrowserRuntime::open(RuntimeConfiguration::new(&data_dir, NetworkKind::Regtest))
                 .unwrap();
         let proxy = runtime.start_proxy("welcome").unwrap();
-        let (handle, proxy) = register_proxy(proxy).unwrap();
+        let statuses = Arc::new(AndroidProxyStatusMailbox::new());
+        let (handle, record) = register_proxy(proxy, statuses).unwrap();
 
         assert!(handle > 0);
         assert!(proxy_from_handle(handle).is_some());
-        proxy.request_stop();
-        assert!(!proxy.matches_local_certificate("welcome", b"certificate"));
+        record.proxy.request_stop();
+        assert!(
+            !record
+                .proxy
+                .matches_local_certificate("welcome", b"certificate")
+        );
         assert!(destroy_proxy(handle));
         assert!(proxy_from_handle(handle).is_none());
         assert!(!destroy_proxy(handle));
@@ -1107,9 +1514,10 @@ mod tests {
             BrowserRuntime::open(RuntimeConfiguration::new(&data_dir, NetworkKind::Regtest))
                 .unwrap();
         let proxy = runtime.start_proxy("welcome").unwrap();
-        let (handle, proxy) = register_proxy(proxy).unwrap();
+        let statuses = Arc::new(AndroidProxyStatusMailbox::new());
+        let (handle, record) = register_proxy(proxy, statuses).unwrap();
 
-        let bundle = proxy_endpoint_bundle(handle, &proxy).unwrap();
+        let bundle = proxy_endpoint_bundle(handle, &record.proxy).unwrap();
         assert_eq!(&bundle[..4], PROXY_ENDPOINT_BUNDLE_MAGIC);
         assert_eq!(bundle[4], PROXY_ENDPOINT_BUNDLE_VERSION);
         assert_eq!(
@@ -1118,17 +1526,17 @@ mod tests {
         );
         assert_eq!(
             u16::from_be_bytes(bundle[13..15].try_into().unwrap()),
-            proxy.port()
+            record.proxy.port()
         );
         assert_eq!(
             u64::from_be_bytes(bundle[15..23].try_into().unwrap()),
-            proxy.generation()
+            record.proxy.generation()
         );
         for value in [
-            proxy.session_id(),
-            proxy.authorization_realm(),
-            proxy.authorization_username(),
-            proxy.authorization_password(),
+            record.proxy.session_id(),
+            record.proxy.authorization_realm(),
+            record.proxy.authorization_username(),
+            record.proxy.authorization_password(),
         ] {
             assert!(
                 bundle
@@ -1140,5 +1548,167 @@ mod tests {
 
         assert!(destroy_proxy(handle));
         let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    fn test_proxy_status(
+        generation: u64,
+        host: &str,
+        likely_main_frame: bool,
+    ) -> AndroidProxyStatus {
+        AndroidProxyStatus {
+            generation,
+            host: host.to_owned(),
+            status_code: 200,
+            likely_main_frame,
+            tls_policy: Some(BrowserProxyTlsPolicy::Dane),
+            resolver_policy: Some(BrowserProxyResolverPolicy::HnsDohCompatibility),
+            security_path: Some(BrowserProxySecurityPath::DaneAuthoritativeDoh),
+            resolution_trace_json: Some(r#"{"mode":"strict"}"#.to_owned()),
+        }
+    }
+
+    #[test]
+    fn proxy_status_mailbox_is_main_frame_bounded_exact_and_revocable() {
+        let mailbox = AndroidProxyStatusMailbox::new();
+        mailbox.record_status(test_proxy_status(7, "welcome", false));
+        assert!(mailbox.peek_matching(7, "welcome").is_none());
+
+        mailbox.record_status(test_proxy_status(7, "welcome", true));
+        assert!(mailbox.peek_matching(8, "welcome").is_none());
+        assert!(mailbox.peek_matching(7, "other").is_none());
+        let pending = mailbox.peek_matching(7, "welcome").unwrap();
+        assert_eq!(pending.status, test_proxy_status(7, "welcome", true));
+        assert!(!mailbox.acknowledge_matching(7, "welcome", pending.sequence + 1));
+        assert!(mailbox.acknowledge_matching(7, "welcome", pending.sequence));
+        assert!(mailbox.peek_matching(7, "welcome").is_none());
+
+        mailbox.record_status(test_proxy_status(7, "welcome", true));
+        let superseded = mailbox.peek_matching(7, "welcome").unwrap();
+        let mut newer = test_proxy_status(7, "welcome", true);
+        newer.status_code = 204;
+        mailbox.record_status(newer);
+        assert!(!mailbox.acknowledge_matching(7, "welcome", superseded.sequence));
+        assert_eq!(
+            mailbox
+                .peek_matching(7, "welcome")
+                .unwrap()
+                .status
+                .status_code,
+            204
+        );
+        assert!(mailbox.discard_matching(7, "welcome"));
+        assert!(!mailbox.discard_matching(7, "welcome"));
+        mailbox.record_status(test_proxy_status(7, "welcome", true));
+        mailbox.deactivate();
+        assert!(mailbox.peek_matching(7, "welcome").is_none());
+        mailbox.record_status(test_proxy_status(7, "welcome", true));
+        assert!(mailbox.peek_matching(7, "welcome").is_none());
+    }
+
+    #[test]
+    fn proxy_status_mailbox_is_per_host_ordered_and_aggregate_bounded() {
+        let mailbox = AndroidProxyStatusMailbox::new();
+        for index in 0..(MAX_PROXY_STATUS_HOSTS + 2) {
+            let mut status = test_proxy_status(3, &format!("host{index}"), true);
+            status.resolution_trace_json = Some("x".repeat(12 * 1024));
+            mailbox.record_status(status);
+        }
+
+        let state = mailbox
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(state.latest_by_host.len() <= MAX_PROXY_STATUS_HOSTS);
+        assert!(state.retained_trace_bytes <= MAX_PROXY_STATUS_RETAINED_TRACE_BYTES);
+        assert!(!state.latest_by_host.contains_key("host0"));
+        assert!(state.latest_by_host.contains_key("host9"));
+    }
+
+    #[test]
+    fn proxy_status_bundle_is_versioned_typed_redacted_and_bounded() {
+        let status = test_proxy_status(9, "welcome", true);
+        let diagnostic = format!("{status:?}");
+        assert!(!diagnostic.contains("strict"));
+        assert!(diagnostic.contains("resolution_trace_bytes"));
+        let pending = PendingAndroidProxyStatus {
+            sequence: 12,
+            status: status.clone(),
+        };
+        let bundle = proxy_status_bundle(&pending).unwrap();
+
+        assert_eq!(&bundle[..4], PROXY_STATUS_BUNDLE_MAGIC);
+        assert_eq!(bundle[4], PROXY_STATUS_BUNDLE_VERSION);
+        assert_eq!(u64::from_be_bytes(bundle[5..13].try_into().unwrap()), 9);
+        assert_eq!(u64::from_be_bytes(bundle[13..21].try_into().unwrap()), 12);
+        assert_eq!(u16::from_be_bytes(bundle[21..23].try_into().unwrap()), 200);
+        assert_eq!(&bundle[23..27], &[1, 1, 1, 1]);
+        let host_length = u16::from_be_bytes(bundle[27..29].try_into().unwrap()) as usize;
+        assert_eq!(&bundle[29..29 + host_length], b"welcome");
+        let trace_length_offset = 29 + host_length;
+        let trace_length = u32::from_be_bytes(
+            bundle[trace_length_offset..trace_length_offset + 4]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        assert_eq!(
+            &bundle[trace_length_offset + 4..],
+            status.resolution_trace_json.as_deref().unwrap().as_bytes()
+        );
+        assert_eq!(
+            trace_length,
+            status.resolution_trace_json.as_deref().unwrap().len()
+        );
+        assert!(bundle.len() <= MAX_PROXY_STATUS_BUNDLE_BYTES);
+
+        for (path, code) in [
+            (BrowserProxySecurityPath::DaneAuthoritativeDoh, 1),
+            (BrowserProxySecurityPath::DaneAuthoritativeDns53, 2),
+            (BrowserProxySecurityPath::DaneThirdPartyDoh, 3),
+            (BrowserProxySecurityPath::StatelessDane, 4),
+            (BrowserProxySecurityPath::DaneIcannDoh, 5),
+            (BrowserProxySecurityPath::HnsAuthoritativeDoh, 6),
+            (BrowserProxySecurityPath::HnsAuthoritativeDns53, 7),
+            (BrowserProxySecurityPath::HnsThirdPartyDoh, 8),
+        ] {
+            let mapped = proxy_status_bundle(&PendingAndroidProxyStatus {
+                sequence: 12,
+                status: AndroidProxyStatus {
+                    security_path: Some(path),
+                    ..status.clone()
+                },
+            })
+            .unwrap();
+            assert_eq!(mapped[26], code);
+        }
+
+        let oversized = PendingAndroidProxyStatus {
+            sequence: 12,
+            status: AndroidProxyStatus {
+                resolution_trace_json: Some("x".repeat(MAX_PROXY_STATUS_BUNDLE_BYTES)),
+                ..status
+            },
+        };
+        let bounded = proxy_status_bundle(&oversized).unwrap();
+        let trace_length_offset = 29 + "welcome".len();
+        assert_eq!(
+            u32::from_be_bytes(
+                bounded[trace_length_offset..trace_length_offset + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            0
+        );
+        assert!(bounded.len() <= MAX_PROXY_STATUS_BUNDLE_BYTES);
+    }
+
+    #[test]
+    fn proxy_status_host_canonicalization_rejects_unsafe_names() {
+        assert_eq!(
+            canonical_proxy_status_host(" Welcome. ").as_deref(),
+            Some("welcome")
+        );
+        for invalid in ["", ".", "-welcome", "welcome-", "wel_come", "a..b"] {
+            assert!(canonical_proxy_status_host(invalid).is_none(), "{invalid}");
+        }
     }
 }

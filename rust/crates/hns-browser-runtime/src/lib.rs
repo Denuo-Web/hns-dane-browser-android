@@ -19,9 +19,10 @@ use hns_dane::{
 use hns_gateway::{Gateway, GatewayConfig, GatewayError, GatewayRequest, HnsHttpsMode};
 use hns_loopback_proxy::{
     BackendError as ProxyBackendError, CancellationToken as ProxyCancellationToken, HostScope,
-    HostScopeError, NoopProxyObserver, ProxyBackend, ProxyError, ProxyHeader, ProxyInstanceId,
-    ProxyRequest as LoopbackProxyRequest, ProxyRequestBody, ProxyResponse, ProxyResponseBody,
-    ProxyResponseHead, ProxySessionId, ProxyTunnel, ProxyTunnelOpen, RunningProxy,
+    HostScopeError, InternalResponseMetadata, NoopProxyObserver, ProxyBackend, ProxyError,
+    ProxyHeader, ProxyInstanceId, ProxyRequest as LoopbackProxyRequest, ProxyRequestBody,
+    ProxyResponse, ProxyResponseBody, ProxyResponseHead, ProxyResponseMetadataObservation,
+    ProxyResponseMetadataObserver, ProxySessionId, ProxyTunnel, ProxyTunnelOpen, RunningProxy,
     SessionIdGenerationError,
 };
 use hns_p2p::{
@@ -60,6 +61,7 @@ use thiserror::Error;
 
 pub const DEFAULT_RESOURCE_CACHE_LIMIT_BYTES: usize = 50 * 1024 * 1024;
 pub const MAX_GATEWAY_HEADER_TEXT_BYTES: usize = 64 * 1024;
+pub const MAX_BROWSER_PROXY_RESOLUTION_TRACE_JSON_BYTES: usize = 64 * 1024;
 pub const LOCAL_TLS_CERT_FINGERPRINT_BYTES: usize = 32;
 const DNS_CLASS_IN: u16 = 1;
 const DNS_OPT_RECORD_TYPE: u16 = 41;
@@ -100,6 +102,8 @@ const HNS_RESOLUTION_TRACE_HEADER: &str = "X-HNS-Resolution-Trace";
 const HNS_RESOLVER_MODE_HEADER: &str = "X-HNS-Resolver-Mode";
 const HNS_DOH_FALLBACK_HEADER: &str = "X-HNS-DoH-Fallback";
 const HNS_SECURITY_PATH_HEADER: &str = "X-HNS-Security-Path";
+const HNS_TLS_POLICY_HEADER: &str = "X-HNS-TLS-Policy";
+const HNS_RESOLVER_POLICY_HEADER: &str = "X-HNS-Resolver-Policy";
 const TUNNEL_COPY_BUFFER_BYTES: usize = 16 * 1024;
 const PROXY_MAINTENANCE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_PROXY_UPGRADE_HEADERS: usize = 256;
@@ -258,6 +262,218 @@ pub enum BrowserProxyError {
     GenerationExhausted,
     #[error("unable to start the browser proxy")]
     Start(#[from] ProxyError),
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrowserProxyTlsPolicy {
+    Dane,
+    WebPkiFallback,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrowserProxyResolverPolicy {
+    HnsDohCompatibility,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrowserProxySecurityPath {
+    DaneAuthoritativeDoh,
+    DaneAuthoritativeDns53,
+    DaneThirdPartyDoh,
+    StatelessDane,
+    DaneIcannDoh,
+    HnsAuthoritativeDoh,
+    HnsAuthoritativeDns53,
+    HnsThirdPartyDoh,
+}
+
+/// Bounded, typed security status observed before the loopback proxy removes
+/// internal runtime metadata from the browser-visible response.
+///
+/// This status is sensitive rather than privacy-bounded: its trace can contain
+/// navigation details and must not be written to ordinary platform logs.
+#[derive(Clone, Eq, PartialEq)]
+pub struct BrowserProxyStatus {
+    generation: u64,
+    host: String,
+    status_code: u16,
+    likely_main_frame: bool,
+    tls_policy: Option<BrowserProxyTlsPolicy>,
+    resolver_policy: Option<BrowserProxyResolverPolicy>,
+    security_path: Option<BrowserProxySecurityPath>,
+    resolution_trace_json: Option<String>,
+}
+
+impl BrowserProxyStatus {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn status_code(&self) -> u16 {
+        self.status_code
+    }
+
+    pub fn is_likely_main_frame(&self) -> bool {
+        self.likely_main_frame
+    }
+
+    pub fn tls_policy(&self) -> Option<BrowserProxyTlsPolicy> {
+        self.tls_policy
+    }
+
+    pub fn resolver_policy(&self) -> Option<BrowserProxyResolverPolicy> {
+        self.resolver_policy
+    }
+
+    pub fn security_path(&self) -> Option<BrowserProxySecurityPath> {
+        self.security_path
+    }
+
+    /// Returns a sensitive, bounded resolution trace for in-memory browser UI.
+    /// Callers must not write this value to ordinary logs.
+    pub fn resolution_trace_json(&self) -> Option<&str> {
+        self.resolution_trace_json.as_deref()
+    }
+}
+
+impl std::fmt::Debug for BrowserProxyStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BrowserProxyStatus")
+            .field("generation", &self.generation)
+            .field("host", &self.host)
+            .field("status_code", &self.status_code)
+            .field("likely_main_frame", &self.likely_main_frame)
+            .field("tls_policy", &self.tls_policy)
+            .field("resolver_policy", &self.resolver_policy)
+            .field("security_path", &self.security_path)
+            .field(
+                "resolution_trace_present",
+                &self.resolution_trace_json.is_some(),
+            )
+            .field(
+                "resolution_trace_bytes",
+                &self.resolution_trace_json.as_ref().map(String::len),
+            )
+            .finish()
+    }
+}
+
+pub trait BrowserProxyStatusObserver: Send + Sync + 'static {
+    /// Receives status derived only from the proxy's trusted internal metadata
+    /// allowlist. Implementations must return promptly and must not panic.
+    fn observe_status(&self, status: &BrowserProxyStatus);
+}
+
+impl<F> BrowserProxyStatusObserver for F
+where
+    F: Fn(&BrowserProxyStatus) + Send + Sync + 'static,
+{
+    fn observe_status(&self, status: &BrowserProxyStatus) {
+        self(status);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopBrowserProxyStatusObserver;
+
+impl BrowserProxyStatusObserver for NoopBrowserProxyStatusObserver {
+    fn observe_status(&self, _status: &BrowserProxyStatus) {}
+}
+
+fn parse_browser_proxy_tls_policy(value: Option<&str>) -> Option<BrowserProxyTlsPolicy> {
+    match value.map(str::trim) {
+        Some(value) if value.eq_ignore_ascii_case("dane") => Some(BrowserProxyTlsPolicy::Dane),
+        Some(value) if value.eq_ignore_ascii_case("webpki-fallback") => {
+            Some(BrowserProxyTlsPolicy::WebPkiFallback)
+        }
+        _ => None,
+    }
+}
+
+fn parse_browser_proxy_resolver_policy(value: Option<&str>) -> Option<BrowserProxyResolverPolicy> {
+    match value.map(str::trim) {
+        Some(value) if value.eq_ignore_ascii_case("hns-doh-compat") => {
+            Some(BrowserProxyResolverPolicy::HnsDohCompatibility)
+        }
+        _ => None,
+    }
+}
+
+fn parse_browser_proxy_security_path(value: Option<&str>) -> Option<BrowserProxySecurityPath> {
+    let value = value.map(str::trim)?;
+    if value.eq_ignore_ascii_case("dane-authoritative-doh") {
+        Some(BrowserProxySecurityPath::DaneAuthoritativeDoh)
+    } else if value.eq_ignore_ascii_case("dane-authoritative-dns53") {
+        Some(BrowserProxySecurityPath::DaneAuthoritativeDns53)
+    } else if value.eq_ignore_ascii_case("dane-third-party-doh") {
+        Some(BrowserProxySecurityPath::DaneThirdPartyDoh)
+    } else if value.eq_ignore_ascii_case("stateless-dane") {
+        Some(BrowserProxySecurityPath::StatelessDane)
+    } else if value.eq_ignore_ascii_case("dane-icann-doh") {
+        Some(BrowserProxySecurityPath::DaneIcannDoh)
+    } else if value.eq_ignore_ascii_case("hns-authoritative-doh") {
+        Some(BrowserProxySecurityPath::HnsAuthoritativeDoh)
+    } else if value.eq_ignore_ascii_case("hns-authoritative-dns53") {
+        Some(BrowserProxySecurityPath::HnsAuthoritativeDns53)
+    } else if value.eq_ignore_ascii_case("hns-third-party-doh") {
+        Some(BrowserProxySecurityPath::HnsThirdPartyDoh)
+    } else {
+        None
+    }
+}
+
+fn bounded_browser_proxy_resolution_trace(value: Option<&str>) -> Option<String> {
+    value
+        .filter(|trace| trace.len() <= MAX_BROWSER_PROXY_RESOLUTION_TRACE_JSON_BYTES)
+        .map(str::to_owned)
+}
+
+fn browser_proxy_status_from_metadata(
+    generation: u64,
+    host: &str,
+    status_code: u16,
+    likely_main_frame: bool,
+    metadata: &InternalResponseMetadata,
+) -> BrowserProxyStatus {
+    BrowserProxyStatus {
+        generation,
+        host: host.to_owned(),
+        status_code,
+        likely_main_frame,
+        tls_policy: parse_browser_proxy_tls_policy(metadata.get(HNS_TLS_POLICY_HEADER)),
+        resolver_policy: parse_browser_proxy_resolver_policy(
+            metadata.get(HNS_RESOLVER_POLICY_HEADER),
+        ),
+        security_path: parse_browser_proxy_security_path(metadata.get(HNS_SECURITY_PATH_HEADER)),
+        resolution_trace_json: bounded_browser_proxy_resolution_trace(
+            metadata.get(HNS_RESOLUTION_TRACE_HEADER),
+        ),
+    }
+}
+
+struct RuntimeProxyStatusMetadataObserver {
+    observer: Arc<dyn BrowserProxyStatusObserver>,
+}
+
+impl ProxyResponseMetadataObserver for RuntimeProxyStatusMetadataObserver {
+    fn observe(&self, observation: &ProxyResponseMetadataObservation) {
+        let status = browser_proxy_status_from_metadata(
+            observation.generation(),
+            observation.host().as_str(),
+            observation.status_code(),
+            observation.is_likely_main_frame(),
+            observation.metadata(),
+        );
+        self.observer.observe_status(&status);
+    }
 }
 
 /// One Rust-owned proxy generation backed by this runtime's resolver,
@@ -508,6 +724,16 @@ impl BrowserRuntime {
     /// exact HNS scope root and its subdomains. Every call receives fresh
     /// credentials and a monotonically increasing runtime generation.
     pub fn start_proxy(&self, scope_root: &str) -> Result<BrowserProxy, BrowserProxyError> {
+        self.start_proxy_with_observer(scope_root, Arc::new(NoopBrowserProxyStatusObserver))
+    }
+
+    /// Starts a proxy generation and delivers typed, sensitive response
+    /// status before internal metadata is removed from browser-visible heads.
+    pub fn start_proxy_with_observer(
+        &self,
+        scope_root: &str,
+        observer: Arc<dyn BrowserProxyStatusObserver>,
+    ) -> Result<BrowserProxy, BrowserProxyError> {
         let scope = HostScope::new(scope_root)?;
         let generation = self
             .inner
@@ -524,10 +750,12 @@ impl BrowserRuntime {
             self.inner.proxy_session.get_or_init(|| generated).clone()
         };
         let instance = ProxyInstanceId::new(session, generation);
-        let running = RunningProxy::start(
+        let metadata_observer = RuntimeProxyStatusMetadataObserver { observer };
+        let running = RunningProxy::start_with_metadata_observer(
             hns_loopback_proxy::ProxyConfig::new(instance, scope),
             Arc::new(self.proxy_backend()),
             Arc::new(NoopProxyObserver),
+            Arc::new(metadata_observer),
         )?;
         Ok(BrowserProxy { running })
     }
@@ -6158,7 +6386,9 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<BrowserRuntime>();
         assert_send_sync::<BrowserProxy>();
+        assert_send_sync::<BrowserProxyStatus>();
         assert_send_sync::<RuntimeProxyBackend>();
+        assert_send_sync::<NoopBrowserProxyStatusObserver>();
         let data_dir = temp_dir_path("runtime-proxy-debug");
         assert_eq!(
             format!(
@@ -6170,6 +6400,132 @@ mod tests {
             "RuntimeProxyBackend(<redacted runtime>)"
         );
         cleanup_dir(&data_dir);
+    }
+
+    fn trusted_proxy_metadata(headers: &[(&str, &str)]) -> InternalResponseMetadata {
+        let headers = headers
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect::<Vec<_>>();
+        hns_loopback_proxy::sanitize_response_headers(&headers)
+            .unwrap()
+            .metadata()
+            .clone()
+    }
+
+    #[test]
+    fn browser_proxy_status_parses_only_known_trusted_metadata_values() {
+        let metadata = trusted_proxy_metadata(&[
+            (HNS_TLS_POLICY_HEADER, " DaNe "),
+            (HNS_RESOLVER_POLICY_HEADER, " HNS-DOH-COMPAT "),
+            (HNS_SECURITY_PATH_HEADER, " Dane-Authoritative-DoH "),
+            (HNS_RESOLUTION_TRACE_HEADER, r#"{"mode":"strict"}"#),
+            ("X-HNS-Future-Metadata", "must-not-surface"),
+        ]);
+        let status = browser_proxy_status_from_metadata(7, "welcome", 204, true, &metadata);
+
+        assert_eq!(
+            status,
+            BrowserProxyStatus {
+                generation: 7,
+                host: "welcome".to_owned(),
+                status_code: 204,
+                likely_main_frame: true,
+                tls_policy: Some(BrowserProxyTlsPolicy::Dane),
+                resolver_policy: Some(BrowserProxyResolverPolicy::HnsDohCompatibility),
+                security_path: Some(BrowserProxySecurityPath::DaneAuthoritativeDoh),
+                resolution_trace_json: Some(r#"{"mode":"strict"}"#.to_owned()),
+            }
+        );
+        assert_eq!(metadata.get("X-HNS-Future-Metadata"), None);
+
+        let unknown = trusted_proxy_metadata(&[
+            (HNS_TLS_POLICY_HEADER, "origin-defined"),
+            (HNS_RESOLVER_POLICY_HEADER, "future-policy"),
+            (HNS_SECURITY_PATH_HEADER, "future-path"),
+        ]);
+        let status = browser_proxy_status_from_metadata(8, "welcome", 200, false, &unknown);
+        assert_eq!(status.tls_policy, None);
+        assert_eq!(status.resolver_policy, None);
+        assert_eq!(status.security_path, None);
+        assert_eq!(
+            parse_browser_proxy_tls_policy(Some(" WebPKI-Fallback ")),
+            Some(BrowserProxyTlsPolicy::WebPkiFallback)
+        );
+    }
+
+    #[test]
+    fn browser_proxy_security_path_parser_covers_the_native_status_vocabulary() {
+        for (value, expected) in [
+            (
+                "dane-authoritative-doh",
+                BrowserProxySecurityPath::DaneAuthoritativeDoh,
+            ),
+            (
+                "dane-authoritative-dns53",
+                BrowserProxySecurityPath::DaneAuthoritativeDns53,
+            ),
+            (
+                "dane-third-party-doh",
+                BrowserProxySecurityPath::DaneThirdPartyDoh,
+            ),
+            ("stateless-dane", BrowserProxySecurityPath::StatelessDane),
+            ("dane-icann-doh", BrowserProxySecurityPath::DaneIcannDoh),
+            (
+                "hns-authoritative-doh",
+                BrowserProxySecurityPath::HnsAuthoritativeDoh,
+            ),
+            (
+                "hns-authoritative-dns53",
+                BrowserProxySecurityPath::HnsAuthoritativeDns53,
+            ),
+            (
+                "hns-third-party-doh",
+                BrowserProxySecurityPath::HnsThirdPartyDoh,
+            ),
+        ] {
+            assert_eq!(
+                parse_browser_proxy_security_path(Some(value)),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn browser_proxy_resolution_trace_is_preserved_only_within_the_explicit_bound() {
+        let maximum = "x".repeat(MAX_BROWSER_PROXY_RESOLUTION_TRACE_JSON_BYTES);
+        assert_eq!(
+            bounded_browser_proxy_resolution_trace(Some(&maximum)),
+            Some(maximum.clone())
+        );
+
+        let oversized = format!("{maximum}x");
+        assert_eq!(
+            bounded_browser_proxy_resolution_trace(Some(&oversized)),
+            None
+        );
+        assert_eq!(bounded_browser_proxy_resolution_trace(None), None);
+    }
+
+    #[test]
+    fn browser_proxy_status_debug_redacts_resolution_trace_contents() {
+        let secret = "https://welcome/private?token=secret";
+        let status = BrowserProxyStatus {
+            generation: 4,
+            host: "welcome".to_owned(),
+            status_code: 200,
+            likely_main_frame: true,
+            tls_policy: Some(BrowserProxyTlsPolicy::Dane),
+            resolver_policy: None,
+            security_path: Some(BrowserProxySecurityPath::DaneAuthoritativeDoh),
+            resolution_trace_json: Some(format!(r#"{{"url":"{secret}"}}"#)),
+        };
+
+        let debug = format!("{status:?}");
+        assert!(!debug.contains(secret));
+        assert!(!debug.contains("token=secret"));
+        assert!(debug.contains("resolution_trace_present: true"));
+        assert!(debug.contains("resolution_trace_bytes: Some("));
     }
 
     #[test]
@@ -6471,6 +6827,72 @@ mod tests {
             std::io::ErrorKind::InvalidData,
             "test HTTP head exceeded limit",
         ))
+    }
+
+    #[test]
+    fn browser_proxy_status_observer_receives_typed_trusted_main_frame_metadata() {
+        let (data_dir, runtime) =
+            runtime_with_cached_loopback_name("runtime-proxy-status-observer");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin_port = listener.local_addr().unwrap().port();
+        let origin = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let request = String::from_utf8(read_test_http_head(&mut stream).unwrap()).unwrap();
+            assert!(request.starts_with("GET / HTTP/1.1\r\n"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nX-HNS-Security-Path: spoofed\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok",
+                )
+                .unwrap();
+        });
+
+        let (status_tx, status_rx) = std::sync::mpsc::channel();
+        let observer = move |status: &BrowserProxyStatus| {
+            let _result = status_tx.send(status.clone());
+        };
+        let proxy = runtime
+            .start_proxy_with_observer("welcome", Arc::new(observer))
+            .unwrap();
+        let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, proxy.port())).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let request = format!(
+            "GET http://welcome:{origin_port}/ HTTP/1.1\r\nHost: welcome:{origin_port}\r\nProxy-Authorization: {}\r\nSec-Fetch-Dest: document\r\nAccept: text/html\r\n\r\n",
+            proxy.running.endpoint().authorization_header_value(),
+        );
+        client.write_all(request.as_bytes()).unwrap();
+        client.flush().unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(!response.to_ascii_lowercase().contains("x-hns-"));
+
+        let status = status_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(status.generation, proxy.generation());
+        assert_eq!(status.host, "welcome");
+        assert_eq!(status.status_code, 200);
+        assert!(status.likely_main_frame);
+        assert_eq!(status.tls_policy, None);
+        assert_eq!(status.resolver_policy, None);
+        assert_ne!(
+            status.security_path,
+            Some(BrowserProxySecurityPath::StatelessDane)
+        );
+        assert!(
+            status
+                .resolution_trace_json
+                .as_deref()
+                .is_some_and(|trace| trace.contains(r#""mode":"strict""#))
+        );
+
+        proxy.stop();
+        origin.join().unwrap();
+        cleanup_dir(&data_dir);
     }
 
     #[test]

@@ -294,6 +294,30 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge, LocalTlsCertificateProvid
         certificateDer,
     )
 
+    internal fun takeRustProxyMainFrameStatus(
+        endpoint: LocalBrowserProxyEndpoint,
+        host: String,
+    ): LocalBrowserProxyStatus? {
+        if (!isLoaded) return null
+        val bundle = nativeProxyTakeMainFrameStatus(
+            endpoint.nativeHandle,
+            endpoint.instanceId.sessionId,
+            endpoint.instanceId.generation,
+            host,
+        ) ?: return null
+        return parseRustProxyStatusBundle(bundle, endpoint, host)
+    }
+
+    internal fun discardRustProxyMainFrameStatus(
+        endpoint: LocalBrowserProxyEndpoint,
+        host: String,
+    ): Boolean = isLoaded && nativeProxyDiscardMainFrameStatus(
+        endpoint.nativeHandle,
+        endpoint.instanceId.sessionId,
+        endpoint.instanceId.generation,
+        host,
+    )
+
     fun closeRuntimes() {
         if (!isLoaded) return
         val writeLock = runtimeLifecycleLock.writeLock()
@@ -376,6 +400,20 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge, LocalTlsCertificateProvid
     private external fun nativeProxyDestroy(handle: Long)
 
     private external fun nativeProxyDestroyAll()
+
+    private external fun nativeProxyTakeMainFrameStatus(
+        handle: Long,
+        sessionId: String,
+        generation: Long,
+        host: String,
+    ): ByteArray?
+
+    private external fun nativeProxyDiscardMainFrameStatus(
+        handle: Long,
+        sessionId: String,
+        generation: Long,
+        host: String,
+    ): Boolean
 
     private external fun nativeProxyMatchesLocalCertificate(
         handle: Long,

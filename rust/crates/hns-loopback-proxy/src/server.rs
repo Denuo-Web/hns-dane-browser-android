@@ -22,6 +22,10 @@ use crate::listener::{
     ClientHandler, ListenerExitHandler, ListenerExitPhase, ListenerExitReason, OwnedListener,
     RejectionHandler,
 };
+use crate::metadata::{
+    NoopProxyResponseMetadataObserver, ProxyResponseMetadataObservation,
+    ProxyResponseMetadataObserver,
+};
 use crate::rate_limit::{
     RateLimitConfig, RateLimitConfigError, RateLimitDecision, RateLimitScope, RequestRateLimiter,
 };
@@ -74,6 +78,22 @@ impl RunningProxy {
         backend: Arc<dyn ProxyBackend>,
         observer: Arc<dyn ProxyObserver>,
     ) -> Result<Self, ProxyError> {
+        Self::start_with_metadata_observer(
+            config,
+            backend,
+            observer,
+            Arc::new(NoopProxyResponseMetadataObserver),
+        )
+    }
+
+    /// Starts a fresh authenticated proxy with an independent observer for
+    /// trusted metadata removed from validated browser response heads.
+    pub fn start_with_metadata_observer(
+        config: ProxyConfig,
+        backend: Arc<dyn ProxyBackend>,
+        observer: Arc<dyn ProxyObserver>,
+        metadata_observer: Arc<dyn ProxyResponseMetadataObserver>,
+    ) -> Result<Self, ProxyError> {
         let authorization =
             Arc::new(ProxyAuthorization::generate().map_err(ProxyError::Authorization)?);
         let limits = config.limits();
@@ -91,6 +111,7 @@ impl RunningProxy {
             timeouts,
             backend,
             observer: Arc::clone(&observer),
+            metadata_observer,
             generation,
             rate_limiter,
             tls_identities: Arc::clone(&tls_identities),
@@ -194,6 +215,7 @@ impl RunningProxy {
             return false;
         };
         self.tls_identities.matches_der(&host, certificate_der)
+            && !self.stop_state.requested.load(Ordering::Acquire)
     }
 
     /// Cancels socket/backend work and, from an external control thread, joins
@@ -405,6 +427,7 @@ struct ServerContext {
     timeouts: ProxyTimeouts,
     backend: Arc<dyn ProxyBackend>,
     observer: Arc<dyn ProxyObserver>,
+    metadata_observer: Arc<dyn ProxyResponseMetadataObserver>,
     generation: u64,
     rate_limiter: RequestRateLimiter,
     tls_identities: Arc<LocalTlsIdentityStore>,
@@ -546,16 +569,20 @@ fn handle_direct_http(
     cancellation: &CancellationToken,
     context: &ServerContext,
 ) {
-    if !admit_rate(stream, context, canonical_host, method) {
-        return;
-    }
-
     let route = HttpRoute {
         scheme: absolute.scheme(),
         authority: absolute.authority(),
         path_and_query: absolute.path_and_query(),
     };
-    if matches!(absolute.scheme(), Scheme::Ws | Scheme::Wss) || requests_upgrade(head) {
+    let is_upgrade =
+        matches!(absolute.scheme(), Scheme::Ws | Scheme::Wss) || requests_upgrade(head);
+    let likely_main_frame =
+        !is_upgrade && is_likely_main_frame_navigation(head, route.path_and_query);
+    if !admit_rate(stream, context, canonical_host, method, likely_main_frame) {
+        return;
+    }
+
+    if is_upgrade {
         handle_admitted_upgrade(
             stream,
             head,
@@ -642,7 +669,7 @@ fn handle_connect(
         );
         return;
     }
-    if !admit_rate(&mut stream, context, &canonical_host, method) {
+    if !admit_rate(&mut stream, context, &canonical_host, method, false) {
         return;
     }
 
@@ -911,6 +938,7 @@ fn admit_rate<W: Write + ?Sized>(
     context: &ServerContext,
     canonical_host: &crate::NormalizedHost,
     method: ObservedMethod,
+    likely_main_frame: bool,
 ) -> bool {
     match context
         .rate_limiter
@@ -927,6 +955,13 @@ fn admit_rate<W: Write + ?Sized>(
                 canonical_host,
                 method,
                 RequestPhase::Rejected { reason },
+            );
+            observe_proxy_generated_response(
+                context,
+                canonical_host,
+                method,
+                429,
+                likely_main_frame,
             );
             let _result = write_error_response(
                 stream,
@@ -949,10 +984,18 @@ fn handle_admitted_http<S: ClientIo + ?Sized>(
     cancellation: &CancellationToken,
     context: &ServerContext,
 ) {
+    let likely_main_frame = is_likely_main_frame_navigation(head, route.path_and_query);
     let framing = match determine_body_framing(head.headers()) {
         Ok(framing) => framing,
         Err(error) => {
-            reject_http_request(stream, context, canonical_host, method, &error);
+            reject_http_request_with_status(
+                stream,
+                context,
+                canonical_host,
+                method,
+                &error,
+                likely_main_frame,
+            );
             return;
         }
     };
@@ -960,19 +1003,20 @@ fn handle_admitted_http<S: ClientIo + ?Sized>(
         framing,
         BodyFraming::ContentLength(length) if length > context.limits.max_body_bytes()
     ) {
-        reject_http_request(
+        reject_http_request_with_status(
             stream,
             context,
             canonical_host,
             method,
             &Http1Error::BodyTooLarge,
+            likely_main_frame,
         );
         return;
     }
     let expects_continue = match expects_continue(head) {
         Ok(expects) => expects,
         Err(()) => {
-            reject_scoped_request(
+            reject_scoped_request_with_status(
                 stream,
                 context,
                 canonical_host,
@@ -980,6 +1024,7 @@ fn handle_admitted_http<S: ClientIo + ?Sized>(
                 417,
                 "Expectation Failed",
                 RequestRejectionReason::InvalidRequest,
+                likely_main_frame,
             );
             return;
         }
@@ -987,7 +1032,14 @@ fn handle_admitted_http<S: ClientIo + ?Sized>(
     let forward_headers = match build_forward_headers(head, route, canonical_host) {
         Ok(headers) => headers,
         Err(error) => {
-            reject_http_request(stream, context, canonical_host, method, &error);
+            reject_http_request_with_status(
+                stream,
+                context,
+                canonical_host,
+                method,
+                &error,
+                likely_main_frame,
+            );
             return;
         }
     };
@@ -1003,7 +1055,14 @@ fn handle_admitted_http<S: ClientIo + ?Sized>(
         match read_request_body(&mut reader, framing, context.limits.max_body_bytes()) {
             Ok(bytes) => bytes,
             Err(error) => {
-                reject_http_request(stream, context, canonical_host, method, &error);
+                reject_http_request_with_status(
+                    stream,
+                    context,
+                    canonical_host,
+                    method,
+                    &error,
+                    likely_main_frame,
+                );
                 return;
             }
         }
@@ -1049,6 +1108,7 @@ fn handle_admitted_http<S: ClientIo + ?Sized>(
         context,
         canonical_host,
         method,
+        likely_main_frame,
         head.method(),
         request,
         cancellation,
@@ -1061,6 +1121,7 @@ fn execute_backend<W: Write + ?Sized>(
     context: &ServerContext,
     host: &crate::NormalizedHost,
     method: ObservedMethod,
+    likely_main_frame: bool,
     request_method: &str,
     request: ProxyRequest,
     cancellation: &CancellationToken,
@@ -1084,6 +1145,7 @@ fn execute_backend<W: Write + ?Sized>(
             );
             if !cancellation.is_cancelled() {
                 let (status, reason) = backend_error_status(error);
+                observe_proxy_generated_response(context, host, method, status, likely_main_frame);
                 let _result = write_error_response(stream, status, reason, &[]);
             }
             return;
@@ -1093,7 +1155,9 @@ fn execute_backend<W: Write + ?Sized>(
         return;
     }
     let status = response.head.status_code;
-    match write_backend_response(stream, request_method, response, cancellation) {
+    match write_backend_response(stream, request_method, response, cancellation, |metadata| {
+        observe_response_metadata(context, host, method, status, likely_main_frame, metadata);
+    }) {
         Ok(()) => observe_request(
             context,
             host,
@@ -1106,6 +1170,7 @@ fn execute_backend<W: Write + ?Sized>(
         Err(WriteBackendError::InvalidBeforeHead) => {
             observe_invalid_response(context, host, method, started.elapsed());
             if !cancellation.is_cancelled() {
+                observe_proxy_generated_response(context, host, method, 502, likely_main_frame);
                 let _result = write_error_response(stream, 502, "Invalid Upstream Response", &[]);
             }
         }
@@ -1160,7 +1225,15 @@ fn execute_backend_tunnel<S: ClientIo + ?Sized>(
         ProxyTunnelOpen::Tunnel(tunnel) => tunnel,
         ProxyTunnelOpen::Response(response) => {
             let status = response.head.status_code;
-            match write_backend_response(client, &request_method, response, cancellation) {
+            match write_backend_response(
+                client,
+                &request_method,
+                response,
+                cancellation,
+                |metadata| {
+                    observe_response_metadata(context, host, method, status, false, metadata);
+                },
+            ) {
                 Ok(()) => observe_request(
                     context,
                     host,
@@ -1190,6 +1263,16 @@ fn execute_backend_tunnel<S: ClientIo + ?Sized>(
         .into_iter()
         .map(|header| (header.name, header.value))
         .collect();
+    let sanitized = match sanitize_response_headers(&header_pairs) {
+        Ok(sanitized) => sanitized,
+        Err(_error) => {
+            observe_invalid_response(context, host, method, started.elapsed());
+            if !cancellation.is_cancelled() {
+                let _result = write_error_response(client, 502, "Invalid Upstream Response", &[]);
+            }
+            return;
+        }
+    };
     let encoded =
         match encode_upgrade_response_head(head.status_code, &head.reason_phrase, &header_pairs) {
             Ok(encoded) => encoded,
@@ -1202,6 +1285,7 @@ fn execute_backend_tunnel<S: ClientIo + ?Sized>(
                 return;
             }
         };
+    observe_response_metadata(context, host, method, 101, false, sanitized.metadata());
     if client.write_all(encoded.as_bytes()).is_err() || client.flush().is_err() {
         return;
     }
@@ -1317,12 +1401,17 @@ fn observe_invalid_response(
     );
 }
 
-fn write_backend_response<W: Write + ?Sized>(
+fn write_backend_response<W, F>(
     stream: &mut W,
     request_method: &str,
     response: ProxyResponse,
     cancellation: &CancellationToken,
-) -> Result<(), WriteBackendError> {
+    observe_metadata: F,
+) -> Result<(), WriteBackendError>
+where
+    W: Write + ?Sized,
+    F: FnOnce(&crate::InternalResponseMetadata),
+{
     let ProxyResponse { head, body } = response;
     let header_pairs: Vec<_> = head
         .headers
@@ -1341,6 +1430,7 @@ fn write_backend_response<W: Write + ?Sized>(
     )
     .map_err(|_error| WriteBackendError::InvalidBeforeHead)?;
     let body_allowed = encoded.body_allowed();
+    observe_metadata(headers.metadata());
     stream
         .write_all(encoded.as_bytes())
         .map_err(|_error| WriteBackendError::Io)?;
@@ -1466,6 +1556,66 @@ fn expects_continue(head: &RequestHead) -> Result<bool, ()> {
     Ok(true)
 }
 
+/// Mirrors the Android shell's conservative navigation heuristic without
+/// retaining the request target in an observation.
+fn is_likely_main_frame_navigation(head: &RequestHead, path_and_query: &str) -> bool {
+    if !head.method().eq_ignore_ascii_case("GET") && !head.method().eq_ignore_ascii_case("HEAD") {
+        return false;
+    }
+
+    if let Some(fetch_destination) = head.header_values("sec-fetch-dest").next() {
+        if fetch_destination.eq_ignore_ascii_case("document")
+            || fetch_destination.eq_ignore_ascii_case("iframe")
+        {
+            return true;
+        }
+        if is_subresource_fetch_destination(fetch_destination) {
+            return false;
+        }
+    }
+    if head
+        .header_values("sec-fetch-mode")
+        .next()
+        .is_some_and(|mode| mode.eq_ignore_ascii_case("navigate"))
+    {
+        return true;
+    }
+    if head.header_values("upgrade-insecure-requests").next() == Some("1") {
+        return true;
+    }
+    if head
+        .header_values("accept")
+        .next()
+        .is_some_and(|accept| accept.to_ascii_lowercase().contains("text/html"))
+    {
+        return true;
+    }
+    path_and_query == "/"
+}
+
+fn is_subresource_fetch_destination(destination: &str) -> bool {
+    matches!(
+        destination.to_ascii_lowercase().as_str(),
+        "audio"
+            | "audioworklet"
+            | "embed"
+            | "font"
+            | "image"
+            | "manifest"
+            | "object"
+            | "paintworklet"
+            | "report"
+            | "script"
+            | "serviceworker"
+            | "sharedworker"
+            | "style"
+            | "track"
+            | "video"
+            | "worker"
+            | "xslt"
+    )
+}
+
 fn requests_upgrade(head: &RequestHead) -> bool {
     head.header_values("upgrade").next().is_some()
         || head
@@ -1481,13 +1631,24 @@ fn reject_http_request<W: Write + ?Sized>(
     method: ObservedMethod,
     error: &Http1Error,
 ) {
+    reject_http_request_with_status(stream, context, host, method, error, false);
+}
+
+fn reject_http_request_with_status<W: Write + ?Sized>(
+    stream: &mut W,
+    context: &ServerContext,
+    host: &crate::NormalizedHost,
+    method: ObservedMethod,
+    error: &Http1Error,
+    likely_main_frame: bool,
+) {
     let rejection = if matches!(error, Http1Error::BodyTooLarge) {
         RequestRejectionReason::RequestTooLarge
     } else {
         RequestRejectionReason::InvalidRequest
     };
     let (status, status_reason) = request_error_status(error);
-    reject_scoped_request(
+    reject_scoped_request_with_status(
         stream,
         context,
         host,
@@ -1495,6 +1656,7 @@ fn reject_http_request<W: Write + ?Sized>(
         status,
         status_reason,
         rejection,
+        likely_main_frame,
     );
 }
 
@@ -1508,12 +1670,29 @@ fn reject_scoped_request<W: Write + ?Sized>(
     reason: &'static str,
     rejection: RequestRejectionReason,
 ) {
+    reject_scoped_request_with_status(
+        stream, context, host, method, status, reason, rejection, false,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reject_scoped_request_with_status<W: Write + ?Sized>(
+    stream: &mut W,
+    context: &ServerContext,
+    host: &crate::NormalizedHost,
+    method: ObservedMethod,
+    status: u16,
+    reason: &'static str,
+    rejection: RequestRejectionReason,
+    likely_main_frame: bool,
+) {
     observe_request(
         context,
         host,
         method,
         RequestPhase::Rejected { reason: rejection },
     );
+    observe_proxy_generated_response(context, host, method, status, likely_main_frame);
     let _result = write_error_response(stream, status, reason, &[]);
 }
 
@@ -1699,6 +1878,50 @@ fn observe_request(
     );
 }
 
+fn observe_response_metadata(
+    context: &ServerContext,
+    host: &crate::NormalizedHost,
+    method: ObservedMethod,
+    status_code: u16,
+    likely_main_frame: bool,
+    metadata: &crate::InternalResponseMetadata,
+) {
+    let Ok(host) = ObservedHost::new(host.as_str()) else {
+        return;
+    };
+    let observation = ProxyResponseMetadataObservation::new(
+        context.generation,
+        host,
+        method,
+        status_code,
+        likely_main_frame,
+        metadata.clone(),
+    );
+    let _result = catch_unwind(AssertUnwindSafe(|| {
+        context.metadata_observer.observe(&observation);
+    }));
+}
+
+fn observe_proxy_generated_response(
+    context: &ServerContext,
+    host: &crate::NormalizedHost,
+    method: ObservedMethod,
+    status_code: u16,
+    likely_main_frame: bool,
+) {
+    if !likely_main_frame {
+        return;
+    }
+    observe_response_metadata(
+        context,
+        host,
+        method,
+        status_code,
+        true,
+        &crate::InternalResponseMetadata::default(),
+    );
+}
+
 fn observe(observer: &dyn ProxyObserver, event: ProxyEvent) {
     let _result = catch_unwind(AssertUnwindSafe(|| observer.observe(&event)));
 }
@@ -1707,7 +1930,8 @@ fn observe(observer: &dyn ProxyObserver, event: ProxyEvent) {
 mod tests {
     use super::*;
     use crate::{
-        NoopProxyObserver, ProxyInstanceId, ProxyResponseHead, ProxySessionId, ProxyTunnel,
+        NoopProxyObserver, ProxyInstanceId, ProxyResponseHead, ProxyResponseMetadataObservation,
+        ProxySessionId, ProxyTunnel,
     };
     use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -1951,7 +2175,10 @@ mod tests {
                 head: ProxyResponseHead {
                     status_code: 404,
                     reason_phrase: "HNS Name Not Found".to_owned(),
-                    headers: vec![ProxyHeader::new("Content-Type", "text/plain")],
+                    headers: vec![
+                        ProxyHeader::new("Content-Type", "text/plain"),
+                        ProxyHeader::new("X-HNS-Security-Path", "verified-non-inclusion"),
+                    ],
                 },
                 body: ProxyResponseBody::Bytes(b"verified non-inclusion".to_vec()),
             }))
@@ -2035,6 +2262,19 @@ mod tests {
 
     fn start_recording_proxy(backend: Arc<RecordingBackend>) -> RunningProxy {
         RunningProxy::start(test_config(), backend, Arc::new(NoopProxyObserver)).unwrap()
+    }
+
+    fn start_recording_proxy_with_metadata(
+        backend: Arc<RecordingBackend>,
+        metadata_observer: Arc<dyn ProxyResponseMetadataObserver>,
+    ) -> RunningProxy {
+        RunningProxy::start_with_metadata_observer(
+            test_config(),
+            backend,
+            Arc::new(NoopProxyObserver),
+            metadata_observer,
+        )
+        .unwrap()
     }
 
     fn send_raw(proxy: &RunningProxy, request: &[u8]) -> Vec<u8> {
@@ -2263,6 +2503,64 @@ mod tests {
                 ) => {}
             result => panic!("expected a closed proxy connection, got {result:?}"),
         }
+    }
+
+    fn parsed_test_head(method: &str, headers: &[(&str, &str)]) -> RequestHead {
+        let mut request = format!("{method} http://welcome/ HTTP/1.1\r\nHost: welcome\r\n");
+        for (name, value) in headers {
+            request.push_str(name);
+            request.push_str(": ");
+            request.push_str(value);
+            request.push_str("\r\n");
+        }
+        request.push_str("\r\n");
+        crate::parse_request_head(request.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn likely_main_frame_classification_matches_android_shell_rules() {
+        let classify = |method, path, headers: &[(&str, &str)]| {
+            is_likely_main_frame_navigation(&parsed_test_head(method, headers), path)
+        };
+
+        assert!(classify(
+            "GET",
+            "/asset.js",
+            &[("Sec-Fetch-Dest", "document")]
+        ));
+        assert!(classify(
+            "HEAD",
+            "/asset.js",
+            &[("Sec-Fetch-Dest", "IFRAME")]
+        ));
+        assert!(!classify(
+            "GET",
+            "/",
+            &[
+                ("Sec-Fetch-Dest", "script"),
+                ("Sec-Fetch-Mode", "navigate"),
+                ("Accept", "text/html"),
+            ],
+        ));
+        assert!(classify(
+            "GET",
+            "/asset.js",
+            &[("Sec-Fetch-Mode", "navigate")],
+        ));
+        assert!(classify(
+            "GET",
+            "/asset.js",
+            &[("Upgrade-Insecure-Requests", "1")],
+        ));
+        assert!(classify(
+            "GET",
+            "/asset.js",
+            &[("Accept", "application/xhtml+xml, TEXT/HTML;q=0.9")],
+        ));
+        assert!(classify("GET", "/", &[]));
+        assert!(!classify("GET", "/?private=1", &[]));
+        assert!(!classify("GET", "/asset.css", &[]));
+        assert!(!classify("POST", "/", &[("Sec-Fetch-Dest", "document")],));
     }
 
     #[test]
@@ -2728,6 +3026,173 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_response_delivers_only_sanitized_typed_metadata() {
+        let backend = Arc::new(RecordingBackend::new(ResponsePlan::Fixed {
+            headers: vec![
+                ProxyHeader::new("Content-Type", "text/plain"),
+                ProxyHeader::new("X-HNS-Security-Path", "dane"),
+                ProxyHeader::new(
+                    "X-HNS-Resolution-Trace",
+                    r#"[{"origin_path":"/private?server=secret"}]"#,
+                ),
+                ProxyHeader::new("X-HNS-Future", "untrusted"),
+                ProxyHeader::new("Connection", "X-HNS-Resolver-Policy"),
+                ProxyHeader::new("X-HNS-Resolver-Policy", "nominated"),
+            ],
+            body: b"response-body-secret".to_vec(),
+        }));
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&observations);
+        let observer = Arc::new(move |observation: &ProxyResponseMetadataObservation| {
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(observation.clone());
+        });
+        let proxy = start_recording_proxy_with_metadata(Arc::clone(&backend), observer);
+        let body = b"request-body-secret";
+        let request = format!(
+            "GET http://welcome/private?token=request-secret HTTP/1.1\r\nHost: welcome\r\n{}Sec-Fetch-Dest: document\r\nX-Request-Secret: request-header-secret\r\nContent-Length: {}\r\n\r\n",
+            auth_header(&proxy),
+            body.len(),
+        );
+        let mut request = request.into_bytes();
+        request.extend_from_slice(body);
+
+        let response = send_raw(&proxy, &request);
+        assert_eq!(response_status(&response), 200);
+        let (head, response_body) = response_parts(&response);
+        assert_eq!(response_body, b"response-body-secret");
+        assert!(!head.to_ascii_lowercase().contains("x-hns-"));
+
+        let observations = observations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(observations.len(), 1);
+        let observation = &observations[0];
+        assert_eq!(observation.generation(), 1);
+        assert_eq!(observation.host().as_str(), "welcome");
+        assert_eq!(observation.method(), ObservedMethod::Get);
+        assert_eq!(observation.status_code(), 200);
+        assert!(observation.is_likely_main_frame());
+        assert_eq!(
+            observation.metadata().get("X-HNS-Security-Path"),
+            Some("dane")
+        );
+        assert_eq!(
+            observation.metadata().get("X-HNS-Resolution-Trace"),
+            Some(r#"[{"origin_path":"/private?server=secret"}]"#)
+        );
+        assert_eq!(observation.metadata().get("X-HNS-Future"), None);
+        assert_eq!(observation.metadata().get("X-HNS-Resolver-Policy"), None);
+        let diagnostic = format!("{observation:?}");
+        for secret in [
+            "private",
+            "request-secret",
+            "server=secret",
+            "request-body-secret",
+            "request-header-secret",
+        ] {
+            assert!(
+                !diagnostic.contains(secret),
+                "leaked {secret}: {diagnostic}"
+            );
+        }
+        drop(observations);
+        proxy.stop();
+    }
+
+    #[test]
+    fn invalid_response_head_reports_only_the_proxy_generated_main_frame_error() {
+        let backend = Arc::new(RecordingBackend::new(ResponsePlan::Fixed {
+            headers: vec![
+                ProxyHeader::new("X-HNS-TLS-Policy", "dane"),
+                ProxyHeader::new("x-hns-tls-policy", "webpki"),
+            ],
+            body: Vec::new(),
+        }));
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&observations);
+        let observer = Arc::new(move |observation: &ProxyResponseMetadataObservation| {
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(observation.clone());
+        });
+        let proxy = start_recording_proxy_with_metadata(backend, observer);
+        let request = format!(
+            "GET http://welcome/ HTTP/1.1\r\nHost: welcome\r\n{}\r\n",
+            auth_header(&proxy)
+        );
+
+        assert_eq!(response_status(&send_raw(&proxy, request.as_bytes())), 502);
+        let observations = observations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].status_code(), 502);
+        assert!(observations[0].is_likely_main_frame());
+        assert!(observations[0].metadata().is_empty());
+        drop(observations);
+        proxy.stop();
+    }
+
+    #[test]
+    fn backend_failure_reports_the_proxy_generated_main_frame_status() {
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&observations);
+        let observer = Arc::new(move |observation: &ProxyResponseMetadataObservation| {
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(observation.clone());
+        });
+        let proxy = RunningProxy::start_with_metadata_observer(
+            test_config(),
+            Arc::new(UnusedBackend),
+            Arc::new(NoopProxyObserver),
+            observer,
+        )
+        .unwrap();
+        let request = format!(
+            "GET http://welcome/ HTTP/1.1\r\nHost: welcome\r\n{}\r\n",
+            auth_header(&proxy)
+        );
+
+        assert_eq!(response_status(&send_raw(&proxy, request.as_bytes())), 500);
+        let observations = observations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].status_code(), 500);
+        assert!(observations[0].is_likely_main_frame());
+        assert!(observations[0].metadata().is_empty());
+        drop(observations);
+        proxy.stop();
+    }
+
+    #[test]
+    fn panicking_metadata_observer_does_not_interrupt_response_delivery() {
+        let backend = Arc::new(RecordingBackend::new(ResponsePlan::Fixed {
+            headers: vec![ProxyHeader::new("X-HNS-Security-Path", "dane")],
+            body: b"ok".to_vec(),
+        }));
+        let observer = Arc::new(|_observation: &ProxyResponseMetadataObservation| {
+            panic!("test metadata observer panic");
+        });
+        let proxy = start_recording_proxy_with_metadata(Arc::clone(&backend), observer);
+        let request = format!(
+            "GET http://welcome/ HTTP/1.1\r\nHost: welcome\r\n{}\r\n",
+            auth_header(&proxy)
+        );
+
+        for _ in 0..2 {
+            let response = send_raw(&proxy, request.as_bytes());
+            assert_eq!(response_status(&response), 200);
+            assert_eq!(response_parts(&response).1, b"ok");
+        }
+        assert_eq!(backend.request_count(), 2);
+        proxy.stop();
+    }
+
+    #[test]
     fn fixed_and_chunked_request_bodies_are_forwarded_without_framing_fields() {
         let backend = Arc::new(RecordingBackend::new(ResponsePlan::plain(b"ok")));
         let proxy = start_recording_proxy(Arc::clone(&backend));
@@ -3130,9 +3595,20 @@ mod tests {
     #[test]
     fn direct_websocket_upgrade_is_sanitized_and_copied_bidirectionally() {
         let backend = Arc::new(EchoTunnelBackend::websocket(b"origin"));
-        let proxy =
-            RunningProxy::start(test_config(), backend.clone(), Arc::new(NoopProxyObserver))
-                .unwrap();
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&observations);
+        let metadata_observer = Arc::new(move |observation: &ProxyResponseMetadataObservation| {
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(observation.clone());
+        });
+        let proxy = RunningProxy::start_with_metadata_observer(
+            test_config(),
+            backend.clone(),
+            Arc::new(NoopProxyObserver),
+            metadata_observer,
+        )
+        .unwrap();
         let mut client = TcpStream::connect(proxy.endpoint().address()).unwrap();
         client.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
         client.set_write_timeout(Some(TEST_TIMEOUT)).unwrap();
@@ -3152,6 +3628,26 @@ mod tests {
         assert!(!response_text.contains("keep-alive"));
         assert!(!response_text.contains("X-Origin-Hop"));
         assert!(!response_text.contains("X-HNS-"));
+        {
+            let observations = observations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert_eq!(observations.len(), 1);
+            let observation = &observations[0];
+            assert_eq!(observation.generation(), 1);
+            assert_eq!(observation.host().as_str(), "welcome");
+            assert_eq!(observation.method(), ObservedMethod::Get);
+            assert_eq!(observation.status_code(), 101);
+            assert!(!observation.is_likely_main_frame());
+            assert_eq!(
+                observation.metadata().get("X-HNS-Security-Path"),
+                Some("secret")
+            );
+            let diagnostic = format!("{observation:?}");
+            assert!(!diagnostic.contains("socket"));
+            assert!(!diagnostic.contains("q=1"));
+            assert!(!diagnostic.contains("secret"));
+        }
         let mut from_origin = [0_u8; 6];
         client.read_exact(&mut from_origin).unwrap();
         assert_eq!(&from_origin, b"origin");
@@ -3232,11 +3728,23 @@ mod tests {
             headers: vec![
                 ProxyHeader::new("Connection", "Upgrade"),
                 ProxyHeader::new("Upgrade", "websocket"),
+                ProxyHeader::new("X-HNS-Security-Path", "must-not-observe"),
             ],
         }));
-        let proxy =
-            RunningProxy::start(test_config(), backend.clone(), Arc::new(NoopProxyObserver))
-                .unwrap();
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&observations);
+        let metadata_observer = Arc::new(move |observation: &ProxyResponseMetadataObservation| {
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(observation.clone());
+        });
+        let proxy = RunningProxy::start_with_metadata_observer(
+            test_config(),
+            backend.clone(),
+            Arc::new(NoopProxyObserver),
+            metadata_observer,
+        )
+        .unwrap();
         let request = format!(
             "GET ws://welcome/socket HTTP/1.1\r\nHost: welcome\r\n{}Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
             auth_header(&proxy)
@@ -3246,19 +3754,33 @@ mod tests {
         assert_eq!(response_status(&response), 502);
         assert!(!String::from_utf8_lossy(&response).contains("101 Switching Protocols"));
         assert_eq!(backend.take_requests().len(), 1);
+        assert!(
+            observations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        );
         proxy.stop();
     }
 
     #[test]
     fn upgrade_backend_can_fail_with_a_bounded_http_response() {
-        let proxy = RunningProxy::start(
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&observations);
+        let metadata_observer = Arc::new(move |observation: &ProxyResponseMetadataObservation| {
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(observation.clone());
+        });
+        let proxy = RunningProxy::start_with_metadata_observer(
             test_config(),
             Arc::new(HttpRejectingTunnelBackend),
             Arc::new(NoopProxyObserver),
+            metadata_observer,
         )
         .unwrap();
         let request = format!(
-            "GET ws://welcome/socket HTTP/1.1\r\nHost: welcome\r\n{}Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+            "GET ws://welcome/ HTTP/1.1\r\nHost: welcome\r\n{}Connection: Upgrade\r\nUpgrade: websocket\r\nSec-Fetch-Dest: document\r\n\r\n",
             auth_header(&proxy)
         );
 
@@ -3268,7 +3790,20 @@ mod tests {
         assert!(head.contains("Content-Type: text/plain\r\n"));
         assert!(head.contains("Content-Length: 22\r\n"));
         assert!(!head.contains("Upgrade:"));
+        assert!(!head.contains("X-HNS-"));
         assert_eq!(body, b"verified non-inclusion");
+        let observations = observations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].status_code(), 404);
+        assert_eq!(observations[0].method(), ObservedMethod::Get);
+        assert!(!observations[0].is_likely_main_frame());
+        assert_eq!(
+            observations[0].metadata().get("X-HNS-Security-Path"),
+            Some("verified-non-inclusion")
+        );
+        drop(observations);
         proxy.stop();
     }
 

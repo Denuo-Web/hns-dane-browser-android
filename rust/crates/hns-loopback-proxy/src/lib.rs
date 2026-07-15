@@ -12,6 +12,7 @@ pub mod endpoint;
 pub mod event;
 pub mod host;
 pub mod http1;
+pub mod metadata;
 pub mod rate_limit;
 pub mod response;
 pub mod server;
@@ -46,6 +47,10 @@ pub use http1::{
     RequestHead, RequestTarget, Scheme, determine_body_framing, parse_request_head,
     read_chunked_body, read_request_body, read_request_head, sanitize_forward_headers,
     sanitize_upgrade_forward_headers,
+};
+pub use metadata::{
+    NoopProxyResponseMetadataObserver, ProxyResponseMetadataObservation,
+    ProxyResponseMetadataObserver,
 };
 pub use rate_limit::{
     ActiveClientLimiter, ActiveClientPermit, RateLimitConfig, RateLimitConfigError,
