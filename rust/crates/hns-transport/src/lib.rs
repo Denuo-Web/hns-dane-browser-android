@@ -32,7 +32,7 @@ const MAX_INFORMATIONAL_RESPONSES: usize = 8;
 const MAX_HTTP_TRAILER_FIELDS: usize = 128;
 const MAX_ALT_SVC_AGE_SECS: u64 = 24 * 60 * 60;
 const ALT_SVC_FAILURE_COOLDOWN: Duration = Duration::from_secs(10 * 60);
-const TUNNEL_READ_TIMEOUT: Duration = Duration::from_millis(250);
+const TUNNEL_IO_TIMEOUT: Duration = Duration::from_millis(250);
 pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MAX_RESPONSE_HEADER_BYTES: usize = 64 * 1024;
 pub const DEFAULT_MAX_RESPONSE_BODY_BYTES: usize = 8 * 1024 * 1024;
@@ -820,7 +820,10 @@ impl TcpHttpTransport {
             .map_err(io_error)?;
         let response_head = self.send_http11_upgrade(&mut stream, request)?;
         stream
-            .set_read_timeout(Some(TUNNEL_READ_TIMEOUT))
+            .set_read_timeout(Some(TUNNEL_IO_TIMEOUT))
+            .map_err(io_error)?;
+        stream
+            .set_write_timeout(Some(TUNNEL_IO_TIMEOUT))
             .map_err(io_error)?;
         Ok(OriginTunnel {
             response_head,
@@ -851,7 +854,11 @@ impl TcpHttpTransport {
         let response_head = self.send_http11_upgrade(&mut tls_stream, request)?;
         tls_stream
             .sock
-            .set_read_timeout(Some(TUNNEL_READ_TIMEOUT))
+            .set_read_timeout(Some(TUNNEL_IO_TIMEOUT))
+            .map_err(io_error)?;
+        tls_stream
+            .sock
+            .set_write_timeout(Some(TUNNEL_IO_TIMEOUT))
             .map_err(io_error)?;
         let (dane_decision, tls_inspection) = verifier.finish_handshake(&request.host)?;
         Ok(OriginTunnel {
@@ -2546,7 +2553,7 @@ mod tests {
     fn http_fetch_waits_longer_than_tunnel_idle_timeout() {
         let server = TestServer::start_delayed(
             b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".to_vec(),
-            TUNNEL_READ_TIMEOUT + Duration::from_millis(150),
+            TUNNEL_IO_TIMEOUT + Duration::from_millis(150),
         );
         let transport = TcpHttpTransport::new(
             Duration::from_secs(1),

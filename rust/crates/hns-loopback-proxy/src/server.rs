@@ -3,7 +3,7 @@
 use crate::auth::ProxyAuthorization;
 use crate::backend::{
     BackendError, CancellationToken, ProxyBackend, ProxyHeader, ProxyRequest, ProxyRequestBody,
-    ProxyResponse, ProxyResponseBody, ProxyTunnel,
+    ProxyResponse, ProxyResponseBody, ProxyTunnel, ProxyTunnelOpen,
 };
 use crate::certificate::LocalTlsIdentityStore;
 use crate::config::{ProxyConfig, ProxyLimits, ProxyTimeouts};
@@ -1118,15 +1118,13 @@ fn execute_backend_tunnel<S: ClientIo + ?Sized>(
     cancellation: &CancellationToken,
 ) {
     let started = Instant::now();
+    let request_method = request.method.clone();
     let tunnel = catch_unwind(AssertUnwindSafe(|| {
         context.backend.open_tunnel(request, cancellation)
     }))
     .unwrap_or(Err(BackendError::Internal));
-    let ProxyTunnel {
-        head,
-        stream: mut origin,
-    } = match tunnel {
-        Ok(tunnel) => tunnel,
+    let opened = match tunnel {
+        Ok(opened) => opened,
         Err(error) => {
             observe_request(
                 context,
@@ -1147,6 +1145,38 @@ fn execute_backend_tunnel<S: ClientIo + ?Sized>(
     if cancellation.is_cancelled() {
         return;
     }
+    let ProxyTunnel {
+        head,
+        stream: mut origin,
+    } = match opened {
+        ProxyTunnelOpen::Tunnel(tunnel) => tunnel,
+        ProxyTunnelOpen::Response(response) => {
+            let status = response.head.status_code;
+            match write_backend_response(client, &request_method, response, cancellation) {
+                Ok(()) => observe_request(
+                    context,
+                    host,
+                    method,
+                    RequestPhase::Completed {
+                        status_code: status,
+                        elapsed: started.elapsed(),
+                    },
+                ),
+                Err(WriteBackendError::InvalidBeforeHead) => {
+                    observe_invalid_response(context, host, method, started.elapsed());
+                    if !cancellation.is_cancelled() {
+                        let _result =
+                            write_error_response(client, 502, "Invalid Upstream Response", &[]);
+                    }
+                }
+                Err(WriteBackendError::InvalidAfterHead) => {
+                    observe_invalid_response(context, host, method, started.elapsed());
+                }
+                Err(WriteBackendError::Io) => {}
+            }
+            return;
+        }
+    };
     let header_pairs: Vec<_> = head
         .headers
         .into_iter()
@@ -1850,17 +1880,17 @@ mod tests {
             &self,
             request: ProxyRequest,
             _cancellation: &CancellationToken,
-        ) -> Result<ProxyTunnel, BackendError> {
+        ) -> Result<ProxyTunnelOpen, BackendError> {
             self.requests
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(request);
-            Ok(ProxyTunnel {
+            Ok(ProxyTunnelOpen::Tunnel(ProxyTunnel {
                 head: self.head.clone(),
                 stream: Box::new(EchoTunnelStream {
                     pending: self.initial_origin_bytes.iter().copied().collect(),
                 }),
-            })
+            }))
         }
     }
 
@@ -1890,6 +1920,33 @@ mod tests {
 
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
+        }
+    }
+
+    struct HttpRejectingTunnelBackend;
+
+    impl ProxyBackend for HttpRejectingTunnelBackend {
+        fn execute(
+            &self,
+            _request: ProxyRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProxyResponse, BackendError> {
+            Err(BackendError::Internal)
+        }
+
+        fn open_tunnel(
+            &self,
+            _request: ProxyRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProxyTunnelOpen, BackendError> {
+            Ok(ProxyTunnelOpen::Response(ProxyResponse {
+                head: ProxyResponseHead {
+                    status_code: 404,
+                    reason_phrase: "HNS Name Not Found".to_owned(),
+                    headers: vec![ProxyHeader::new("Content-Type", "text/plain")],
+                },
+                body: ProxyResponseBody::Bytes(b"verified non-inclusion".to_vec()),
+            }))
         }
     }
 
@@ -3164,6 +3221,29 @@ mod tests {
         assert_eq!(response_status(&response), 502);
         assert!(!String::from_utf8_lossy(&response).contains("101 Switching Protocols"));
         assert_eq!(backend.take_requests().len(), 1);
+        proxy.stop();
+    }
+
+    #[test]
+    fn upgrade_backend_can_fail_with_a_bounded_http_response() {
+        let proxy = RunningProxy::start(
+            test_config(),
+            Arc::new(HttpRejectingTunnelBackend),
+            Arc::new(NoopProxyObserver),
+        )
+        .unwrap();
+        let request = format!(
+            "GET ws://welcome/socket HTTP/1.1\r\nHost: welcome\r\n{}Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+            auth_header(&proxy)
+        );
+
+        let response = send_raw(&proxy, request.as_bytes());
+        assert_eq!(response_status(&response), 404);
+        let (head, body) = response_parts(&response);
+        assert!(head.contains("Content-Type: text/plain\r\n"));
+        assert!(head.contains("Content-Length: 22\r\n"));
+        assert!(!head.contains("Upgrade:"));
+        assert_eq!(body, b"verified non-inclusion");
         proxy.stop();
     }
 

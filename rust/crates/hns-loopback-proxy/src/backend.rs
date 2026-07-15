@@ -236,6 +236,23 @@ pub struct ProxyTunnel {
     pub stream: Box<dyn ProxyTunnelIo>,
 }
 
+/// Result of opening an Upgrade route. Policy and resolution failures can be
+/// returned as a normal bounded HTTP response without falsely switching the
+/// client into tunnel mode.
+pub enum ProxyTunnelOpen {
+    Tunnel(ProxyTunnel),
+    Response(ProxyResponse),
+}
+
+impl fmt::Debug for ProxyTunnelOpen {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tunnel(tunnel) => formatter.debug_tuple("Tunnel").field(tunnel).finish(),
+            Self::Response(response) => formatter.debug_tuple("Response").field(response).finish(),
+        }
+    }
+}
+
 impl fmt::Debug for ProxyTunnel {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -304,7 +321,7 @@ pub trait ProxyBackend: Send + Sync + 'static {
         &self,
         _request: ProxyRequest,
         _cancellation: &CancellationToken,
-    ) -> Result<ProxyTunnel, BackendError> {
+    ) -> Result<ProxyTunnelOpen, BackendError> {
         Err(BackendError::UnsupportedUpgrade)
     }
 }

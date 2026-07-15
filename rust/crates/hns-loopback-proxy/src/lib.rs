@@ -27,6 +27,7 @@ pub use auth::{
 pub use backend::{
     BackendError, CancellationToken, ProxyBackend, ProxyHeader, ProxyRequest, ProxyRequestBody,
     ProxyResponse, ProxyResponseBody, ProxyResponseHead, ProxyTunnel, ProxyTunnelIo,
+    ProxyTunnelOpen,
 };
 pub use certificate::{CertificateSha256, LocalCertificatePin};
 pub use config::{

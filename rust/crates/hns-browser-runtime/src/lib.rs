@@ -17,6 +17,11 @@ use hns_dane::{
     TlsaSelector, TlsaUsage,
 };
 use hns_gateway::{Gateway, GatewayConfig, GatewayError, GatewayRequest, HnsHttpsMode};
+use hns_loopback_proxy::{
+    BackendError as ProxyBackendError, CancellationToken as ProxyCancellationToken, ProxyBackend,
+    ProxyHeader, ProxyRequest as LoopbackProxyRequest, ProxyRequestBody, ProxyResponse,
+    ProxyResponseBody, ProxyResponseHead, ProxyTunnel, ProxyTunnelOpen,
+};
 use hns_p2p::{
     DnsSeedPeerSource, HeaderSyncSession, PeerConnection, PeerSource, SqlitePeerStore,
     StaticPeerSource, VersionPacket, is_allowed_peer_endpoint,
@@ -46,7 +51,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard, TryLockError, Weak};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -94,6 +99,8 @@ const HNS_RESOLVER_MODE_HEADER: &str = "X-HNS-Resolver-Mode";
 const HNS_DOH_FALLBACK_HEADER: &str = "X-HNS-DoH-Fallback";
 const HNS_SECURITY_PATH_HEADER: &str = "X-HNS-Security-Path";
 const TUNNEL_COPY_BUFFER_BYTES: usize = 16 * 1024;
+const PROXY_MAINTENANCE_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const MAX_PROXY_UPGRADE_HEADERS: usize = 256;
 const DOH_DNS_ID: u16 = 0;
 static SHARED_HTTP_TRANSPORT: OnceLock<TcpHttpTransport> = OnceLock::new();
 
@@ -242,6 +249,19 @@ pub struct BrowserRuntime {
     inner: Arc<RuntimeInner>,
 }
 
+/// Cloneable, platform-neutral adapter from the shared browser runtime into
+/// the Rust loopback proxy's typed request and tunnel boundary.
+#[derive(Clone)]
+pub struct RuntimeProxyBackend {
+    runtime: BrowserRuntime,
+}
+
+impl std::fmt::Debug for RuntimeProxyBackend {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RuntimeProxyBackend(<redacted runtime>)")
+    }
+}
+
 struct RuntimeInner {
     configuration: RuntimeConfiguration,
     policy: RwLock<RuntimePolicy>,
@@ -380,6 +400,14 @@ impl BrowserRuntime {
 
     pub fn policy_revision(&self) -> u64 {
         self.inner.policy_revision.load(Ordering::Acquire)
+    }
+
+    /// Returns a proxy backend that shares this runtime's policy, persistent
+    /// stores, resolver coordination, and origin transport state.
+    pub fn proxy_backend(&self) -> RuntimeProxyBackend {
+        RuntimeProxyBackend {
+            runtime: self.clone(),
+        }
     }
 
     pub fn sync_once(&self) -> Result<SyncStatus, RuntimeError> {
@@ -616,6 +644,527 @@ impl BrowserRuntime {
         header_text.push_str(self.inner.configuration.network.as_str());
         header_text.push_str("\r\n");
         Ok(header_text)
+    }
+}
+
+struct PreparedRuntimeGateway {
+    gateway: Gateway<AndroidGatewayResolver, TcpHttpTransport>,
+    request: GatewayRequest,
+    network: NetworkKind,
+    mode: GatewayResolutionMode,
+    fallback_marker: FallbackMarker,
+    dns_trace: DnsTraceRecorder,
+}
+
+impl BrowserRuntime {
+    fn acquire_proxy_maintenance<'a>(
+        &'a self,
+        cancellation: &ProxyCancellationToken,
+    ) -> Result<RwLockReadGuard<'a, ()>, ProxyBackendError> {
+        loop {
+            if cancellation.is_cancelled() {
+                return Err(ProxyBackendError::Cancelled);
+            }
+            match self.inner.coordination.maintenance.try_read() {
+                Ok(guard) => return Ok(guard),
+                Err(TryLockError::Poisoned(_)) => return Err(ProxyBackendError::Internal),
+                Err(TryLockError::WouldBlock) => {
+                    if cancellation.wait_cancelled_timeout(PROXY_MAINTENANCE_POLL_INTERVAL) {
+                        return Err(ProxyBackendError::Cancelled);
+                    }
+                }
+            }
+        }
+    }
+
+    fn prepare_proxy_gateway(
+        &self,
+        request: &GatewayHttpRequest,
+    ) -> Result<PreparedRuntimeGateway, RuntimeError> {
+        self.validate_gateway_request(request)?;
+        let header_text = self.gateway_header_text(&request.headers)?;
+        let parsed_headers = parse_gateway_headers(&header_text)
+            .map_err(|error| RuntimeError::InvalidConfiguration(error.to_owned()))?;
+        let network = parsed_headers.network;
+        let mode = GatewayResolutionMode::from_strict_hns_mode(parsed_headers.strict_hns_mode);
+        let input = GatewayHttpRequestInput {
+            data_dir: &self.inner.data_dir,
+            method: &request.method,
+            scheme: &request.scheme,
+            host: &request.host,
+            port: request.port,
+            path_and_query: &request.path_and_query,
+            header_text: &header_text,
+            body: &request.body,
+        };
+        let gateway_request = gateway_request(&input, parsed_headers.headers);
+        let base = network_base_path(&self.inner.data_dir, network);
+        fs::create_dir_all(&base).map_err(|error| {
+            RuntimeError::Operation(format!("create gateway directory: {error}"))
+        })?;
+        let values = SqliteResourceValueProvider::open(base.join("resources.sqlite"))
+            .map_err(|error| RuntimeError::Operation(format!("open resource cache: {error}")))?;
+        let fallback_marker = FallbackMarker::default();
+        let dns_trace = DnsTraceRecorder::default();
+        let resolver = android_gateway_resolver(
+            base.clone(),
+            values,
+            GatewayResolverContext {
+                network,
+                mode,
+                doh_endpoint: parsed_headers.doh_endpoint,
+                peer_state: Some(Arc::clone(&self.inner.coordination.peer_state)),
+                http: self.inner.transport.clone(),
+            },
+            fallback_marker.clone(),
+            dns_trace.clone(),
+        );
+        let stateless_dane =
+            stateless_dane_config(&base, parsed_headers.stateless_dane_certificates);
+        let gateway = Gateway::new(
+            GatewayConfig {
+                hns_https_mode: HnsHttpsMode::Compatibility,
+                stateless_dane,
+                allow_non_public_origin_addresses: network == NetworkKind::Regtest || cfg!(test),
+                allow_unsafe_origin_ports: network == NetworkKind::Regtest,
+                ..GatewayConfig::default()
+            },
+            resolver,
+            self.inner.transport.clone(),
+        )
+        .map_err(|error| RuntimeError::Operation(format!("create gateway: {error}")))?;
+        Ok(PreparedRuntimeGateway {
+            gateway,
+            request: gateway_request,
+            network,
+            mode,
+            fallback_marker,
+            dns_trace,
+        })
+    }
+}
+
+impl ProxyBackend for RuntimeProxyBackend {
+    fn execute(
+        &self,
+        request: LoopbackProxyRequest,
+        cancellation: &ProxyCancellationToken,
+    ) -> Result<ProxyResponse, ProxyBackendError> {
+        if cancellation.is_cancelled() {
+            return Err(ProxyBackendError::Cancelled);
+        }
+        let request = gateway_request_from_proxy(request);
+        let _maintenance = self.runtime.acquire_proxy_maintenance(cancellation)?;
+        let prepared = self
+            .runtime
+            .prepare_proxy_gateway(&request)
+            .map_err(runtime_error_to_proxy_backend)?;
+        if cancellation.is_cancelled() {
+            return Err(ProxyBackendError::Cancelled);
+        }
+        let response = match prepared.gateway.handle(&prepared.request) {
+            Ok(response) => response,
+            Err(error) => {
+                if cancellation.is_cancelled() {
+                    return Err(ProxyBackendError::Cancelled);
+                }
+                return Ok(proxy_error_response_from_gateway(
+                    &self.runtime,
+                    &request,
+                    prepared.network,
+                    prepared.mode,
+                    &error,
+                    &prepared.fallback_marker,
+                    &prepared.dns_trace,
+                ));
+            }
+        };
+        if cancellation.is_cancelled() {
+            return Err(ProxyBackendError::Cancelled);
+        }
+        proxy_response_from_gateway(
+            &self.runtime,
+            &request,
+            prepared.network,
+            prepared.mode,
+            response,
+            &prepared.fallback_marker,
+            &prepared.dns_trace,
+        )
+    }
+
+    fn open_tunnel(
+        &self,
+        request: LoopbackProxyRequest,
+        cancellation: &ProxyCancellationToken,
+    ) -> Result<ProxyTunnelOpen, ProxyBackendError> {
+        if cancellation.is_cancelled() {
+            return Err(ProxyBackendError::Cancelled);
+        }
+        let request = gateway_request_from_proxy(request);
+        let _maintenance = self.runtime.acquire_proxy_maintenance(cancellation)?;
+        let prepared = self
+            .runtime
+            .prepare_proxy_gateway(&request)
+            .map_err(runtime_error_to_proxy_backend)?;
+        if cancellation.is_cancelled() {
+            return Err(ProxyBackendError::Cancelled);
+        }
+        let response = match prepared.gateway.handle_tunnel(&prepared.request) {
+            Ok(response) => response,
+            Err(error) => {
+                if cancellation.is_cancelled() {
+                    return Err(ProxyBackendError::Cancelled);
+                }
+                return Ok(ProxyTunnelOpen::Response(
+                    proxy_error_response_from_gateway(
+                        &self.runtime,
+                        &request,
+                        prepared.network,
+                        prepared.mode,
+                        &error,
+                        &prepared.fallback_marker,
+                        &prepared.dns_trace,
+                    ),
+                ));
+            }
+        };
+        if cancellation.is_cancelled() {
+            return Err(ProxyBackendError::Cancelled);
+        }
+        proxy_tunnel_from_gateway(
+            &self.runtime,
+            &request,
+            prepared.network,
+            prepared.mode,
+            response,
+            &prepared.fallback_marker,
+            &prepared.dns_trace,
+        )
+        .map(ProxyTunnelOpen::Tunnel)
+    }
+}
+
+fn gateway_request_from_proxy(request: LoopbackProxyRequest) -> GatewayHttpRequest {
+    GatewayHttpRequest {
+        method: request.method,
+        scheme: request.scheme,
+        host: request.host,
+        port: request.port,
+        path_and_query: request.path_and_query,
+        headers: request
+            .headers
+            .into_iter()
+            .map(|header| (header.name, header.value))
+            .collect(),
+        body: match request.body {
+            ProxyRequestBody::Empty => Vec::new(),
+            ProxyRequestBody::Bytes(bytes) => bytes,
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn proxy_response_from_gateway(
+    runtime: &BrowserRuntime,
+    request: &GatewayHttpRequest,
+    network: NetworkKind,
+    mode: GatewayResolutionMode,
+    response: hns_gateway::GatewayResponse,
+    fallback_marker: &FallbackMarker,
+    dns_trace: &DnsTraceRecorder,
+) -> Result<ProxyResponse, ProxyBackendError> {
+    let input = runtime_gateway_input(runtime, request);
+    let resolver_policy = fallback_marker.used().then_some("hns-doh-compat");
+    let security_path = security_path_name(
+        &input,
+        response.origin_request.port,
+        &response.origin.dane_decision,
+        &dns_trace.snapshot(),
+    );
+    let trace = resolution_trace_json(
+        &input,
+        network,
+        mode,
+        Some(&response.resolution),
+        TlsTraceInput {
+            validation: Some(&response.origin_request.tls),
+            decision: Some(&response.origin.dane_decision),
+            inspection: response.origin.tls_inspection.as_ref(),
+            origin_address: response.origin_request.connect_host.as_deref(),
+        },
+        None,
+        fallback_marker,
+        dns_trace,
+    );
+    let mut headers = sanitize_typed_origin_headers(response.origin.headers)?;
+    append_runtime_response_metadata(
+        &mut headers,
+        &response.origin.dane_decision,
+        resolver_policy,
+        security_path,
+        &trace,
+    );
+    Ok(ProxyResponse {
+        head: ProxyResponseHead {
+            status_code: response.origin.status,
+            reason_phrase: "OK".to_owned(),
+            headers: proxy_headers(headers),
+        },
+        body: ProxyResponseBody::Bytes(response.origin.body),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn proxy_error_response_from_gateway(
+    runtime: &BrowserRuntime,
+    request: &GatewayHttpRequest,
+    network: NetworkKind,
+    mode: GatewayResolutionMode,
+    error: &GatewayError,
+    fallback_marker: &FallbackMarker,
+    dns_trace: &DnsTraceRecorder,
+) -> ProxyResponse {
+    let input = runtime_gateway_input(runtime, request);
+    let (status, reason, detail) = map_gateway_error_for_host(&request.host, error);
+    let trace = resolution_trace_json(
+        &input,
+        network,
+        mode,
+        None,
+        TlsTraceInput::default(),
+        Some(error),
+        fallback_marker,
+        dns_trace,
+    );
+    let address = gateway_request_address(&input);
+    let body = plain_response_body(status, reason, detail, Some(&address));
+    let mut headers = vec![(
+        "Content-Type".to_owned(),
+        "text/plain; charset=utf-8".to_owned(),
+    )];
+    append_runtime_response_metadata(&mut headers, &DaneDecision::NoTlsa, None, None, &trace);
+    ProxyResponse {
+        head: ProxyResponseHead {
+            status_code: status,
+            reason_phrase: reason.to_owned(),
+            headers: proxy_headers(headers),
+        },
+        body: ProxyResponseBody::Bytes(body),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn proxy_tunnel_from_gateway(
+    runtime: &BrowserRuntime,
+    request: &GatewayHttpRequest,
+    network: NetworkKind,
+    mode: GatewayResolutionMode,
+    response: hns_gateway::GatewayTunnel,
+    fallback_marker: &FallbackMarker,
+    dns_trace: &DnsTraceRecorder,
+) -> Result<ProxyTunnel, ProxyBackendError> {
+    let input = runtime_gateway_input(runtime, request);
+    let resolver_policy = fallback_marker.used().then_some("hns-doh-compat");
+    let trace = resolution_trace_json(
+        &input,
+        network,
+        mode,
+        Some(&response.resolution),
+        TlsTraceInput {
+            validation: Some(&response.origin_request.tls),
+            decision: Some(&response.origin.dane_decision),
+            inspection: response.origin.tls_inspection.as_ref(),
+            origin_address: response.origin_request.connect_host.as_deref(),
+        },
+        None,
+        fallback_marker,
+        dns_trace,
+    );
+    let parsed = parse_upgrade_response_head(&response.origin.response_head)?;
+    let mut headers = sanitize_typed_upgrade_headers(parsed.headers)?;
+    append_runtime_response_metadata(
+        &mut headers,
+        &response.origin.dane_decision,
+        resolver_policy,
+        None,
+        &trace,
+    );
+    Ok(ProxyTunnel {
+        head: ProxyResponseHead {
+            status_code: parsed.status_code,
+            reason_phrase: "Switching Protocols".to_owned(),
+            headers: proxy_headers(headers),
+        },
+        // A boxed transport trait object is itself a concrete Read + Write +
+        // Send value and therefore satisfies the proxy tunnel trait.
+        stream: Box::new(response.origin.stream),
+    })
+}
+
+fn runtime_gateway_input<'a>(
+    runtime: &'a BrowserRuntime,
+    request: &'a GatewayHttpRequest,
+) -> GatewayHttpRequestInput<'a> {
+    GatewayHttpRequestInput {
+        data_dir: &runtime.inner.data_dir,
+        method: &request.method,
+        scheme: &request.scheme,
+        host: &request.host,
+        port: request.port,
+        path_and_query: &request.path_and_query,
+        header_text: "",
+        body: &request.body,
+    }
+}
+
+fn sanitize_typed_origin_headers(
+    headers: Vec<(String, String)>,
+) -> Result<Vec<(String, String)>, ProxyBackendError> {
+    let nominated = connection_nominated_response_headers(&headers)?;
+    Ok(headers
+        .into_iter()
+        .filter(|(name, _)| {
+            !suppressed_origin_response_header(name)
+                && !nominated.contains(&name.to_ascii_lowercase())
+        })
+        .collect())
+}
+
+fn sanitize_typed_upgrade_headers(
+    headers: Vec<(String, String)>,
+) -> Result<Vec<(String, String)>, ProxyBackendError> {
+    let nominated = connection_nominated_response_headers(&headers)?;
+    let mut headers: Vec<_> = headers
+        .into_iter()
+        .filter(|(name, _)| {
+            !name.eq_ignore_ascii_case("upgrade")
+                && !suppressed_origin_response_header(name)
+                && !nominated.contains(&name.to_ascii_lowercase())
+        })
+        .collect();
+    headers.push(("Connection".to_owned(), "Upgrade".to_owned()));
+    headers.push(("Upgrade".to_owned(), "websocket".to_owned()));
+    Ok(headers)
+}
+
+fn connection_nominated_response_headers(
+    headers: &[(String, String)],
+) -> Result<HashSet<String>, ProxyBackendError> {
+    let mut nominated = HashSet::new();
+    for (_, value) in headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("connection"))
+    {
+        for token in value.split(',').map(str::trim) {
+            if !is_valid_gateway_header_name(token) {
+                return Err(ProxyBackendError::InvalidResponse);
+            }
+            nominated.insert(token.to_ascii_lowercase());
+        }
+    }
+    Ok(nominated)
+}
+
+fn append_runtime_response_metadata(
+    headers: &mut Vec<(String, String)>,
+    decision: &DaneDecision,
+    resolver_policy: Option<&str>,
+    security_path: Option<&str>,
+    trace_json: &str,
+) {
+    if let Some(policy) = hns_tls_policy_header(decision) {
+        headers.push(("X-HNS-TLS-Policy".to_owned(), policy.to_owned()));
+    }
+    if let Some(policy) = resolver_policy {
+        headers.push(("X-HNS-Resolver-Policy".to_owned(), policy.to_owned()));
+    }
+    if let Some(path) = security_path {
+        headers.push((HNS_SECURITY_PATH_HEADER.to_owned(), path.to_owned()));
+    }
+    headers.push((
+        HNS_RESOLVER_MODE_HEADER.to_owned(),
+        trace_mode(trace_json).to_owned(),
+    ));
+    headers.push((
+        HNS_DOH_FALLBACK_HEADER.to_owned(),
+        trace_doh_fallback(trace_json).to_owned(),
+    ));
+    headers.push((
+        HNS_RESOLUTION_TRACE_HEADER.to_owned(),
+        trace_json.to_owned(),
+    ));
+}
+
+fn proxy_headers(headers: Vec<(String, String)>) -> Vec<ProxyHeader> {
+    headers
+        .into_iter()
+        .map(|(name, value)| ProxyHeader::new(name, value))
+        .collect()
+}
+
+struct ParsedUpgradeResponseHead {
+    status_code: u16,
+    headers: Vec<(String, String)>,
+}
+
+fn parse_upgrade_response_head(
+    bytes: &[u8],
+) -> Result<ParsedUpgradeResponseHead, ProxyBackendError> {
+    let mut headers = [httparse::EMPTY_HEADER; MAX_PROXY_UPGRADE_HEADERS];
+    let mut response = httparse::Response::new(&mut headers);
+    let parsed = response
+        .parse(bytes)
+        .map_err(|_error| ProxyBackendError::InvalidResponse)?;
+    let httparse::Status::Complete(consumed) = parsed else {
+        return Err(ProxyBackendError::InvalidResponse);
+    };
+    if consumed != bytes.len() || !matches!(response.version, Some(0 | 1)) {
+        return Err(ProxyBackendError::InvalidResponse);
+    }
+    let status_code = response.code.ok_or(ProxyBackendError::InvalidResponse)?;
+    if status_code != 101 {
+        return Err(ProxyBackendError::InvalidResponse);
+    }
+    let headers = response
+        .headers
+        .iter()
+        .map(|header| {
+            let value = std::str::from_utf8(header.value)
+                .map_err(|_error| ProxyBackendError::InvalidResponse)?;
+            Ok((header.name.to_owned(), value.trim().to_owned()))
+        })
+        .collect::<Result<Vec<_>, ProxyBackendError>>()?;
+    let connection_upgrade = headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("connection")
+            && value
+                .split(',')
+                .map(str::trim)
+                .any(|token| token.eq_ignore_ascii_case("upgrade"))
+    });
+    let upgrade_values: Vec<_> = headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("upgrade"))
+        .map(|(_, value)| value.as_str())
+        .collect();
+    if !connection_upgrade
+        || upgrade_values.len() != 1
+        || !upgrade_values[0].eq_ignore_ascii_case("websocket")
+    {
+        return Err(ProxyBackendError::InvalidResponse);
+    }
+    Ok(ParsedUpgradeResponseHead {
+        status_code,
+        headers,
+    })
+}
+
+fn runtime_error_to_proxy_backend(error: RuntimeError) -> ProxyBackendError {
+    match error {
+        RuntimeError::InvalidConfiguration(_) => ProxyBackendError::InvalidRequest,
+        RuntimeError::Operation(_) | RuntimeError::Synchronization(_) => {
+            ProxyBackendError::Internal
+        }
     }
 }
 
@@ -5465,10 +6014,13 @@ mod tests {
     use hns_core::pow::Chainwork;
     use hns_core::resource::ResourceError;
     use hns_core::{Hash, Height, NameHash};
+    use hns_loopback_proxy::{
+        NoopProxyObserver, ProxyConfig, ProxyInstanceId, ProxySessionId, RunningProxy,
+    };
     use hns_p2p::{Packet, PeerManager, ProofPacket};
     use hns_resolver::{HnsResourceValueProvider, VerifiedResourceValue};
     use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use std::net::{Shutdown, TcpListener, TcpStream};
     use std::thread;
 
     #[test]
@@ -5483,6 +6035,18 @@ mod tests {
     fn browser_runtime_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<BrowserRuntime>();
+        assert_send_sync::<RuntimeProxyBackend>();
+        let data_dir = temp_dir_path("runtime-proxy-debug");
+        assert_eq!(
+            format!(
+                "{:?}",
+                BrowserRuntime::open(RuntimeConfiguration::new(&data_dir, NetworkKind::Regtest,))
+                    .unwrap()
+                    .proxy_backend()
+            ),
+            "RuntimeProxyBackend(<redacted runtime>)"
+        );
+        cleanup_dir(&data_dir);
     }
 
     #[test]
@@ -5654,6 +6218,324 @@ mod tests {
             runtime.gateway_request(request),
             Err(RuntimeError::InvalidConfiguration(_))
         ));
+        cleanup_dir(&data_dir);
+    }
+
+    fn runtime_with_cached_loopback_name(label: &str) -> (PathBuf, BrowserRuntime) {
+        let data_dir = temp_dir_path(label);
+        let base = data_dir.join("hns-regtest");
+        std::fs::create_dir_all(&base).unwrap();
+        let resources = SqliteResourceValueProvider::open(base.join("resources.sqlite")).unwrap();
+        let root_name = "welcome".to_owned();
+        let name_hash = NameHash::from_name(&root_name).unwrap();
+        let anchor_root = Hash::new([33; 32]);
+        let anchor_height =
+            store_best_header_for_network_with_tree_root(&base, NetworkKind::Regtest, anchor_root);
+        resources
+            .insert(
+                VerifiedResourceValue::inclusion(
+                    root_name.clone(),
+                    name_hash,
+                    owner_glue4_resource(&root_name, [127, 0, 0, 1]),
+                )
+                .with_anchor(anchor_root, anchor_height),
+            )
+            .unwrap();
+        drop(resources);
+        let runtime = BrowserRuntime::open(
+            RuntimeConfiguration::new(&data_dir, NetworkKind::Regtest).with_initial_policy(
+                RuntimePolicy {
+                    resolution_mode: ResolutionMode::Strict,
+                    hns_doh_resolver: None,
+                    stateless_dane_certificates: false,
+                },
+            ),
+        )
+        .unwrap();
+        (data_dir, runtime)
+    }
+
+    fn proxy_request(port: u16, scheme: &str) -> LoopbackProxyRequest {
+        LoopbackProxyRequest {
+            method: "GET".to_owned(),
+            scheme: scheme.to_owned(),
+            host: "welcome".to_owned(),
+            port,
+            path_and_query: "/socket".to_owned(),
+            headers: vec![
+                ProxyHeader::new("Host", format!("welcome:{port}")),
+                ProxyHeader::new("X-Test", "yes"),
+                ProxyHeader::new("X-HNS-Browser-Network", "mainnet"),
+            ],
+            body: ProxyRequestBody::Empty,
+        }
+    }
+
+    fn read_test_http_head(stream: &mut impl Read) -> std::io::Result<Vec<u8>> {
+        let mut head = Vec::new();
+        let mut byte = [0_u8; 1];
+        while head.len() < MAX_GATEWAY_HEADER_TEXT_BYTES {
+            if stream.read(&mut byte)? == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "test HTTP head ended early",
+                ));
+            }
+            head.push(byte[0]);
+            if head.ends_with(b"\r\n\r\n") {
+                return Ok(head);
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "test HTTP head exceeded limit",
+        ))
+    }
+
+    #[test]
+    fn runtime_proxy_backend_returns_typed_sanitized_gateway_response() {
+        let (data_dir, runtime) = runtime_with_cached_loopback_name("runtime-proxy-http");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let request = String::from_utf8(read_test_http_head(&mut stream).unwrap()).unwrap();
+            assert!(request.starts_with("GET /socket HTTP/1.1\r\n"));
+            assert!(request.contains("X-Test: yes\r\n"));
+            assert!(!request.contains("X-HNS-"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nConnection: close, X-Origin-Hop\r\nX-Origin-Hop: secret\r\nX-HNS-TLS-Policy: spoofed\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok",
+                )
+                .unwrap();
+        });
+
+        let response = runtime
+            .proxy_backend()
+            .execute(proxy_request(port, "http"), &ProxyCancellationToken::new())
+            .unwrap();
+
+        assert_eq!(response.head.status_code, 200);
+        assert_eq!(response.head.reason_phrase, "OK");
+        assert!(response.head.headers.iter().any(|header| {
+            header.name.eq_ignore_ascii_case("content-type") && header.value == "text/plain"
+        }));
+        assert!(response.head.headers.iter().any(|header| {
+            header.name.eq_ignore_ascii_case(HNS_RESOLVER_MODE_HEADER) && header.value == "strict"
+        }));
+        assert!(response.head.headers.iter().any(|header| {
+            header
+                .name
+                .eq_ignore_ascii_case(HNS_RESOLUTION_TRACE_HEADER)
+                && header.value.contains(r#""dnssec":"secure""#)
+        }));
+        assert!(!response.head.headers.iter().any(|header| {
+            header.name.eq_ignore_ascii_case("x-origin-hop")
+                || header.name.eq_ignore_ascii_case("x-hns-tls-policy")
+        }));
+        match response.body {
+            ProxyResponseBody::Bytes(body) => assert_eq!(body, b"ok"),
+            ProxyResponseBody::Stream { .. } => panic!("runtime response must be bounded bytes"),
+        }
+        server.join().unwrap();
+        cleanup_dir(&data_dir);
+    }
+
+    #[test]
+    fn runtime_gateway_errors_remain_actionable_typed_http_responses() {
+        let data_dir = temp_dir_path("runtime-proxy-error-response");
+        let runtime =
+            BrowserRuntime::open(RuntimeConfiguration::new(&data_dir, NetworkKind::Regtest))
+                .unwrap();
+        let request = GatewayHttpRequest {
+            method: "GET".to_owned(),
+            scheme: "ws".to_owned(),
+            host: "missing".to_owned(),
+            port: 80,
+            path_and_query: "/socket".to_owned(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        let response = proxy_error_response_from_gateway(
+            &runtime,
+            &request,
+            NetworkKind::Regtest,
+            GatewayResolutionMode::Strict,
+            &GatewayError::Resolver(ResolverError::NameNotFound),
+            &FallbackMarker::default(),
+            &DnsTraceRecorder::default(),
+        );
+
+        assert_eq!(response.head.status_code, 404);
+        assert_eq!(response.head.reason_phrase, "HNS Name Not Found");
+        assert!(response.head.headers.iter().any(|header| {
+            header
+                .name
+                .eq_ignore_ascii_case(HNS_RESOLUTION_TRACE_HEADER)
+                && header
+                    .value
+                    .contains(r#""finalError":"resolver error: HNS name does not exist""#)
+        }));
+        match response.body {
+            ProxyResponseBody::Bytes(body) => {
+                let body = String::from_utf8(body).unwrap();
+                assert!(body.contains("ws://missing/socket"));
+                assert!(body.contains("404 HNS Name Not Found"));
+            }
+            ProxyResponseBody::Stream { .. } => panic!("error response must be bounded bytes"),
+        }
+        cleanup_dir(&data_dir);
+    }
+
+    #[test]
+    fn typed_upgrade_parser_requires_a_complete_websocket_handshake() {
+        let parsed = parse_upgrade_response_head(
+            b"HTTP/1.1 101 Switching Protocols\r\nConnection: keep-alive, Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: accepted\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.status_code, 101);
+        assert!(parsed.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("sec-websocket-accept") && value == "accepted"
+        }));
+
+        for invalid in [
+            b"HTTP/1.1 200 OK\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n".as_slice(),
+            b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n".as_slice(),
+            b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"
+                .as_slice(),
+        ] {
+            assert!(matches!(
+                parse_upgrade_response_head(invalid),
+                Err(ProxyBackendError::InvalidResponse)
+            ));
+        }
+    }
+
+    #[test]
+    fn rust_proxy_uses_runtime_gateway_for_websocket_upgrade() {
+        let (data_dir, runtime) = runtime_with_cached_loopback_name("runtime-proxy-websocket");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin_port = listener.local_addr().unwrap().port();
+        let origin = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let request = String::from_utf8(read_test_http_head(&mut stream).unwrap()).unwrap();
+            assert!(request.starts_with("GET /socket HTTP/1.1\r\n"));
+            assert!(request.contains("Connection: Upgrade\r\n"));
+            assert!(request.contains("Upgrade: websocket\r\n"));
+            assert!(request.contains("Sec-WebSocket-Key: key\r\n"));
+            assert!(request.contains("X-Test: yes\r\n"));
+            assert!(!request.contains("Proxy-Authorization"));
+            assert!(!request.contains("X-HNS-"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade, X-Origin-Hop\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: accepted\r\nX-Origin-Hop: secret\r\nX-HNS-TLS-Policy: spoofed\r\n\r\norigin",
+                )
+                .unwrap();
+            stream.flush().unwrap();
+            let mut payload = [0_u8; 4];
+            stream.read_exact(&mut payload).unwrap();
+            assert_eq!(&payload, b"ping");
+            stream.write_all(&payload).unwrap();
+            stream.flush().unwrap();
+        });
+        let proxy = RunningProxy::start(
+            ProxyConfig::new(
+                ProxyInstanceId::new(ProxySessionId::generate().unwrap(), 1),
+                hns_loopback_proxy::HostScope::new("welcome").unwrap(),
+            ),
+            Arc::new(runtime.proxy_backend()),
+            Arc::new(NoopProxyObserver),
+        )
+        .unwrap();
+        let mut client = TcpStream::connect(proxy.endpoint().address()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let request = format!(
+            "GET ws://welcome:{origin_port}/socket HTTP/1.1\r\nHost: welcome:{origin_port}\r\nProxy-Authorization: {}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: key\r\nSec-WebSocket-Version: 13\r\nX-Test: yes\r\nX-HNS-Client: spoofed\r\n\r\n",
+            proxy.endpoint().authorization_header_value(),
+        );
+        client.write_all(request.as_bytes()).unwrap();
+        client.flush().unwrap();
+
+        let response = String::from_utf8(read_test_http_head(&mut client).unwrap()).unwrap();
+        assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+        assert!(response.contains("Connection: Upgrade\r\n"));
+        assert!(response.contains("Upgrade: websocket\r\n"));
+        assert!(response.contains("Sec-WebSocket-Accept: accepted\r\n"));
+        assert!(!response.contains("X-Origin-Hop"));
+        assert!(!response.contains("X-HNS-"));
+        let mut initial = [0_u8; 6];
+        client.read_exact(&mut initial).unwrap();
+        assert_eq!(&initial, b"origin");
+        client.write_all(b"ping").unwrap();
+        client.flush().unwrap();
+        let mut echoed = [0_u8; 4];
+        client.read_exact(&mut echoed).unwrap();
+        assert_eq!(&echoed, b"ping");
+        drop(client);
+        proxy.stop();
+        origin.join().unwrap();
+        cleanup_dir(&data_dir);
+    }
+
+    #[test]
+    fn proxy_stop_cancels_runtime_backend_waiting_for_maintenance() {
+        let data_dir = temp_dir_path("runtime-proxy-maintenance-cancellation");
+        let runtime =
+            BrowserRuntime::open(RuntimeConfiguration::new(&data_dir, NetworkKind::Regtest))
+                .unwrap();
+        let maintenance = runtime.inner.coordination.maintenance.write().unwrap();
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+        let observer = move |event: &hns_loopback_proxy::ProxyEvent| {
+            if matches!(
+                event,
+                hns_loopback_proxy::ProxyEvent::Request {
+                    phase: hns_loopback_proxy::RequestPhase::Accepted,
+                    ..
+                }
+            ) {
+                let _result = accepted_tx.send(());
+            }
+        };
+        let proxy = RunningProxy::start(
+            ProxyConfig::new(
+                ProxyInstanceId::new(ProxySessionId::generate().unwrap(), 1),
+                hns_loopback_proxy::HostScope::new("welcome").unwrap(),
+            ),
+            Arc::new(runtime.proxy_backend()),
+            Arc::new(observer),
+        )
+        .unwrap();
+        let mut client = TcpStream::connect(proxy.endpoint().address()).unwrap();
+        let request = format!(
+            "GET http://welcome/ HTTP/1.1\r\nHost: welcome\r\nProxy-Authorization: {}\r\n\r\n",
+            proxy.endpoint().authorization_header_value(),
+        );
+        client.write_all(request.as_bytes()).unwrap();
+        client.flush().unwrap();
+        accepted_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        thread::sleep(Duration::from_millis(50));
+
+        let started = Instant::now();
+        proxy.stop();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(proxy.is_stopped());
+        assert_eq!(proxy.active_clients(), 0);
+        let _result = client.shutdown(Shutdown::Both);
+        drop(maintenance);
         cleanup_dir(&data_dir);
     }
 
