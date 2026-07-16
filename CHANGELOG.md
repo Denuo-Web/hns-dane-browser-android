@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.4.0 - 2026-07-15
+
 ### Added
 
 - Added a stable versioned Apple C ABI, deterministic device/simulator Rust builds, XCFramework packaging, C/C++ header/export checks, and a macOS build and simulator gate using the stable iOS 26.5 SDK with Xcode 26.5 or 26.6.
@@ -15,6 +17,7 @@ All notable changes to this project will be documented in this file.
 - Centralized browser special-use hostname policy in `hns-core` and shared it across classification, HNS resolution, and proxy admission.
 - Kept Android on its exact HNS-scoped proxy mode while exposing platform-neutral classifier, root extraction, live challenge matching, and typed status APIs to both native shells.
 - Kept the iOS deployment floor at 17.0 to support the iOS 17 and iOS 18 generations independently of the iOS 26.5 build SDK; Xcode 26.5 and 26.6 are accepted for that Apple build gate.
+- Bumped the Android app, Rust core, Apple shell, Play upload defaults, and store metadata package to 0.4.0 (build 38).
 
 ### Security
 

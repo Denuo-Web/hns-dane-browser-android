@@ -1,15 +1,15 @@
 # Google Play Readiness Checklist
 
-Last audited: 2026-07-14
+Last audited: 2026-07-15
 
-This checklist maps HNS DANE Browser to current Google Play update requirements and identifies the Play Console fields that must be reconciled outside the repository. The app is already public: the live production listing observed during this audit serves `0.3.1` (`versionCode 22`). The repository release candidate declares `0.3.16` (`versionCode 37`).
+This checklist maps HNS DANE Browser to current Google Play update requirements and identifies the Play Console fields that must be reconciled outside the repository. The app is already public: the live production listing observed during this audit serves `0.3.1` (`versionCode 22`). The repository release candidate declares `0.4.0` (`versionCode 38`).
 
 ## Current Repo Status
 
 | Area | Status | Evidence / Action |
 | --- | --- | --- |
 | Target API level | Ready | `targetSdk = 37`, above the current Google Play requirement of Android 15 / API 35 for new apps and updates. |
-| Android App Bundle | Ready locally | Package identity is `com.denuoweb.hnsdane`. The final `0.3.16` upload-signed AAB passed the structural, native-hardening, and entry-by-entry signer gates; its SHA-256 is `7fc76a24cfb0ffd114bac11009daca4ca9b770494cacc8ca84df05680cb9fbd0`. |
+| Android App Bundle | Ready locally | Package identity is `com.denuoweb.hnsdane`. The final `0.4.0` / code 38 upload-signed AAB passed the structural, native-hardening, and entry-by-entry signer gates; its SHA-256 is `800ea0bae2a55e766f1bd6a3523ae7eefe3708e3b7a7c628ba780caf15df7fdb`. |
 | 64-bit / 16 KiB native code | Ready locally | The audit bundle contains exactly `arm64-v8a` and `x86_64`; both stripped NDK r28c libraries and their matching FULL debug metadata passed 16 KiB alignment, ELF hardening, Build ID, symbol, and path-sanitization checks. |
 | Restricted permissions | Ready | Manifest does not request location, contacts, SMS, call logs, camera, microphone, all-files, package visibility, or account permissions. |
 | Foreground service | Not used | Sync is owned by the application while at least one app screen is started and stops when the whole app backgrounds. The manifest declares no service and requests none of `POST_NOTIFICATIONS`, `FOREGROUND_SERVICE`, or `FOREGROUND_SERVICE_DATA_SYNC`; mark foreground-service use as not applicable and remove stale `dataSync` drafts. |
@@ -127,7 +127,7 @@ Use a conservative general-purpose browser posture:
 The app is already public at `0.3.1` (`versionCode 22`), so closed-testing eligibility is not a first-launch gate. Use an internal or closed track when useful to validate the candidate, then promote or submit the verified update:
 
 1. Regenerate the third-party notices and release notes after any version or dependency change.
-2. Build and verify `dist/play-store/hns-dane-browser-v0.3.16-play-upload-signed.aab` with the exact release toolchain; the automated gate covers 16 KiB alignment, required ABIs, native hardening/symbols, R8 mapping, notices, and upload signing.
+2. Build and verify `dist/play-store/hns-dane-browser-v0.4.0-play-upload-signed.aab` with the exact release toolchain; the automated gate covers 16 KiB alignment, required ABIs, native hardening/symbols, R8 mapping, notices, and upload signing.
 3. Compare the configured upload-certificate fingerprint with Play Console and complete the physical-device test pass on the final-version build.
 4. Upload to an internal/closed track for validation if desired. For API upload, use the Console's actual track ID; `alpha` is the standard closed-testing API track.
 5. Reconcile the live privacy policy, Data safety answers, listing copy, screenshots, and release notes, then submit the update to production.

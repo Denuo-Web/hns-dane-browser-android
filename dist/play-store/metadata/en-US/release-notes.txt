@@ -1,1 +1,1 @@
-0.3.16 lets HNS owners use their own HNS name for authoritative DoH without an ICANN domain, adds exact DANE path status, and preserves fallback through authoritative DNS and the configured compatibility resolver.
+0.4.0 moves Android's security-sensitive HNS, DNSSEC, DANE, proxy, and TLS logic into a shared Rust runtime, preserves Android behavior, and adds the native iOS foundation using the same engine.

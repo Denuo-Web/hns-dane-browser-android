@@ -1,10 +1,10 @@
 # Build and Supply-Chain Audit
 
-Last audited: 2026-07-14
+Last audited: 2026-07-15
 
 ## Configured and Local Gates
 
-- The checked-in GitHub Actions workflow is configured to run the shipping Rust workspace, fuzz workspace, header-snapshot exporter, cargo-deny policy, Android unit tests, lint, debug assembly, and unsigned release bundle build. Its permissions are read-only, release secrets are not provided, every non-local `uses:` reference is pinned to a full commit SHA, checkout credentials are not persisted, and concurrent runs on the same ref are cancelled. This is configuration evidence only: Actions is currently disabled for the GitHub repository, so the workflow has no successful remote run and is not an enforced merge gate.
+- The checked-in GitHub Actions workflow runs the shipping Rust workspace, fuzz workspace, header-snapshot exporter, cargo-deny policy, Android unit tests, lint, debug assembly, unsigned release bundle build, and complete Apple gate. Its permissions are read-only, release secrets are not provided, every non-local `uses:` reference is pinned to a full commit SHA, checkout credentials are not persisted, and concurrent runs on the same ref are cancelled. The exact merged tree passed all three hosted jobs in [run 29470594464](https://github.com/Denuo-Web/hns-dane-browser-android/actions/runs/29470594464); Actions was then restored to the repository's prior disabled state, so CI is validated but not an enforced merge gate.
 - Dependabot watches GitHub Actions, Gradle, and all three Cargo lockfile roots weekly.
 - Rust uses toolchain `1.92.0`; build, clippy, test, metadata, Android cross-compile, and cargo-deny commands use committed lockfiles with `--locked`. No Cargo lockfile contains a Git dependency, and registry packages carry Cargo checksums.
 - cargo-deny covers all three manifests. The fuzz and exporter packages now declare the repository license. `NCSA` is allowed specifically because `libfuzzer-sys` combines its MIT/Apache-2.0 code with LLVM libFuzzer code under the University of Illinois/NCSA license.
@@ -18,14 +18,14 @@ Last audited: 2026-07-14
 
 ## Audit Results
 
-- `scripts/check.sh` passed locally on 2026-07-14, including supply-chain/version checks, formatting, clippy with warnings denied, all three cargo-deny scopes, 401 Rust tests, fuzz-target compilation, and the header-snapshot exporter.
-- The final `0.3.16` Android build passed 202 unit tests, debug and release lint with zero errors, R8/resource shrinking, upload signing, APK signature and 16 KiB ZIP-alignment verification, and both release-bundle gates. It used Gradle 9.6.1 / AGP 9.2.1, compile/target SDK 37, NDK `28.2.13676358`, and build-tools AAPT2 36.1.0. The signed AAB SHA-256 is `7fc76a24cfb0ffd114bac11009daca4ca9b770494cacc8ca84df05680cb9fbd0`; the signed APK SHA-256 is `bcc4c5cc892ef16dbe565013c58cc104384c61bb001b99f8aec9c4da3a501ae1`.
+- `scripts/check.sh` passed locally on 2026-07-15 for `0.4.0`, including supply-chain/version checks, formatting, clippy with warnings denied, all three cargo-deny scopes, the complete Rust test matrix, fuzz-target compilation, and the header-snapshot exporter.
+- The final `0.4.0` Android build passed 186 unit tests, debug and release lint with zero errors, R8/resource shrinking, upload signing, APK signature and 16 KiB ZIP-alignment verification, and both release-bundle gates. It used Gradle 9.6.1 / AGP 9.2.1, compile/target SDK 37, NDK `28.2.13676358`, and build-tools AAPT2 36.1.0. The signed AAB SHA-256 is `800ea0bae2a55e766f1bd6a3523ae7eefe3708e3b7a7c628ba780caf15df7fdb`; the signed APK SHA-256 is `d210b115b4c5a6ea49a54b51e80d6895770ecdbfa5c12050ae60c83f475c2d34`.
 - Independent artifact inspection confirmed both installed JNI libraries were NDK r28c API 34 ET_DYN files, stripped, 16 KiB-aligned, RELRO, non-executable-stack, immediate-binding, text-relocation-free, and paired with unstripped `.dbg` files carrying the same Build IDs. No checkout/home/NDK path was found; the signed release APK passed 16 KiB zip alignment.
-- The exact signed `0.3.16` APK passed Pixel 9 acceptance tests against `https://denuoweb/` and `https://aboutlife/`. Denuoweb completed all six DNS exchanges through its HNS-proof-declared authoritative DoH endpoint without port 53 or compatibility fallback and displayed `DANE via ADoH`. Aboutlife detected transparent port-53 interception through the `192.0.2.1` sentinel, securely fell back to Zorro, verified DNSSEC and DANE, and displayed `DANE via 3rd DoH`.
+- The shared-runtime tree passed 5/5 connected Pixel instrumentation tests plus live `https://denuoweb/` and `https://aboutlife/` DNSSEC/DANE acceptance. The exact signed `0.4.0` APK subsequently upgraded the Pixel 9 from code 37 to code 38 and cold-launched its main activity successfully.
 - cargo-deny reports no known advisory, source, or license-policy failures for the shipping workspace, fuzz workspace, or exporter. Duplicate transitive versions and unused allow-list entries remain warnings.
 - No high-confidence secret or secret-bearing filename was found among tracked files.
-- The locally configured upload certificate SHA-256 matches the retained signed `0.3.8`, `0.3.9`, and `0.3.10` bundles. It still needs an out-of-band comparison with the upload certificate shown by Play Console.
-- GitHub Actions is disabled for the repository, the workflow has no runs, and `main` has neither branch protection nor a ruleset. Until those hosting controls are enabled and a workflow succeeds, local passes are the only execution evidence.
+- The locally configured upload certificate SHA-256 matches the retained and published `0.3.16` APK signer and the new `0.4.0` APK. It still needs an out-of-band comparison with the upload certificate shown by Play Console.
+- GitHub Actions has a successful hosted run for the exact merged tree, but is currently disabled and `main` has neither branch protection nor a ruleset. The hosted pass is execution evidence, not a continuously enforced control.
 - Release signing and Play upload remain intentional secret-dependent gates. CI should build and structurally verify the release variant without signing credentials and must not publish.
 
 ## Residual Risks

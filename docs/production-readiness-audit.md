@@ -1,14 +1,14 @@
 # Production Readiness Audit
 
-Last audited: 2026-07-14
+Last audited: 2026-07-15
 
-This audit treats the repository as a candidate update to an existing public Google Play app, not as a first closed-testing launch. The live listing observed during the audit serves version `0.3.1` (`versionCode 22`), while the repository release candidate declares `0.3.16` (`versionCode 37`).
+This audit treats the repository as a candidate update to an existing public Google Play app, not as a first closed-testing launch. The live listing observed during the audit serves version `0.3.1` (`versionCode 22`), while the repository release candidate declares `0.4.0` (`versionCode 38`).
 
 ## Release Candidate Findings
 
 | Area | Status | Finding |
 | --- | --- | --- |
-| Android release build | Ready locally | The final `0.3.16` build produced a non-debuggable, minified, resource-shrunk, upload-signed AAB, and its structural and entry-by-entry signer checks passed. |
+| Android release build | Ready locally | The final `0.4.0` / code 38 build produced a non-debuggable, minified, resource-shrunk, upload-signed APK and AAB; signer, structure, native hardening, symbols, and 16 KiB alignment checks passed. |
 | Public Play listing | Reconciliation required | Google Play already has a production listing at `0.3.1` (`versionCode 22`). Before the next update, reconcile the live privacy-policy field, Data safety answers, listing text, screenshots, and release notes with current behavior and the eventual release version. |
 | Privacy policy | Ready | The canonical URL `https://denuoweb.com/work/hns-dane-browser/privacy` renders the HNS DANE Browser Privacy Policy after the site application loads. The supplied hosted policy covers local data, browser/HNS network requests, sharing, security, retention/deletion, children, and a privacy contact mechanism; it is accepted unchanged for this release audit. |
 | Manifest exposure | Ready | The only app-defined exported entry point is `LauncherActivity`. Browser, settings, diagnostics, HNS inspector, history, download, and other app activities are non-exported, and the app declares no service. Merged dependency components remain subject to their own signature/permission guards. |
@@ -16,9 +16,9 @@ This audit treats the repository as a candidate update to an existing public Goo
 | Cleartext policy | Ready | Cleartext is disabled globally with a loopback-only exception for the local gateway. User-selected HTTP and direct DNS/HNS traffic are accurately disclosed, but ordinary open-web and user-initiated transfers are outside Google Play's Data safety collection/sharing scope. |
 | WebView hardening | Ready | Mixed content is blocked, Safe Browsing is enabled, file/content access is disabled, native JavaScript bridges are removed, WebView debugging follows `BuildConfig.DEBUG`, and loopback proxying is limited to active HNS host/subdomain scope. |
 | Privacy controls | Improved | Settings can clear cookies plus WebView origin storage, and the diagnostics UI can clear the bounded gateway event log. The repository and in-app disclosures now describe WebView-provider Safe Browsing and these local retention controls. |
-| Build supply chain | Local gates pass; remote enforcement blocked | Local Rust, dependency, Android unit, lint, and signed-bundle checks passed during the audit. The checked-in GitHub Actions workflow has no runs because Actions is disabled for the repository; `main` also has no branch protection or ruleset. |
+| Build supply chain | Local and hosted gates pass; not continuously enforced | Local Rust, dependency, Android unit, lint, and signed-bundle checks passed. The exact merged tree also passed the hosted Rust, cold-cache Android, and Xcode 26.5 Apple jobs in [GitHub Actions run 29470594464](https://github.com/Denuo-Web/hns-dane-browser-android/actions/runs/29470594464). Actions was restored to the repository's prior disabled state afterward, and `main` still has no protection or ruleset. |
 | 16 KiB / native symbols | Local gate passed | The clean bundle uses `PAGE_ALIGNMENT_16K`; both stripped JNI libraries have 16 KiB PT_LOAD alignment, RELRO, non-executable stacks, immediate binding, no text relocations, and matching unstripped FULL debug metadata with SHA-1 Build IDs. |
-| Release-device acceptance | Core resolver paths passed; broader instrumentation pending | The exact signed `0.3.16` APK was installed over `0.3.15` on a Pixel 9. `https://denuoweb/` displayed `DANE via ADoH`, used its live HNS-proof-declared authoritative DoH endpoint, skipped port 53 and compatibility fallback, validated DNSSEC, and verified DANE. `https://aboutlife/` displayed `DANE via 3rd DoH`; its trace detected transparent port-53 interception through the `192.0.2.1` sentinel and completed secure DNSSEC/DANE resolution through the configured Zorro resolver. The generic single-label, proof-pinned HNS endpoint path is covered by integration tests; a live HNS-only endpoint cutover remains a separate deployment step. The broader `HnsConnectInstrumentationTest` and full manual regression matrix remain separate gates. |
+| Release-device acceptance | Automated parity passed; final manual matrix pending | The shared-runtime tree passed 5/5 connected Pixel instrumentation checks and live `https://denuoweb/` / `https://aboutlife/` DNSSEC/DANE acceptance. The exact signed `0.4.0` APK then upgraded the Pixel 9 from `0.3.16` / code 37 and cold-launched `MainActivity` as `0.4.0` / code 38. A broader final-version manual regression matrix remains a separate gate. |
 | Data collection posture | Ready for live-form reconciliation | No ads, analytics SDKs, developer accounts, sensitive permissions, advertising ID access, or developer telemetry endpoint was found. Google's current guidance excludes open-web WebView navigation, on-device processing, and reasonably expected user-initiated transfers; retain the live `No collected / No shared` posture unless the current WebView Safe Browsing provider guidance requires a declaration. |
 
 ## Applied Cleanup
@@ -40,17 +40,17 @@ This audit treats the repository as a candidate update to an existing public Goo
 ## Remaining Release Gates
 
 1. Compare upload certificate SHA-256 `D2:2F:F3:25:17:53:11:EB:E6:D6:E9:3D:A3:FD:F5:1D:84:89:22:A1:B8:1A:CB:B3:2F:22:39:CC:F9:4A:51:14` with the upload certificate shown in Play Console.
-2. Enable GitHub Actions and add appropriate protection or a ruleset for `main`, then obtain a successful run of the release workflow. These are repository-hosting changes and cannot be proven by the checked-in workflow alone.
-3. Run `HnsConnectInstrumentationTest` and the critical first-run, sync-resume, HNS browsing, download, website-data deletion, and gateway-log deletion flows on a physical supported Android device using that final-version build.
+2. If future merges should require CI, leave GitHub Actions enabled and add appropriate protection or a ruleset for `main`; the current hosted pass is validation evidence but is not continuously enforced.
+3. Run the critical first-run, sync-resume, HNS browsing, download, website-data deletion, and gateway-log deletion flows on a physical supported Android device using the final-version build.
 4. Reconcile the existing live Play listing: point its privacy-policy field to the accepted canonical URL, update Data safety/app-access/content/ads answers, refresh listing copy and release notes, and replace stale screenshots before submitting the verified AAB.
 
 ## Local Verification Evidence
 
-- `./scripts/check.sh`: passed supply-chain/version checks, formatting, warning-denied Clippy, all three cargo-deny scopes, 401 Rust tests, fuzz-target compilation, and the snapshot exporter.
-- Final signed Android build: passed with Gradle 9.6.1 / AGP 9.2.1, compile/target SDK 37, NDK `28.2.13676358`, and build-tools AAPT2 36.1.0; the corrected final gate completed 96 actionable tasks in 8m 27s after recompiling the changed native libraries.
-- Android tests and lint: 202 unit tests passed; debug and release lint each reported 0 errors and 110 warnings.
+- `./scripts/check.sh`: passed on 2026-07-15 for `0.4.0`, including supply-chain/version checks, formatting, warning-denied Clippy, all three cargo-deny scopes, the complete Rust test matrix, fuzz-target compilation, and the snapshot exporter.
+- Final signed Android build: passed with Gradle 9.6.1 / AGP 9.2.1, compile/target SDK 37, NDK `28.2.13676358`, and build-tools AAPT2 36.1.0; the clean gate completed 97 actionable tasks in 12m 12s after compiling both native ABIs.
+- Android tests and lint: 186 unit tests passed; debug and release lint completed with no errors.
 - Candidate artifact inspection: both packaged libraries report NDK r28c, Android API 34, stripped status, 16 KiB PT_LOAD alignment, GNU_RELRO, non-executable GNU_STACK, BIND_NOW/NOW, and matching unstripped debug-symbol Build IDs. The signed release APK also passes `zipalign -c -P 16 4`.
-- Final signed `0.3.16` / code 37 AAB: SHA-256 `7fc76a24cfb0ffd114bac11009daca4ca9b770494cacc8ca84df05680cb9fbd0`. The signed GitHub APK is SHA-256 `bcc4c5cc892ef16dbe565013c58cc104384c61bb001b99f8aec9c4da3a501ae1` and passes APK signature plus 16 KiB ZIP-alignment verification.
+- Final signed `0.4.0` / code 38 AAB: SHA-256 `800ea0bae2a55e766f1bd6a3523ae7eefe3708e3b7a7c628ba780caf15df7fdb`. The signed GitHub APK is SHA-256 `d210b115b4c5a6ea49a54b51e80d6895770ecdbfa5c12050ae60c83f475c2d34`, matches the established release signer, and passes APK Signature Scheme v2 plus 16 KiB ZIP-alignment verification.
 
 ## Watch Items
 
