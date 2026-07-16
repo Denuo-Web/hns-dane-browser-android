@@ -3,6 +3,7 @@ package com.denuoweb.hnsdane.net
 import com.denuoweb.hnsdane.core.HnsPageResolverPolicy
 import com.denuoweb.hnsdane.core.HnsPageSecurityPath
 import com.denuoweb.hnsdane.core.HnsPageTlsPolicy
+import com.denuoweb.hnsdane.core.TEST_BROWSER_NAMESPACE_POLICY
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -26,7 +27,7 @@ class HnsWebViewGatewayInterceptorTest {
                 .toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-webview-intercept-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge)
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         val response = interceptor.intercept(
             method = "GET",
@@ -70,7 +71,7 @@ class HnsWebViewGatewayInterceptorTest {
             "streamed".toByteArray(StandardCharsets.UTF_8),
         )
         val dataDir = createTempDirectory("hns-webview-file-body-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge)
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         val response = interceptor.intercept(
             method = "GET",
@@ -95,7 +96,7 @@ class HnsWebViewGatewayInterceptorTest {
     fun normalWebRequestIsNotIntercepted() {
         val bridge = RecordingGatewayBridge(ByteArray(0))
         val dataDir = createTempDirectory("hns-webview-normal-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge)
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         assertNull(interceptor.intercept("GET", "https://example.com/", emptyMap()))
         assertTrue(bridge.calls.isEmpty())
@@ -109,7 +110,7 @@ class HnsWebViewGatewayInterceptorTest {
                 .toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("icann-dane-webview-intercept-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge)
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         val response = interceptor.intercept(
             method = "GET",
@@ -141,7 +142,7 @@ class HnsWebViewGatewayInterceptorTest {
                 .toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-service-worker-intercept-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge)
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         val response = interceptor.intercept(
             method = "GET",
@@ -172,7 +173,7 @@ class HnsWebViewGatewayInterceptorTest {
     }
 
     @Test
-    fun strictHnsModeAddsInternalGatewayHeaderAndStripsSpoofedValue() {
+    fun strictHnsModeUsesExplicitRuntimeConfigWithoutSyntheticOriginHeaders() {
         val bridge = RecordingGatewayBridge(
             "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
                 .toByteArray(StandardCharsets.ISO_8859_1),
@@ -181,24 +182,26 @@ class HnsWebViewGatewayInterceptorTest {
         val interceptor = HnsWebViewGatewayInterceptor(
             dataDir = dataDir,
             hnsGatewayBridge = bridge,
+            namespacePolicy = TEST_BROWSER_NAMESPACE_POLICY,
             strictHnsMode = { true },
         )
 
         interceptor.intercept(
             method = "GET",
             url = "https://welcome/",
-            requestHeaders = mapOf(HNS_GATEWAY_STRICT_MODE_HEADER to "0"),
+            requestHeaders = mapOf("X-HNS-Untrusted" to "spoofed"),
         )
 
         assertEquals(
-            internalGatewayHeaders(HNS_GATEWAY_STRICT_MODE_HEADER to "1"),
+            internalGatewayHeaders(),
             bridge.calls.single().headers,
         )
+        assertEquals(true, bridge.configs.single().strictHnsMode)
         dataDir.deleteRecursively()
     }
 
     @Test
-    fun dohResolverAddsInternalGatewayHeaderAndStripsSpoofedValue() {
+    fun dohResolverUsesExplicitRuntimeConfigWithoutSyntheticOriginHeaders() {
         val bridge = RecordingGatewayBridge(
             "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
                 .toByteArray(StandardCharsets.ISO_8859_1),
@@ -207,24 +210,26 @@ class HnsWebViewGatewayInterceptorTest {
         val interceptor = HnsWebViewGatewayInterceptor(
             dataDir = dataDir,
             hnsGatewayBridge = bridge,
+            namespacePolicy = TEST_BROWSER_NAMESPACE_POLICY,
             dohResolverUrl = { "https://resolver.example/dns-query" },
         )
 
         interceptor.intercept(
             method = "GET",
             url = "https://welcome/",
-            requestHeaders = mapOf(HNS_GATEWAY_DOH_RESOLVER_HEADER to "https://spoofed.example/dns-query"),
+            requestHeaders = emptyMap(),
         )
 
         assertEquals(
-            internalGatewayHeaders(HNS_GATEWAY_DOH_RESOLVER_HEADER to "https://resolver.example/dns-query"),
+            internalGatewayHeaders(),
             bridge.calls.single().headers,
         )
+        assertEquals("https://resolver.example/dns-query", bridge.configs.single().dohResolverUrl)
         dataDir.deleteRecursively()
     }
 
     @Test
-    fun statelessDaneModeAddsInternalGatewayHeaderAndStripsSpoofedValue() {
+    fun statelessDaneUsesExplicitRuntimeConfigWithoutSyntheticOriginHeaders() {
         val bridge = RecordingGatewayBridge(
             "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
                 .toByteArray(StandardCharsets.ISO_8859_1),
@@ -233,24 +238,26 @@ class HnsWebViewGatewayInterceptorTest {
         val interceptor = HnsWebViewGatewayInterceptor(
             dataDir = dataDir,
             hnsGatewayBridge = bridge,
+            namespacePolicy = TEST_BROWSER_NAMESPACE_POLICY,
             statelessDaneCertificates = { true },
         )
 
         interceptor.intercept(
             method = "GET",
             url = "https://welcome/",
-            requestHeaders = mapOf(HNS_GATEWAY_STATELESS_DANE_HEADER to "0"),
+            requestHeaders = emptyMap(),
         )
 
         assertEquals(
-            internalGatewayHeaders(HNS_GATEWAY_STATELESS_DANE_HEADER to "1"),
+            internalGatewayHeaders(),
             bridge.calls.single().headers,
         )
+        assertEquals(true, bridge.configs.single().statelessDaneCertificates)
         dataDir.deleteRecursively()
     }
 
     @Test
-    fun handshakeNetworkAddsInternalGatewayHeaderAndStripsSpoofedValue() {
+    fun handshakeNetworkUsesExplicitRuntimeConfigWithoutSyntheticOriginHeaders() {
         val bridge = RecordingGatewayBridge(
             "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
                 .toByteArray(StandardCharsets.ISO_8859_1),
@@ -259,17 +266,46 @@ class HnsWebViewGatewayInterceptorTest {
         val interceptor = HnsWebViewGatewayInterceptor(
             dataDir = dataDir,
             hnsGatewayBridge = bridge,
+            namespacePolicy = TEST_BROWSER_NAMESPACE_POLICY,
             handshakeNetwork = { "regtest" },
         )
 
         interceptor.intercept(
             method = "GET",
             url = "https://welcome/",
-            requestHeaders = mapOf(HNS_GATEWAY_NETWORK_HEADER to "mainnet"),
+            requestHeaders = emptyMap(),
         )
 
         assertEquals(
-            internalGatewayHeaders(HNS_GATEWAY_NETWORK_HEADER to "regtest"),
+            internalGatewayHeaders(),
+            bridge.calls.single().headers,
+        )
+        assertEquals("regtest", bridge.configs.single().network)
+        dataDir.deleteRecursively()
+    }
+
+    @Test
+    fun gatewayStripsTheEntireInternalHeaderNamespaceBeforeInjectingTrustedControls() {
+        val bridge = RecordingGatewayBridge(
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+                .toByteArray(StandardCharsets.ISO_8859_1),
+        )
+        val dataDir = createTempDirectory("hns-webview-internal-header-test").toFile()
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
+
+        interceptor.intercept(
+            method = "GET",
+            url = "https://welcome/",
+            requestHeaders = mapOf(
+                "Accept" to "text/html",
+                "x-hns-future-control" to "spoofed",
+                "X-HNS-TLS-Policy" to "dane",
+                HNS_RESOLUTION_TRACE_HEADER to "private-trace",
+            ),
+        )
+
+        assertEquals(
+            forwardedGatewayHeaders("Accept" to "text/html"),
             bridge.calls.single().headers,
         )
         dataDir.deleteRecursively()
@@ -282,7 +318,7 @@ class HnsWebViewGatewayInterceptorTest {
                 .toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-dotted-webview-intercept-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge)
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         val response = interceptor.intercept(
             method = "GET",
@@ -314,7 +350,7 @@ class HnsWebViewGatewayInterceptorTest {
                 .toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-emoji-webview-intercept-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge)
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         val response = interceptor.intercept(
             method = "GET",
@@ -332,16 +368,23 @@ class HnsWebViewGatewayInterceptorTest {
         val statuses = mutableListOf<Int>()
         val tlsPolicies = mutableListOf<HnsPageTlsPolicy?>()
         val resolverPolicies = mutableListOf<HnsPageResolverPolicy?>()
+        val statusUrls = mutableListOf<String>()
         val bridge = RecordingGatewayBridge(
             "HTTP/1.1 502 HNS Origin Address Missing\r\nX-HNS-TLS-Policy: webpki-fallback\r\nX-HNS-Resolver-Policy: hns-doh-compat\r\nContent-Length: 0\r\n\r\n"
                 .toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-main-frame-status-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge) { status, tlsPolicy, resolverPolicy, _, _ ->
-            statuses += status
-            tlsPolicies += tlsPolicy
-            resolverPolicies += resolverPolicy
-        }
+        val interceptor = HnsWebViewGatewayInterceptor(
+            dataDir,
+            bridge,
+            TEST_BROWSER_NAMESPACE_POLICY,
+            onMainFrameHnsStatus = { status, tlsPolicy, resolverPolicy, _, _ ->
+                statuses += status
+                tlsPolicies += tlsPolicy
+                resolverPolicies += resolverPolicy
+            },
+            onMainFrameHnsStatusForUrl = { url, _, _, _, _, _ -> statusUrls += url },
+        )
 
         val response = interceptor.intercept(
             method = "GET",
@@ -353,6 +396,7 @@ class HnsWebViewGatewayInterceptorTest {
         requireNotNull(response)
         assertEquals(502, response.statusCode)
         assertEquals(listOf(502), statuses)
+        assertEquals(listOf("https://welcome/"), statusUrls)
         assertEquals(listOf(HnsPageTlsPolicy.WebPkiFallback), tlsPolicies)
         assertEquals(listOf(HnsPageResolverPolicy.HnsDohCompatibility), resolverPolicies)
         dataDir.deleteRecursively()
@@ -366,9 +410,14 @@ class HnsWebViewGatewayInterceptorTest {
                 .toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-subresource-status-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge) { status, _, _, _, _ ->
-            statuses += status
-        }
+        val interceptor = HnsWebViewGatewayInterceptor(
+            dataDir,
+            bridge,
+            TEST_BROWSER_NAMESPACE_POLICY,
+            onMainFrameHnsStatus = { status, _, _, _, _ ->
+                statuses += status
+            },
+        )
 
         interceptor.intercept(
             method = "GET",
@@ -382,19 +431,35 @@ class HnsWebViewGatewayInterceptorTest {
     }
 
     @Test
-    fun mainFrameParsesSecurityPathWithoutExposingInternalHeaderToWebView() {
+    fun mainFrameParsesMetadataWithoutExposingInternalHeadersToWebView() {
         val paths = mutableListOf<HnsPageSecurityPath?>()
+        val tlsPolicies = mutableListOf<HnsPageTlsPolicy?>()
+        val resolverPolicies = mutableListOf<HnsPageResolverPolicy?>()
+        val traces = mutableListOf<String?>()
         val bridge = RecordingGatewayBridge(
             (
                 "HTTP/1.1 200 OK\r\n" +
                     "$HNS_SECURITY_PATH_HEADER: dane-authoritative-doh\r\n" +
+                    "X-HNS-TLS-Policy: dane\r\n" +
+                    "X-HNS-Resolver-Policy: hns-doh-compat\r\n" +
+                    "$HNS_RESOLUTION_TRACE_HEADER: private-trace\r\n" +
+                    "x-hns-future-metadata: private-future\r\n" +
+                    "X-Public: visible\r\n" +
                     "Content-Length: 0\r\n\r\n"
                 ).toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-security-path-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge) { _, _, _, securityPath, _ ->
-            paths += securityPath
-        }
+        val interceptor = HnsWebViewGatewayInterceptor(
+            dataDir,
+            bridge,
+            TEST_BROWSER_NAMESPACE_POLICY,
+            onMainFrameHnsStatus = { _, tlsPolicy, resolverPolicy, securityPath, trace ->
+                paths += securityPath
+                tlsPolicies += tlsPolicy
+                resolverPolicies += resolverPolicy
+                traces += trace
+            },
+        )
 
         val response = interceptor.intercept(
             method = "GET",
@@ -405,11 +470,11 @@ class HnsWebViewGatewayInterceptorTest {
 
         requireNotNull(response)
         assertEquals(listOf(HnsPageSecurityPath.DaneAuthoritativeDoh), paths)
-        assertFalse(
-            response.webResponseHeaders().keys.any {
-                it.equals(HNS_SECURITY_PATH_HEADER, ignoreCase = true)
-            },
-        )
+        assertEquals(listOf(HnsPageTlsPolicy.Dane), tlsPolicies)
+        assertEquals(listOf(HnsPageResolverPolicy.HnsDohCompatibility), resolverPolicies)
+        assertEquals(listOf("private-trace"), traces)
+        assertFalse(response.webResponseHeaders().keys.any { it.startsWith("X-HNS-", ignoreCase = true) })
+        assertEquals("visible", response.webResponseHeaders()["X-Public"])
         dataDir.deleteRecursively()
     }
 
@@ -426,10 +491,15 @@ class HnsWebViewGatewayInterceptorTest {
                 ).toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-unknown-security-path-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge) { _, tlsPolicy, _, securityPath, _ ->
-            tlsPolicies += tlsPolicy
-            paths += securityPath
-        }
+        val interceptor = HnsWebViewGatewayInterceptor(
+            dataDir,
+            bridge,
+            TEST_BROWSER_NAMESPACE_POLICY,
+            onMainFrameHnsStatus = { _, tlsPolicy, _, securityPath, _ ->
+                tlsPolicies += tlsPolicy
+                paths += securityPath
+            },
+        )
 
         interceptor.intercept(
             method = "GET",
@@ -452,7 +522,7 @@ class HnsWebViewGatewayInterceptorTest {
                 .toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-webview-redirect-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge)
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         val response = interceptor.intercept("GET", "https://welcome/start", emptyMap())
 
@@ -472,7 +542,7 @@ class HnsWebViewGatewayInterceptorTest {
                 .toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-webview-external-redirect-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge)
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         val response = interceptor.intercept("GET", "https://welcome/start", emptyMap())
 
@@ -492,7 +562,7 @@ class HnsWebViewGatewayInterceptorTest {
                     .toByteArray(StandardCharsets.ISO_8859_1),
             )
             val dataDir = createTempDirectory("hns-webview-origin-redirect-test").toFile()
-            val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge)
+            val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
             val response = interceptor.intercept("GET", "https://welcome/start", emptyMap())
 
@@ -512,7 +582,7 @@ class HnsWebViewGatewayInterceptorTest {
                 .toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-webview-method-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge)
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         val response = interceptor.intercept("POST", "https://welcome/form", emptyMap())
 
@@ -540,6 +610,7 @@ class HnsWebViewGatewayInterceptorTest {
         val interceptor = HnsWebViewGatewayInterceptor(
             dataDir,
             bridge,
+            TEST_BROWSER_NAMESPACE_POLICY,
             allowProxyFallbackForBodyRequests = { true },
         )
 
@@ -557,6 +628,7 @@ class HnsWebViewGatewayInterceptorTest {
         val interceptor = HnsWebViewGatewayInterceptor(
             dataDir,
             bridge,
+            TEST_BROWSER_NAMESPACE_POLICY,
             allowProxyFallbackForBodyRequests = { true },
         )
 
@@ -578,7 +650,7 @@ class HnsWebViewGatewayInterceptorTest {
     fun malformedNativeGatewayResponseFailsClosed() {
         val bridge = RecordingGatewayBridge("not http".toByteArray(StandardCharsets.ISO_8859_1))
         val dataDir = createTempDirectory("hns-webview-malformed-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge)
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         val response = interceptor.intercept("GET", "http://welcome/", emptyMap())
 
@@ -600,7 +672,7 @@ class HnsWebViewGatewayInterceptorTest {
                 .toByteArray(StandardCharsets.ISO_8859_1),
         )
         val dataDir = createTempDirectory("hns-webview-event-test").toFile()
-        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge)
+        val interceptor = HnsWebViewGatewayInterceptor(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         val response = interceptor.intercept("GET", "https://welcome/private?q=token", emptyMap())
 
@@ -639,9 +711,11 @@ class HnsWebViewGatewayInterceptorTest {
         private vararg val responses: ByteArray,
     ) : HnsGatewayBridge {
         val calls = mutableListOf<GatewayCall>()
+        val configs = mutableListOf<HnsGatewayRuntimeConfig>()
 
         override fun httpResponse(
             dataDir: String,
+            config: HnsGatewayRuntimeConfig,
             method: String,
             scheme: String,
             host: String,
@@ -651,6 +725,7 @@ class HnsWebViewGatewayInterceptorTest {
             body: ByteArray,
         ): ByteArray {
             val response = responses.getOrElse(calls.size) { responses.last() }
+            configs += config
             calls += GatewayCall(
                 dataDir,
                 method,
@@ -670,10 +745,12 @@ class HnsWebViewGatewayInterceptorTest {
         private val responseBody: ByteArray,
     ) : HnsGatewayBridge {
         val calls = mutableListOf<GatewayCall>()
+        val configs = mutableListOf<HnsGatewayRuntimeConfig>()
         lateinit var bodyFile: File
 
         override fun httpResponse(
             dataDir: String,
+            config: HnsGatewayRuntimeConfig,
             method: String,
             scheme: String,
             host: String,
@@ -687,6 +764,7 @@ class HnsWebViewGatewayInterceptorTest {
 
         override fun httpResponseBodyFile(
             dataDir: String,
+            config: HnsGatewayRuntimeConfig,
             method: String,
             scheme: String,
             host: String,
@@ -696,6 +774,7 @@ class HnsWebViewGatewayInterceptorTest {
             body: ByteArray,
         ): HnsGatewayFileResponse {
             bodyFile = File.createTempFile("hns-test-", ".body", File(dataDir))
+            configs += config
             bodyFile.writeBytes(responseBody)
             calls += GatewayCall(
                 dataDir,

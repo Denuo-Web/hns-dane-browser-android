@@ -4,7 +4,7 @@
 
 The app verifies header chainwork, checkpoint ancestry, proof-of-work difficulty, Urkel proofs against header tree roots, DNSSEC chains below HNS delegations, TLSA records, DANE certificate or SPKI matches, and transport downgrade policy.
 
-The default proof-backed path does not trust a single peer, external HNS resolvers, unsigned DNS answers for HNS names, TLSA answers without a valid proof chain, stale caches, or origin certificates that fail active DANE policy. Android compatibility mode may query the configured HNS DoH resolver only after the local HNS proof/delegation path has established the root name and then failed at delegated nameserver transport/validation; those fallback answers are treated as secure only when the DNS response carries authenticated-data.
+The default proof-backed path does not trust a single peer, external HNS resolvers, unsigned DNS answers for HNS names, TLSA answers without a valid proof chain, stale caches, or origin certificates that fail active DANE policy. Configured compatibility mode may query the selected HNS DoH resolver only after the local HNS proof/delegation path has established the root name and then failed at delegated nameserver transport/validation; those fallback answers are treated as secure only when the DNS response carries authenticated-data.
 
 ## Failure Policy
 
@@ -15,7 +15,7 @@ The default proof-backed path does not trust a single peer, external HNS resolve
 - Sync stale: block HNS secure state and show a sync-specific browser error.
 - Sync attempts that make no progress must distinguish up-to-date peers from all-peer failure.
 - Sync catch-up must continue while persisted `bestPeerHeight` or the estimated mainnet tip is greater than local `bestHeight`, regardless of whether the latest native tick accepted headers.
-- HNS toolbar state must not show verified unless the proxy is active, the native sync status is `synced` or `up_to_date`, and the current main-frame HNS gateway response has not failed.
+- HNS browser state must not show verified unless the proxy is active, the native sync status is `synced` or `up_to_date`, and the current main-frame HNS gateway response has not failed.
 - Main-frame HNS gateway 4xx/5xx responses must override ready sync state and show validation failed.
 - No-network sync status reads may report `up_to_date` only when stored peer heights are not ahead of a non-genesis local best header.
 - Gateway exposure beyond loopback: configuration error.
@@ -23,6 +23,7 @@ The default proof-backed path does not trust a single peer, external HNS resolve
 - Gateway diagnostics must persist only bounded, sanitized stage/host/status/reason events in app-private storage; paths, query strings, request headers, and response/request bodies stay out of default logs.
 - Verified HNS non-inclusion must surface as name-not-found instead of origin-address-missing.
 - Proof-anchored `hnsdns=1` metadata and RFC 9461 `_dns.<nameserver>` SVCB records may add only RFC 8484 authoritative DoH transport endpoints for HNS-proven nameservers. They do not synthesize origin A/AAAA, HTTPS, or TLSA answers; malformed matching declarations fail closed, and all resulting DNS answers still validate against the HNS-proven DS.
+- A whole-browser proxy target must authenticate before host classification, DNS, or dialing. ICANN forwarding accepts only canonical public IP literals or public A/AAAA addresses returned by the runtime's bounded, explicit-bootstrap, WebPKI-authenticated DoH client. NXDOMAIN, truncated, wrong-class, unrelated-owner, ambiguous CNAME, private/special address, and unsafe-port results fail before an origin socket is opened.
 
 ## Hardened WebView Profile
 
@@ -53,7 +54,7 @@ The app follows the Android security checklist as a platform baseline:
 - App backup and device-transfer extraction are disabled for files, databases, shared preferences, root storage, and external app data. Browser history, download records, diagnostics, resolver cache, and sync/cache state remain app-local unless the user explicitly exports or shares data.
 - Normal browsing does not enable `file://` or `content://` WebView access. User-initiated downloads use Android DownloadManager into public Downloads, but the system-visible download description does not include the full URL.
 - Network Security Config denies cleartext by default and allows cleartext only for the loopback gateway. The gateway binds randomized `127.0.0.1` ports only while scoped HNS proxy support is needed.
-- WebView JavaScript is enabled for browser compatibility, but no `addJavascriptInterface` bridge is exposed to untrusted content. The HNS WebSocket `WebMessageListener` path validates main-frame origin, active HNS page scope, target HNS host scope, and cleartext downgrade policy before opening a native tunnel.
+- WebView JavaScript is enabled for browser compatibility, but no `addJavascriptInterface` or `WebMessageListener` bridge is exposed to untrusted content. Allowed WebSockets remain Chromium-native and traverse the scoped Rust proxy; a document-start policy rejects cross-scope HNS targets before network admission.
 - Gateway diagnostic persistence is bounded and stores sanitized stage, host, status, and reason fields only; URL paths, query strings, headers, and bodies are not persisted in default diagnostics.
 - Release builds are non-debuggable, minified, resource-shrunk, and require upload-signing configuration before Play release bundle verification can pass.
 
@@ -68,6 +69,18 @@ The app follows the Android privacy checklist as a platform baseline:
 - Sensitive app-to-app sharing uses explicit user actions such as Android share/copy flows or DownloadManager. Sync snapshots stay in-process and internal diagnostic activities are non-exported.
 - Production Logcat output avoids browsing URLs, user-entered content, request/response bodies, and resolver secrets; default persisted diagnostics remain bounded and sanitized.
 - The Google Play Data safety and privacy policy drafts disclose local browsing data, user-initiated downloads, HNS peer/DNS/web requests, optional compatibility DoH, and local deletion controls.
+
+## iOS WebKit Profile
+
+The iOS shell uses one persistent identified `WKWebsiteDataStore` with one authenticated HTTP CONNECT proxy configuration. `allowFailover` is false and the match/exclusion lists are empty, so ordinary ICANN and HNS WebKit traffic share the Rust admission boundary. An absent, stopped, or rejecting proxy is an error; Swift has no route that clears the profile to direct networking.
+
+- Main-frame classification and HNS-root extraction come from Rust. Crossing between ICANN and HNS or between HNS roots revokes the current WebView, credentials, status, and certificate authority before the old proxy is stopped and joined; only then is a fresh immutable generation installed.
+- Subframes and subresources do not rotate or widen the admitted HNS scope. An out-of-scope HNS request is rejected inside Rust before HNS resolution or any origin dial.
+- ICANN HTTPS remains an opaque CONNECT tunnel after explicit-address resolution, leaving server WebPKI validation to WebKit. ICANN HTTP and WebSocket Upgrade use the bounded Rust forwarder. HNS HTTPS CONNECT terminates only in Rust and reaches the shared HNS/DNSSEC/DANE backend.
+- Swift may answer proxy authentication only for the exact live proxy handle, endpoint, and realm. It may accept the expected local HNS server-trust challenge only after Rust separately confirms the exact live generation, canonical host, and complete leaf certificate DER. ICANN trust challenges use WebKit's default handling.
+- Proxy credentials, certificate state, trace data, and Rust-owned buffers are memory-only and bounded. Lifecycle revocation becomes visible before any blocking worker join.
+- Swift contains no independent HNS resolver, socket transport, HTTP proxy parser, DANE validator, certificate generator, or TLS terminator.
+- The committed privacy manifest declares the platform reason APIs used for preferences and file timestamps. Optional physical-device traffic/challenge testing remains unverified.
 
 ## Review Checklist
 
@@ -137,7 +150,7 @@ The app follows the Android privacy checklist as a platform baseline:
 - No page resolved through the HNS DoH compatibility fallback should be labeled as plain local `DANE verified` or `HNS verified`; the toolbar must show an explicit `via DoH` compatibility state.
 - No unbounded or panic-prone X.509 parsing for DANE SPKI selector matching.
 - No QUIC downgrade without an explicit policy event.
-- No local gateway listener beyond loopback, no fixed browser proxy port in normal app startup, no broad proxy fallback when WebView cannot scope proxying to the active HNS host, no intentional ICANN browsing through the HNS proxy override, and no long-lived browser proxy listener while the main browser activity is stopped.
+- No local gateway listener beyond loopback and no fixed browser proxy port in normal app startup. Android must not apply a broad proxy when WebView cannot scope it to the active HNS host; iOS intentionally proxies the whole data store and therefore must not enable failover or any direct WebKit route. Neither platform keeps a browser proxy listener after its owning foreground browser lifecycle is revoked.
 - No dotted host under the vendored IANA root-zone TLD snapshot should be routed into HNS resolution; normal ICANN destinations such as `discord.gg` must stay on the WebView/ICANN path.
 - No origin fetch unless the gateway resolution name matches the requested origin host.
 - No intercepted HNS redirect should be followed unless the target has the same scheme, host, and effective port and the redirect chain stays under the configured bound.
@@ -148,12 +161,13 @@ The app follows the Android privacy checklist as a platform baseline:
 - No insecure resolver result when gateway secure-resolution mode is enabled.
 - No proxy request body should be forwarded or dropped unless HTTP/1.1 framing is unambiguous and supported.
 - No origin HTTP response body should be accepted unless HTTP/1.1 framing is unambiguous and supported.
+- No whole-browser ICANN request should invoke system hostname resolution, connect to an address not returned by the explicit runtime address boundary, follow an invalid/ambiguous DoH CNAME chain, accept a non-IN answer, or dial a private/special address or unsafe port.
 - No decoded chunked origin response should be exposed to WebView with stale `Transfer-Encoding` or mismatched `Content-Length` framing; native gateway file-backed bodies are returned with fixed decoded lengths.
-- No WebView SSL error should call `proceed()` unless the requested URL is an HNS HTTPS URL and the presented certificate's SHA-256 fingerprint exactly matches the local certificate generated and pinned for that HNS host.
+- No WebView SSL error should call `proceed()` unless the requested URL is an HNS HTTPS URL and the presented certificate's full DER bytes match the exact host and currently published Rust proxy generation.
 - No HNS WebSocket or HTTP Upgrade request should be silently downgraded to a normal GET by stripping hop-by-hop Upgrade headers; these requests must enter the native stream tunnel after HNS resolution, HTTPS/SVCB policy, and DANE validation, and fail closed if the native tunnel path is unavailable or validation fails.
 - No WebView JavaScript/native bridge should be exposed to untrusted web content; browser UI/native operations must remain outside page script reachability.
 - No WebView `file://` or `content://` access should be enabled for normal browsing; app assets must use safe app-asset origins or native response interception.
 - No main-frame non-HTTP(S) URL should be passed through to WebView except `about:blank`; external schemes require explicit Android intent handling and unsupported schemes are blocked.
 - No mixed-content downgrade should be allowed inside the WebView.
 - No production build should enable WebView debugging.
-- Browser proxy listener currently binds a randomized `127.0.0.1` port only while an active HNS page needs proxy support and the main browser activity is foregrounded, applies the WebView proxy override only for the active HNS host/subdomains when reverse-bypass scoping is supported, rejects non-HNS proxy traffic, rejects excess concurrent clients and HNS request bursts, routes HNS HTTP through the native persistent-cache gateway path, defaults bare HNS omnibox entries to HTTPS native interception, directly intercepts bodyless HNS WebView and Service Worker HTTP/HTTPS requests into the native gateway with file-backed response bodies, terminates in-scope HNS CONNECT locally before routing the decrypted bounded HTTP/1.1 request through the same native gateway path, and routes HNS Upgrade requests through the native tunnel with fail-closed fallback when tunneling is unavailable.
+- Browser proxy listeners bind randomized `127.0.0.1` ports only while their owning browser lifecycle is active. Android applies an exact HNS reverse-bypass scope and rejects non-HNS proxy traffic. iOS applies a no-failover whole-data-store proxy: the optional immutable HNS scope reaches the native persistent-runtime gateway and all other HNS roots fail closed, while ICANN traffic can use only the explicit public-address forward path. Both modes enforce authentication, bounded concurrency/framing, header sanitization, streamed responses, exact live certificate authorization, and joined teardown.

@@ -26,7 +26,7 @@ jobs:
 
       - name: Install pinned Rust toolchain
         run: |
-          rustup toolchain install 1.92.0 --profile minimal --component rustfmt clippy
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt --component clippy
           rustup default 1.92.0
 
       - name: Install pinned cargo-deny
@@ -60,7 +60,10 @@ jobs:
 
       - name: Install pinned Android SDK components
         run: |
-          sdkmanager "platforms;android-37" "build-tools;36.0.0" "ndk;28.2.13676358"
+          "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-37.0" \
+            "build-tools;36.0.0" \
+            "ndk;28.2.13676358"
 
       - name: Verify pinned build inputs
         run: ./scripts/verify-supply-chain.sh
@@ -72,3 +75,19 @@ jobs:
           ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/28.2.13676358
           HNS_ANDROID_NDK_VERSION: 28.2.13676358
         run: ./gradlew assembleDebug testDebugUnitTest lintDebug verifyReleaseBundleStructure --no-daemon --stacktrace
+
+  ios:
+    name: Apple ABI, XCFramework, and iOS shell
+    runs-on: macos-26
+    # Three release-mode Rust slices plus simulator XCTest and a device-slice
+    # Release link routinely exceed the old one-hour budget on the standard
+    # 3-core hosted runner even when every command is making progress.
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Run the complete iOS gate
+        run: ./scripts/run-ios-gate.sh

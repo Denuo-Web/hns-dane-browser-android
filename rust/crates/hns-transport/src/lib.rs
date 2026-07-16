@@ -16,8 +16,8 @@ use rustls::{Error as RustlsError, StreamOwned};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
-use std::io::{Read, Write};
-use std::net::{Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::io::{ErrorKind, Read, Write};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
@@ -32,7 +32,9 @@ const MAX_INFORMATIONAL_RESPONSES: usize = 8;
 const MAX_HTTP_TRAILER_FIELDS: usize = 128;
 const MAX_ALT_SVC_AGE_SECS: u64 = 24 * 60 * 60;
 const ALT_SVC_FAILURE_COOLDOWN: Duration = Duration::from_secs(10 * 60);
-const TUNNEL_READ_TIMEOUT: Duration = Duration::from_millis(250);
+const TUNNEL_IO_TIMEOUT: Duration = Duration::from_millis(250);
+const CONTROLLED_IO_CANCELLED: &str = "controlled transport operation cancelled";
+const CONTROLLED_IO_DEADLINE_EXCEEDED: &str = "controlled transport deadline exceeded";
 pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MAX_RESPONSE_HEADER_BYTES: usize = 64 * 1024;
 pub const DEFAULT_MAX_RESPONSE_BODY_BYTES: usize = 8 * 1024 * 1024;
@@ -185,6 +187,106 @@ impl Write for CountingWriter<'_> {
 
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush()
+    }
+}
+
+struct ControlledTcpStream<'a, F>
+where
+    F: Fn() -> bool + Sync,
+{
+    stream: TcpStream,
+    deadline: Instant,
+    poll_interval: Duration,
+    is_cancelled: &'a F,
+}
+
+impl<'a, F> ControlledTcpStream<'a, F>
+where
+    F: Fn() -> bool + Sync,
+{
+    fn new(
+        stream: TcpStream,
+        deadline: Instant,
+        poll_interval: Duration,
+        is_cancelled: &'a F,
+    ) -> Self {
+        Self {
+            stream,
+            deadline,
+            poll_interval,
+            is_cancelled,
+        }
+    }
+
+    fn next_timeout(&self) -> std::io::Result<Duration> {
+        if (self.is_cancelled)() {
+            return Err(std::io::Error::new(
+                // `Read::read_exact` and `Write::write_all` transparently
+                // retry `Interrupted`. Use a terminal kind so cancellation
+                // cannot turn those helpers into a busy loop.
+                ErrorKind::ConnectionAborted,
+                CONTROLLED_IO_CANCELLED,
+            ));
+        }
+        let remaining = self
+            .deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| {
+                std::io::Error::new(ErrorKind::TimedOut, CONTROLLED_IO_DEADLINE_EXCEEDED)
+            })?;
+        Ok(self.poll_interval.min(remaining))
+    }
+}
+
+impl<F> Read for ControlledTcpStream<'_, F>
+where
+    F: Fn() -> bool + Sync,
+{
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            let timeout = self.next_timeout()?;
+            self.stream.set_read_timeout(Some(timeout))?;
+            match self.stream.read(buffer) {
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
+                {
+                    continue;
+                }
+                result => return result,
+            }
+        }
+    }
+}
+
+impl<F> Write for ControlledTcpStream<'_, F>
+where
+    F: Fn() -> bool + Sync,
+{
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            let timeout = self.next_timeout()?;
+            self.stream.set_write_timeout(Some(timeout))?;
+            match self.stream.write(buffer) {
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
+                {
+                    continue;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.next_timeout()?;
+        self.stream.flush()
     }
 }
 
@@ -361,6 +463,75 @@ impl TcpHttpTransport {
 
     pub fn limits(&self) -> TransportLimits {
         self.limits
+    }
+
+    /// Performs one HTTP/1.1 request to an explicit IP address while enforcing
+    /// one absolute I/O deadline and polling a cooperative cancellation hook.
+    /// This path deliberately bypasses connection pooling and Alt-Svc routing.
+    pub fn fetch_http11_with_control<F>(
+        &self,
+        request: &OriginRequest,
+        deadline: Instant,
+        poll_interval: Duration,
+        is_cancelled: F,
+    ) -> Result<OriginResponse, TransportError>
+    where
+        F: Fn() -> bool + Sync,
+    {
+        validate_request(request, self.limits)?;
+        if request.protocol != OriginProtocol::Http11 || poll_interval.is_zero() {
+            return Err(TransportError::InvalidRequest);
+        }
+        let connect_ip = request
+            .connect_host
+            .as_deref()
+            .and_then(|host| host.parse::<IpAddr>().ok())
+            .ok_or(TransportError::InvalidRequest)?;
+        let connect_address = SocketAddr::new(connect_ip, request.port);
+        let remaining = controlled_remaining(deadline, &is_cancelled)?;
+        let connect_timeout = self.connect_timeout.min(remaining);
+        if connect_timeout.is_zero() {
+            return Err(controlled_deadline_error());
+        }
+        let stream = match TcpStream::connect_timeout(&connect_address, connect_timeout) {
+            Ok(stream) => stream,
+            Err(error) => {
+                controlled_remaining(deadline, &is_cancelled)?;
+                return Err(io_error(error));
+            }
+        };
+        controlled_remaining(deadline, &is_cancelled)?;
+        let stream = ControlledTcpStream::new(stream, deadline, poll_interval, &is_cancelled);
+        let mut body = Vec::new();
+        let head = match request.scheme.to_ascii_lowercase().as_str() {
+            "http" => {
+                let mut stream = stream;
+                self.send_http11_stream(&mut stream, request, &mut body)?.0
+            }
+            "https" => {
+                let (config, verifier) = self.client_config(request.tls.clone(), Vec::new())?;
+                let server_name = ServerName::try_from(request.host.clone())
+                    .map_err(|_| TransportError::InvalidRequest)?;
+                verifier.begin_handshake(&request.host);
+                let connection =
+                    ClientConnection::new(Arc::new(config), server_name).map_err(tls_error)?;
+                let mut tls_stream = StreamOwned::new(connection, stream);
+                let (mut head, _) = self.send_http11_stream(&mut tls_stream, request, &mut body)?;
+                let (dane_decision, tls_inspection) = verifier.finish_handshake(&request.host)?;
+                head.dane_decision = dane_decision;
+                head.tls_inspection = tls_inspection;
+                head
+            }
+            _ => return Err(TransportError::UnsupportedScheme),
+        };
+        controlled_remaining(deadline, &is_cancelled)?;
+        Ok(OriginResponse {
+            status: head.status,
+            headers: head.headers,
+            body,
+            dane_decision: head.dane_decision,
+            tls_inspection: head.tls_inspection,
+        })
     }
 
     fn fetch_unpromoted(&self, request: &OriginRequest) -> Result<OriginResponse, TransportError> {
@@ -820,7 +991,10 @@ impl TcpHttpTransport {
             .map_err(io_error)?;
         let response_head = self.send_http11_upgrade(&mut stream, request)?;
         stream
-            .set_read_timeout(Some(TUNNEL_READ_TIMEOUT))
+            .set_read_timeout(Some(TUNNEL_IO_TIMEOUT))
+            .map_err(io_error)?;
+        stream
+            .set_write_timeout(Some(TUNNEL_IO_TIMEOUT))
             .map_err(io_error)?;
         Ok(OriginTunnel {
             response_head,
@@ -851,7 +1025,11 @@ impl TcpHttpTransport {
         let response_head = self.send_http11_upgrade(&mut tls_stream, request)?;
         tls_stream
             .sock
-            .set_read_timeout(Some(TUNNEL_READ_TIMEOUT))
+            .set_read_timeout(Some(TUNNEL_IO_TIMEOUT))
+            .map_err(io_error)?;
+        tls_stream
+            .sock
+            .set_write_timeout(Some(TUNNEL_IO_TIMEOUT))
             .map_err(io_error)?;
         let (dane_decision, tls_inspection) = verifier.finish_handshake(&request.host)?;
         Ok(OriginTunnel {
@@ -1082,18 +1260,21 @@ impl TcpHttpTransport {
         request: &OriginRequest,
         body: &mut dyn Write,
     ) -> Result<(OriginResponseHead, bool), TransportError> {
-        let request_bytes = build_http_request(request, true)?;
-        stream.write_all(&request_bytes).map_err(io_error)?;
-        stream.flush().map_err(io_error)?;
-        let (head, reusable) =
-            parse_http_response_to_writer_reusable(stream, self.limits, &request.method, body)?;
-        self.record_alt_svc(request, &head.headers);
-        Ok((head, reusable))
+        self.send_http11_stream(stream, request, body)
     }
 
     fn send_tls_http11(
         &self,
         stream: &mut StreamOwned<ClientConnection, TcpStream>,
+        request: &OriginRequest,
+        body: &mut dyn Write,
+    ) -> Result<(OriginResponseHead, bool), TransportError> {
+        self.send_http11_stream(stream, request, body)
+    }
+
+    fn send_http11_stream(
+        &self,
+        stream: &mut impl ReadWrite,
         request: &OriginRequest,
         body: &mut dyn Write,
     ) -> Result<(OriginResponseHead, bool), TransportError> {
@@ -2464,6 +2645,23 @@ fn is_valid_host(host: &str) -> bool {
             .any(|byte| byte.is_ascii_control() || matches!(byte, b'/' | b'?' | b'#' | b'@' | b' '))
 }
 
+fn controlled_remaining<F>(deadline: Instant, is_cancelled: &F) -> Result<Duration, TransportError>
+where
+    F: Fn() -> bool + Sync,
+{
+    if is_cancelled() {
+        return Err(TransportError::Io(CONTROLLED_IO_CANCELLED.to_owned()));
+    }
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(controlled_deadline_error)
+}
+
+fn controlled_deadline_error() -> TransportError {
+    TransportError::Io(CONTROLLED_IO_DEADLINE_EXCEEDED.to_owned())
+}
+
 fn io_error(error: std::io::Error) -> TransportError {
     TransportError::Io(error.to_string())
 }
@@ -2517,6 +2715,7 @@ mod tests {
     use rustls::{ServerConfig, ServerConnection};
     use std::io::Read;
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::thread;
 
@@ -2546,7 +2745,7 @@ mod tests {
     fn http_fetch_waits_longer_than_tunnel_idle_timeout() {
         let server = TestServer::start_delayed(
             b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".to_vec(),
-            TUNNEL_READ_TIMEOUT + Duration::from_millis(150),
+            TUNNEL_IO_TIMEOUT + Duration::from_millis(150),
         );
         let transport = TcpHttpTransport::new(
             Duration::from_secs(1),
@@ -2558,6 +2757,94 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"ok");
+    }
+
+    #[test]
+    fn controlled_http11_enforces_one_deadline_across_a_slow_drip_body() {
+        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _request = read_test_http_head(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 256\r\n\r\n")
+                .unwrap();
+            for _ in 0..256 {
+                if stream.write_all(b"x").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let transport = TcpHttpTransport::new(
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+            TransportLimits::default(),
+        );
+        let started = Instant::now();
+
+        let error = transport
+            .fetch_http11_with_control(
+                &request(address),
+                started + Duration::from_millis(100),
+                Duration::from_millis(10),
+                || false,
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            TransportError::Io(CONTROLLED_IO_DEADLINE_EXCEEDED.to_owned())
+        );
+        assert!(started.elapsed() < Duration::from_millis(750));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn controlled_http11_cancellation_interrupts_an_idle_response_read() {
+        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_seen_tx, request_seen_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _request = read_test_http_head(&mut stream);
+            request_seen_tx.send(()).unwrap();
+            let _result = release_rx.recv_timeout(Duration::from_secs(2));
+        });
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancellation = Arc::clone(&cancelled);
+        let canceller = thread::spawn(move || {
+            request_seen_rx
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+            thread::sleep(Duration::from_millis(50));
+            cancellation.store(true, Ordering::Release);
+        });
+        let transport = TcpHttpTransport::new(
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+            TransportLimits::default(),
+        );
+        let started = Instant::now();
+
+        let error = transport
+            .fetch_http11_with_control(
+                &request(address),
+                started + Duration::from_secs(2),
+                Duration::from_millis(10),
+                move || cancelled.load(Ordering::Acquire),
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            TransportError::Io(CONTROLLED_IO_CANCELLED.to_owned())
+        );
+        assert!(started.elapsed() < Duration::from_millis(750));
+        let _result = release_tx.send(());
+        canceller.join().unwrap();
+        server.join().unwrap();
     }
 
     #[test]

@@ -56,5 +56,10 @@ captures/
 *.sha256
 !scripts/third-party-notices.sha256
 
+# Apple/Xcode build state
+DerivedData/
+*.xcuserstate
+**/xcuserdata/
+
 # Kotlin/Gradle extras
 .kotlin/

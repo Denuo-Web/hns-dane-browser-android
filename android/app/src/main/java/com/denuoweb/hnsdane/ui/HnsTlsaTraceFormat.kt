@@ -1,6 +1,7 @@
 package com.denuoweb.hnsdane.ui
 
 import com.denuoweb.hnsdane.core.HnsHostPolicy
+import com.denuoweb.hnsdane.net.NativeBridge
 import org.json.JSONObject
 
 internal object HnsResolutionTraceFormat {
@@ -11,7 +12,7 @@ internal object HnsResolutionTraceFormat {
         if (fieldText(trace, "nameClass", "") == "icann") {
             return true
         }
-        return HnsHostPolicy.isIcannDaneTestHost(fieldText(trace, "host", ""))
+        return HnsHostPolicy.isNativeGatewayHost(fieldText(trace, "host", ""), NativeBridge)
     }
 
     fun namespace(trace: JSONObject?): String =

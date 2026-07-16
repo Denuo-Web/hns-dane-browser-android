@@ -4,7 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class BrowserUrlClassifierTest {
-    private val classifier = BrowserUrlClassifier()
+    private val classifier = BrowserUrlClassifier(TEST_BROWSER_NAMESPACE_POLICY)
 
     @Test
     fun singleLabelDefaultsToHnsHttpsGateway() {
@@ -174,5 +174,17 @@ class BrowserUrlClassifierTest {
 
         assertEquals(BrowserTargetKind.Search, target.kind)
         assertEquals("https://duckduckgo.com/?q=two+words", target.url)
+    }
+
+    @Test
+    fun unavailableSharedPolicyFailsClosedInsteadOfUsingNormalWebMode() {
+        val classifier = BrowserUrlClassifier(
+            FixedBrowserNamespacePolicy(emptyMap(), BrowserNamespaceClass.Unavailable),
+        )
+
+        val target = classifier.classify("https://unknown.example/path")
+
+        assertEquals(BrowserTargetKind.Blocked, target.kind)
+        assertEquals("https://unknown.example/path", target.url)
     }
 }

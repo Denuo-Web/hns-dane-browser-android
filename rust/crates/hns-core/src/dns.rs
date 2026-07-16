@@ -603,11 +603,30 @@ fn normalize_record_rdata(
     rdata: &[u8],
 ) -> Result<Vec<u8>, ParseError> {
     match record_type {
+        RecordType::Cname => normalize_exact_name_rdata(message, start, end),
         RecordType::Rrsig if rdata.get(18).is_some_and(|byte| byte & 0xc0 == 0xc0) => {
             normalize_prefixed_name_rdata(message, start, end, 18)
         }
         _ => Ok(rdata.to_vec()),
     }
+}
+
+fn normalize_exact_name_rdata(
+    message: &[u8],
+    start: usize,
+    end: usize,
+) -> Result<Vec<u8>, ParseError> {
+    let (name, next) = DnsName::parse_wire(message, start)?;
+    if next > end {
+        return Err(ParseError::UnexpectedEof);
+    }
+    if next != end {
+        return Err(ParseError::TrailingBytes);
+    }
+
+    let mut out = Vec::new();
+    name.encode_wire(&mut out)?;
+    Ok(out)
 }
 
 fn normalize_prefixed_name_rdata(
@@ -821,6 +840,27 @@ mod tests {
         assert_eq!(parsed.answers[0].name.to_string(), "example.com");
         assert_eq!(parsed.answers[0].ttl, 60);
         assert_eq!(parsed.answers[0].rdata, vec![127, 0, 0, 1]);
+    }
+
+    #[test]
+    fn expands_compressed_cname_target_in_rdata() {
+        let message = b"\x12\x34\x81\x80\x00\x01\x00\x02\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01\xc0\x0c\x00\x05\x00\x01\x00\x00\x00\x3c\x00\x07\x04edge\xc0\x0c\xc0\x29\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\x01\x01\x01\x01";
+        let parsed = DnsMessage::parse(message).unwrap();
+
+        assert_eq!(parsed.answers.len(), 2);
+        assert_eq!(parsed.answers[0].record_type, RecordType::Cname);
+        assert_eq!(
+            parsed.answers[0].rdata,
+            b"\x04edge\x07example\x03com\x00".to_vec(),
+        );
+        assert_eq!(parsed.answers[1].name.to_string(), "edge.example.com");
+    }
+
+    #[test]
+    fn rejects_trailing_bytes_after_cname_target() {
+        let message = b"\x12\x34\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01\xc0\x0c\x00\x05\x00\x01\x00\x00\x00\x3c\x00\x08\x04edge\xc0\x0c\x00";
+
+        assert_eq!(DnsMessage::parse(message), Err(ParseError::TrailingBytes));
     }
 
     #[test]

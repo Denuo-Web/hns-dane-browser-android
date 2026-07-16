@@ -1,0 +1,4 @@
+module HnsBrowserRuntime {
+    header "hns_browser.h"
+    export *
+}

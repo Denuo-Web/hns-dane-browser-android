@@ -51,6 +51,7 @@ import com.denuoweb.hnsdane.BuildConfig
 import com.denuoweb.hnsdane.HnsDaneApplication
 import com.denuoweb.hnsdane.R
 import com.denuoweb.hnsdane.core.BrowserSecurityPolicy
+import com.denuoweb.hnsdane.core.BrowserTarget
 import com.denuoweb.hnsdane.core.BrowserTargetKind
 import com.denuoweb.hnsdane.core.BrowserUrlClassifier
 import com.denuoweb.hnsdane.core.HnsPageResolverPolicy
@@ -58,19 +59,26 @@ import com.denuoweb.hnsdane.core.HnsPageSecurityPath
 import com.denuoweb.hnsdane.core.HnsPageTlsPolicy
 import com.denuoweb.hnsdane.core.SecurityState
 import com.denuoweb.hnsdane.net.DisabledServiceWorkerClient
+import com.denuoweb.hnsdane.net.BrowserProxyCoordinator
+import com.denuoweb.hnsdane.net.BrowserProxyLifecycleWorker
+import com.denuoweb.hnsdane.net.BrowserProxyRoute
 import com.denuoweb.hnsdane.net.GatewayEventLog
 import com.denuoweb.hnsdane.net.HnsProxyController
 import com.denuoweb.hnsdane.net.HnsServiceWorkerGatewayClient
 import com.denuoweb.hnsdane.net.HnsSyncProgress
 import com.denuoweb.hnsdane.net.HnsSyncSnapshot
 import com.denuoweb.hnsdane.net.HnsNativeDownloadFetcher
-import com.denuoweb.hnsdane.net.HnsWebSocketBridge
-import com.denuoweb.hnsdane.net.HnsWebSocketShim
+import com.denuoweb.hnsdane.net.HnsProxyWebSocketPolicy
 import com.denuoweb.hnsdane.net.HnsWebViewGatewayInterceptor
 import com.denuoweb.hnsdane.net.HnsWebViewSslErrorPolicy
-import com.denuoweb.hnsdane.net.LoopbackProxyServer
-import com.denuoweb.hnsdane.net.LoopbackProxyAuthorization
+import com.denuoweb.hnsdane.net.LocalBrowserProxyFactory
 import com.denuoweb.hnsdane.net.NativeBridge
+import com.denuoweb.hnsdane.net.ProcessServiceWorkerClientOwnership
+import com.denuoweb.hnsdane.net.RustBrowserProxy
+import com.denuoweb.hnsdane.net.RustBrowserProxyConfig
+import com.denuoweb.hnsdane.net.ServiceWorkerClientOwnershipGate
+import com.denuoweb.hnsdane.net.blockedHnsProxyResponse
+import com.denuoweb.hnsdane.net.serviceWorkerProxyRoute
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -81,7 +89,7 @@ import java.util.Locale
 import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
-    private val classifier = BrowserUrlClassifier()
+    private val classifier = BrowserUrlClassifier(NativeBridge)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val syncStatusExecutor = Executors.newSingleThreadExecutor()
     private val downloadExecutor = Executors.newSingleThreadExecutor()
@@ -100,12 +108,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var syncProgressStats: TextView
     private lateinit var pageProgressBar: ProgressBar
     private lateinit var httpWarningBar: TextView
-    private lateinit var proxyController: HnsProxyController
-    private lateinit var hnsWebSocketBridge: HnsWebSocketBridge
-    private var loopbackProxyServer: LoopbackProxyServer? = null
-    private var loopbackProxyAuthorization: LoopbackProxyAuthorization? = null
+    private lateinit var proxyCoordinator: BrowserProxyCoordinator
     private lateinit var assetLoader: WebViewAssetLoader
     private lateinit var webViewGatewayInterceptor: HnsWebViewGatewayInterceptor
+    private val serviceWorkerClientOwner: ServiceWorkerClientOwnershipGate.Owner =
+        ProcessServiceWorkerClientOwnership.newOwner()
     private var proxyAvailable: Boolean = false
     private var currentTargetKind: BrowserTargetKind? = null
     private var mainFrameHnsStatusCode: Int? = null
@@ -116,17 +123,14 @@ class MainActivity : ComponentActivity() {
     private var mainFrameHnsStatusUrl: String? = null
     private var lastSyncSnapshot: HnsSyncSnapshot? = null
     private var syncSnapshotSubscription: Closeable? = null
-    private var activityStarted: Boolean = false
     @Volatile
-    private var gatewayInterceptionEnabled: Boolean = true
+    private var gatewayInterceptionEnabled: Boolean = false
     private var activityDestroyed: Boolean = false
-    private var proxyOverrideApplied: Boolean = false
-    private var proxyOverrideClearing: Boolean = false
-    private var proxyStartPending: Boolean = false
-    private var proxyGatewayPort: Int? = null
-    private var proxyScopedHost: String? = null
     @Volatile
     private var activeMainFrameUrl: String? = null
+    private var pendingMainFrameUrl: String? = null
+    private var admittedMainFrameUrl: String? = null
+    private var reloadHnsPageOnNextStart: Boolean = false
     private var pageIsLoading: Boolean = false
     private var pageLoadProgress: Int = 0
 
@@ -138,27 +142,41 @@ class MainActivity : ComponentActivity() {
         GatewayEventLog.configureAppStorage(filesDir)
         NativeBridge.pruneGatewayResponseBodyFiles(filesDir.absolutePath)
         HnsNativeDownloadFetcher.pruneStaging(filesDir)
-        proxyController = HnsProxyController(this)
-        hnsWebSocketBridge = HnsWebSocketBridge(
-            dataDir = filesDir,
-            activeMainFrameUrl = { activeMainFrameUrl },
-            strictHnsMode = { HnsResolutionPreferences.strictHnsMode(this) },
-            dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
-            statelessDaneCertificates = { HnsResolutionPreferences.statelessDaneCertificates(this) },
-            handshakeNetwork = { HnsResolutionPreferences.handshakeNetworkId(this) },
-            enabled = { gatewayInterceptionEnabled },
-            callbackHandler = mainHandler,
+        val proxyController = HnsProxyController(this)
+        proxyCoordinator = BrowserProxyCoordinator(
+            overrideController = proxyController,
+            proxyFactory = LocalBrowserProxyFactory(RustBrowserProxy::start),
+            workerExecutor = BrowserProxyLifecycleWorker,
+            callbackExecutor = ContextCompat.getMainExecutor(this),
+            onAvailabilityChanged = { available ->
+                proxyAvailable = available
+                if (::securityLabel.isInitialized) refreshSecurityState()
+            },
         )
         webViewGatewayInterceptor = HnsWebViewGatewayInterceptor(
             dataDir = filesDir,
+            namespacePolicy = NativeBridge,
             allowProxyFallbackForBodyRequests = { proxyAvailable },
             strictHnsMode = { HnsResolutionPreferences.strictHnsMode(this) },
             dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
             statelessDaneCertificates = { HnsResolutionPreferences.statelessDaneCertificates(this) },
             handshakeNetwork = { HnsResolutionPreferences.handshakeNetworkId(this) },
-            onMainFrameHnsStatus = { statusCode, tlsPolicy, resolverPolicy, securityPath, traceJson ->
+            onMainFrameHnsStatusForUrl = { url, statusCode, tlsPolicy, resolverPolicy, securityPath, traceJson ->
                 runOnUiThread {
-                    if (mainFrameHnsStatusCode == null) {
+                    val target = classifier.classify(url)
+                    val usesCompatibilityPath =
+                        target.kind == BrowserTargetKind.NativeGateway ||
+                            (
+                                target.kind == BrowserTargetKind.HnsName &&
+                                    target.displayHost?.let(proxyCoordinator::routeForHnsHost) ==
+                                    BrowserProxyRoute.CompatibilityInterceptor
+                                )
+                    if (
+                        pendingMainFrameUrl == null &&
+                        admittedMainFrameUrl?.mainFrameMatchKey() == url.mainFrameMatchKey() &&
+                        usesCompatibilityPath &&
+                        mainFrameHnsStatusCode == null
+                    ) {
                         applyMainFrameHnsStatus(statusCode, tlsPolicy, resolverPolicy, securityPath, traceJson)
                     }
                 }
@@ -244,7 +262,7 @@ class MainActivity : ComponentActivity() {
                 handleDownload(url, userAgent, contentDisposition, mimeType)
             }
         }
-        configureHnsWebSocketBridge()
+        configureHnsProxyWebSocketPolicy()
         configureRendererRecovery()
 
         BrowserCookiePreferences.applyTo(webView)
@@ -297,7 +315,7 @@ class MainActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (webView.canGoBack()) {
-                    webView.goBack()
+                    navigateHistory(-1)
                 } else {
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
@@ -321,10 +339,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        activityStarted = true
         gatewayInterceptionEnabled = true
         BrowserCookiePreferences.applyTo(webView)
-        startLoopbackGateway()
+        val resumeUrl = pendingMainFrameUrl ?: activeMainFrameUrl ?: currentPageUrl()
+        if (reloadHnsPageOnNextStart && pendingMainFrameUrl == null && resumeUrl != null) {
+            reloadHnsPageOnNextStart = false
+            val target = classifier.classify(resumeUrl)
+            enqueueNavigation(target) { webView.reload() }
+        }
+        proxyCoordinator.resume(proxyConfigForUrl(pendingMainFrameUrl ?: activeMainFrameUrl ?: resumeUrl))
         lastSyncSnapshot = HnsSyncSnapshot(
             statusJson = NativeBridge.syncStatus(
                 filesDir.absolutePath,
@@ -339,15 +362,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
-        activityStarted = false
         gatewayInterceptionEnabled = false
+        reloadHnsPageOnNextStart = currentHnsHostForUrl(activeMainFrameUrl) != null
         if (::webView.isInitialized) {
             webView.stopLoading()
         }
-        hnsWebSocketBridge.closeAll(reason = "browser backgrounded")
         stopSyncStatusPolling()
         stopObservingForegroundSync()
-        stopLoopbackGateway()
+        proxyCoordinator.suspend()
         super.onStop()
     }
 
@@ -355,8 +377,7 @@ class MainActivity : ComponentActivity() {
         activityDestroyed = true
         gatewayInterceptionEnabled = false
         stopObservingForegroundSync()
-        stopLoopbackGateway()
-        hnsWebSocketBridge.close()
+        proxyCoordinator.destroy()
         disableServiceWorkerInterception()
         if (::webView.isInitialized) {
             webView.stopLoading()
@@ -365,141 +386,6 @@ class MainActivity : ComponentActivity() {
         syncStatusExecutor.shutdownNow()
         downloadExecutor.shutdownNow()
         super.onDestroy()
-    }
-
-    private fun createLoopbackGateway(): LoopbackProxyServer {
-        val authorization = LoopbackProxyAuthorization.create()
-        loopbackProxyAuthorization = authorization
-        return LoopbackProxyServer(
-            EPHEMERAL_GATEWAY_PORT,
-            filesDir,
-            strictHnsMode = { HnsResolutionPreferences.strictHnsMode(this) },
-            dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
-            statelessDaneCertificates = { HnsResolutionPreferences.statelessDaneCertificates(this) },
-            handshakeNetwork = { HnsResolutionPreferences.handshakeNetworkId(this) },
-            enforceHnsHostScope = true,
-            scopedHnsHost = { currentHnsProxyHost() },
-            proxyAuthorization = authorization,
-            onHnsStatus = { host, statusCode, tlsPolicy, resolverPolicy, securityPath, traceJson ->
-                runOnUiThread {
-                    if (isActiveMainFrameHost(host) && mainFrameHnsStatusCode == null) {
-                        applyMainFrameHnsStatus(statusCode, tlsPolicy, resolverPolicy, securityPath, traceJson)
-                    }
-                }
-            },
-        )
-    }
-
-    private fun startLoopbackGateway() {
-        if (activityDestroyed) {
-            return
-        }
-        if (proxyOverrideClearing) {
-            proxyStartPending = true
-            return
-        }
-        if (loopbackProxyServer != null) {
-            return
-        }
-        if (currentHnsProxyHost() == null) {
-            proxyStartPending = false
-            return
-        }
-
-        val gateway = createLoopbackGateway()
-        loopbackProxyServer = gateway
-        val gatewayStarted = gateway.start()
-        val gatewayPort = gateway.boundPort()
-        if (gatewayStarted && gatewayPort != null) {
-            proxyGatewayPort = gatewayPort
-            refreshLoopbackProxyScope()
-        } else {
-            if (loopbackProxyServer === gateway) {
-                loopbackProxyServer = null
-            }
-            proxyAvailable = false
-            proxyGatewayPort = null
-            proxyScopedHost = null
-            loopbackProxyAuthorization = null
-            gateway.close()
-            refreshSecurityState()
-        }
-    }
-
-    private fun refreshLoopbackProxyScope() {
-        val hnsHost = currentHnsProxyHost()
-        if (proxyOverrideClearing) {
-            proxyStartPending = hnsHost != null
-            return
-        }
-        if (hnsHost == null) {
-            stopLoopbackGateway()
-            return
-        }
-
-        val gateway = loopbackProxyServer
-        if (gateway == null) {
-            startLoopbackGateway()
-            return
-        }
-        val gatewayPort = proxyGatewayPort ?: gateway.boundPort() ?: return
-        if (proxyOverrideApplied && proxyAvailable && proxyScopedHost == hnsHost) {
-            return
-        }
-
-        proxyController.applyLoopbackProxy(gatewayPort, hnsHost) { applied ->
-            if (loopbackProxyServer !== gateway || currentHnsProxyHost() != hnsHost) {
-                return@applyLoopbackProxy
-            }
-            proxyAvailable = applied
-            proxyOverrideApplied = applied
-            proxyScopedHost = if (applied) hnsHost else null
-            if (applied) {
-                refreshSecurityState()
-            } else {
-                stopLoopbackGateway()
-            }
-        }
-    }
-
-    private fun stopLoopbackGateway() {
-        val gateway = loopbackProxyServer
-        val shouldClearProxy = gateway != null || proxyOverrideApplied
-        if (gateway != null) {
-            loopbackProxyServer = null
-            proxyAvailable = false
-            proxyGatewayPort = null
-            proxyScopedHost = null
-            loopbackProxyAuthorization = null
-            gateway.close()
-            refreshSecurityState()
-        } else {
-            proxyAvailable = false
-            proxyGatewayPort = null
-            proxyScopedHost = null
-            loopbackProxyAuthorization = null
-        }
-
-        if (!shouldClearProxy) {
-            return
-        }
-        if (proxyOverrideClearing) {
-            return
-        }
-
-        proxyOverrideClearing = true
-        proxyController.clear {
-            proxyOverrideClearing = false
-            proxyOverrideApplied = false
-            val shouldRestart = proxyStartPending && activityStarted && !activityDestroyed
-            proxyStartPending = false
-            if (shouldRestart) {
-                startLoopbackGateway()
-                refreshLoopbackProxyScope()
-            } else {
-                refreshSecurityState()
-            }
-        }
     }
 
     private fun configureServiceWorkerInterception() {
@@ -521,9 +407,23 @@ class MainActivity : ComponentActivity() {
         if (WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_FILE_ACCESS)) {
             serviceWorkerSettings.allowFileAccess = false
         }
-        serviceWorkerController.setServiceWorkerClient(
-            HnsServiceWorkerGatewayClient(webViewGatewayInterceptor) { gatewayInterceptionEnabled },
-        )
+        ProcessServiceWorkerClientOwnership.install(serviceWorkerClientOwner) {
+            serviceWorkerController.setServiceWorkerClient(
+                HnsServiceWorkerGatewayClient(
+                    interceptor = webViewGatewayInterceptor,
+                    namespacePolicy = NativeBridge,
+                    enabled = { gatewayInterceptionEnabled },
+                    proxyRoute = { request ->
+                        serviceWorkerProxyRoute(
+                            scheme = request.url.scheme,
+                            host = request.url.host,
+                            namespacePolicy = NativeBridge,
+                            routeForHnsHost = proxyCoordinator::routeForHnsHost,
+                        )
+                    },
+                ),
+            )
+        }
     }
 
     private fun disableServiceWorkerInterception() {
@@ -531,26 +431,19 @@ class MainActivity : ComponentActivity() {
             WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BASIC_USAGE) &&
             WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_SHOULD_INTERCEPT_REQUEST)
         ) {
-            ServiceWorkerControllerCompat.getInstance().setServiceWorkerClient(DisabledServiceWorkerClient)
+            ProcessServiceWorkerClientOwnership.disable(serviceWorkerClientOwner) {
+                ServiceWorkerControllerCompat.getInstance().setServiceWorkerClient(DisabledServiceWorkerClient)
+            }
         }
     }
 
-    private fun configureHnsWebSocketBridge() {
-        if (
-            !WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) ||
-            !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
-        ) {
+    private fun configureHnsProxyWebSocketPolicy() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             return
         }
-        WebViewCompat.addWebMessageListener(
-            webView,
-            HnsWebSocketShim.JS_OBJECT_NAME,
-            setOf("*"),
-            hnsWebSocketBridge,
-        )
         WebViewCompat.addDocumentStartJavaScript(
             webView,
-            HnsWebSocketShim.script(),
+            HnsProxyWebSocketPolicy.script(NativeBridge),
             setOf("*"),
         )
     }
@@ -667,7 +560,7 @@ class MainActivity : ComponentActivity() {
             addView(LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 addView(menuIconButton("›", getString(R.string.menu_forward), webView.canGoForward(), popup) {
-                    webView.goForward()
+                    navigateHistory(1)
                 })
                 addView(menuIconButton("↻", getString(R.string.menu_refresh), true, popup) {
                     reloadCurrentPage()
@@ -792,19 +685,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun reloadCurrentPage() {
-        val url = currentPageUrl() ?: activeMainFrameUrl
-        if (url != null) {
-            activeMainFrameUrl = url
-            currentTargetKind = classifier.classify(url).kind
-        }
-        clearMainFrameHnsStatus()
-        pageIsLoading = true
-        pageLoadProgress = 0
-        refreshLoopbackProxyScope()
-        refreshSecurityState()
-        refreshPageProgress()
-        refreshTransportWarning()
-        webView.reload()
+        val url = currentPageUrl() ?: activeMainFrameUrl ?: return
+        enqueueNavigation(classifier.classify(url)) { webView.reload() }
     }
 
     private fun dismissOmniboxKeyboard() {
@@ -818,18 +700,51 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun loadTarget(target: com.denuoweb.hnsdane.core.BrowserTarget) {
+    private fun loadTarget(target: BrowserTarget) {
+        enqueueNavigation(target) { webView.loadUrl(target.url) }
+    }
+
+    private fun navigateHistory(offset: Int) {
+        val history = webView.copyBackForwardList()
+        val targetIndex = history.currentIndex + offset
+        if (targetIndex !in 0 until history.size) return
+        val url = history.getItemAtIndex(targetIndex).url ?: return
+        enqueueNavigation(classifier.classify(url)) { webView.goBackOrForward(offset) }
+    }
+
+    private fun enqueueNavigation(target: BrowserTarget, load: () -> Unit) {
+        webView.stopLoading()
         omnibox.setText(target.url)
         currentTargetKind = target.kind
         clearMainFrameHnsStatus()
-        activeMainFrameUrl = target.url
+        if (target.kind == BrowserTargetKind.Blocked) {
+            pendingMainFrameUrl = null
+            admittedMainFrameUrl = null
+            pageIsLoading = false
+            pageLoadProgress = 0
+            refreshSecurityState()
+            refreshPageProgress()
+            refreshTransportWarning()
+            Toast.makeText(this, getString(R.string.toast_link_not_supported), Toast.LENGTH_SHORT).show()
+            return
+        }
+        pendingMainFrameUrl = target.url
         pageIsLoading = true
         pageLoadProgress = 0
-        refreshLoopbackProxyScope()
         refreshSecurityState()
         refreshPageProgress()
         refreshTransportWarning()
-        webView.loadUrl(target.url)
+        val config = proxyConfigForTarget(target)
+        proxyCoordinator.navigate(config, config?.scopeHost) {
+            if (activityDestroyed || pendingMainFrameUrl?.mainFrameMatchKey() != target.url.mainFrameMatchKey()) {
+                return@navigate
+            }
+            pendingMainFrameUrl = null
+            admittedMainFrameUrl = target.url
+            activeMainFrameUrl = target.url
+            currentTargetKind = target.kind
+            load()
+        }
     }
 
     private fun refreshSecurityState() {
@@ -968,8 +883,8 @@ class MainActivity : ComponentActivity() {
             host: String,
             realm: String,
         ) {
-            val authorization = loopbackProxyAuthorization
-            if (authorization != null && authorization.matchesChallenge(host, realm)) {
+            val authorization = proxyCoordinator.authorizationForChallenge(host, realm)
+            if (authorization != null) {
                 handler.proceed(authorization.username, authorization.password)
             } else {
                 handler.cancel()
@@ -977,14 +892,25 @@ class MainActivity : ComponentActivity() {
         }
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
-            hnsWebSocketBridge.closeAll()
+            if (pendingMainFrameUrl != null) return
+            val admittedUrl = admittedMainFrameUrl
+            if (admittedUrl != null && admittedUrl.mainFrameMatchKey() != url.mainFrameMatchKey()) {
+                view.stopLoading()
+                val redirectTarget = classifier.classify(url)
+                enqueueNavigation(redirectTarget) { view.loadUrl(redirectTarget.url) }
+                return
+            }
             pageIsLoading = true
             pageLoadProgress = pageLoadProgress.coerceAtLeast(5)
             omnibox.setText(url)
+            admittedMainFrameUrl = url
             activeMainFrameUrl = url
-            currentTargetKind = classifier.classify(url).kind
+            val target = classifier.classify(url)
+            currentTargetKind = target.kind
+            if (target.kind == BrowserTargetKind.HnsName) {
+                target.displayHost?.let(proxyCoordinator::noteMainFrameHost)
+            }
             clearMainFrameHnsStatusUnlessFor(url)
-            refreshLoopbackProxyScope()
             refreshSecurityState()
             refreshPageProgress()
             refreshTransportWarning()
@@ -1007,17 +933,12 @@ class MainActivity : ComponentActivity() {
             }
 
             val target = classifier.classify(requestUrl)
-            if (target.kind == BrowserTargetKind.Search) {
+            if (target.kind == BrowserTargetKind.Search || target.kind == BrowserTargetKind.Blocked) {
                 Toast.makeText(this@MainActivity, getString(R.string.toast_link_not_supported), Toast.LENGTH_SHORT).show()
                 return true
             }
-            activeMainFrameUrl = requestUrl
-            currentTargetKind = target.kind
-            clearMainFrameHnsStatus()
-            refreshLoopbackProxyScope()
-            refreshSecurityState()
-            refreshTransportWarning()
-            return false
+            enqueueNavigation(target) { view.loadUrl(target.url) }
+            return true
         }
 
         override fun shouldInterceptRequest(
@@ -1037,6 +958,20 @@ class MainActivity : ComponentActivity() {
                 )
             }
             val requestUrl = request.url.toString()
+            val target = classifier.classify(requestUrl)
+            if (target.kind == BrowserTargetKind.Blocked) {
+                return blockedHnsProxyResponse()
+            }
+            if (target.kind == BrowserTargetKind.HnsName) {
+                val route = target.displayHost
+                    ?.let(proxyCoordinator::routeForHnsHost)
+                    ?: BrowserProxyRoute.Block
+                when (route) {
+                    BrowserProxyRoute.Proxy -> return null
+                    BrowserProxyRoute.Block -> return blockedHnsProxyResponse()
+                    BrowserProxyRoute.CompatibilityInterceptor -> Unit
+                }
+            }
             val isMainFrame = request.isForMainFrame || isActiveMainFrameRequest(requestUrl)
             return webViewGatewayInterceptor.intercept(
                 method = request.method,
@@ -1050,7 +985,7 @@ class MainActivity : ComponentActivity() {
 
         @SuppressLint("WebViewClientOnReceivedSslError")
         override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-            if (HnsWebViewSslErrorPolicy.canProceed(error)) {
+            if (HnsWebViewSslErrorPolicy.canProceed(error, proxyCoordinator, NativeBridge)) {
                 handler.proceed()
             } else {
                 handler.cancel()
@@ -1058,8 +993,28 @@ class MainActivity : ComponentActivity() {
         }
 
         override fun onPageFinished(view: WebView, url: String) {
+            if (pendingMainFrameUrl != null) return
+            val admittedUrl = admittedMainFrameUrl ?: return
+            if (admittedUrl.mainFrameMatchKey() != url.mainFrameMatchKey()) return
             omnibox.setText(url)
             activeMainFrameUrl = url
+            admittedMainFrameUrl = url
+            val target = classifier.classify(url)
+            currentTargetKind = target.kind
+            if (target.kind == BrowserTargetKind.HnsName) {
+                target.displayHost?.let { host ->
+                    proxyCoordinator.noteMainFrameHost(host)
+                    proxyCoordinator.takeMainFrameStatus(host)?.let { status ->
+                        applyMainFrameHnsStatus(
+                            status.statusCode,
+                            status.tlsPolicy,
+                            status.resolverPolicy,
+                            status.securityPath,
+                            status.resolutionTraceJson,
+                        )
+                    }
+                }
+            }
             pageIsLoading = false
             pageLoadProgress = PAGE_PROGRESS_MAX
             recordHistoryEntry(url, view.title)
@@ -1069,6 +1024,8 @@ class MainActivity : ComponentActivity() {
         }
 
         override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+            gatewayInterceptionEnabled = false
+            proxyCoordinator.suspend()
             pageIsLoading = false
             pageLoadProgress = 0
             refreshSecurityState()
@@ -1078,7 +1035,6 @@ class MainActivity : ComponentActivity() {
                 getString(R.string.toast_webview_renderer_restarted),
                 Toast.LENGTH_SHORT,
             ).show()
-            stopLoopbackGateway()
             view.destroy()
             finish()
             return true
@@ -1146,7 +1102,12 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        if (classifier.classify(downloadUrl).kind in NATIVE_GATEWAY_TARGET_KINDS) {
+        val target = classifier.classify(downloadUrl)
+        if (target.kind == BrowserTargetKind.Blocked || target.kind == BrowserTargetKind.Search) {
+            Toast.makeText(this, getString(R.string.toast_link_not_supported), Toast.LENGTH_LONG).show()
+            return
+        }
+        if (target.kind in NATIVE_GATEWAY_TARGET_KINDS) {
             handleHnsDownload(downloadUrl, userAgent, contentDisposition, mimeType)
             return
         }
@@ -1204,6 +1165,7 @@ class MainActivity : ComponentActivity() {
             val result = runCatching {
                 val fetcher = HnsNativeDownloadFetcher(
                     dataDir = filesDir,
+                    namespacePolicy = NativeBridge,
                     strictHnsMode = { strictMode },
                     dohResolverUrl = { dohResolver },
                     statelessDaneCertificates = { statelessDane },
@@ -1327,29 +1289,38 @@ class MainActivity : ComponentActivity() {
                 .trim()
                 .takeIf { it.isNotBlank() && it != "about:blank" }
 
-    private fun currentHnsProxyHost(): String? {
-        val activeUrl = activeMainFrameUrl ?: return null
-        val target = classifier.classify(activeUrl)
-        if (target.kind != BrowserTargetKind.HnsName) {
-            return null
+    private fun proxyConfigForUrl(url: String?): RustBrowserProxyConfig? =
+        url?.let(classifier::classify)?.let(::proxyConfigForTarget)
+
+    private fun proxyConfigForTarget(target: BrowserTarget): RustBrowserProxyConfig? {
+        val host = if (target.kind == BrowserTargetKind.HnsName) {
+            target.displayHost
+        } else {
+            null
         }
-        return target.displayHost
             ?.trim()
             ?.trimEnd('.')
             ?.lowercase(Locale.US)
             ?.takeIf { it.isNotBlank() }
+            ?: return null
+        return RustBrowserProxyConfig(
+            dataDir = filesDir.absolutePath,
+            network = HnsResolutionPreferences.handshakeNetworkId(this),
+            scopeHost = host,
+            strictHnsMode = HnsResolutionPreferences.strictHnsMode(this),
+            dohResolverUrl = HnsResolutionPreferences.dohResolverUrl(this),
+            statelessDaneCertificates = HnsResolutionPreferences.statelessDaneCertificates(this),
+        )
     }
+
+    private fun currentHnsHostForUrl(url: String?): String? =
+        url?.let(classifier::classify)
+            ?.takeIf { it.kind == BrowserTargetKind.HnsName }
+            ?.displayHost
 
     private fun isActiveMainFrameRequest(url: String): Boolean {
         val activeUrl = activeMainFrameUrl ?: return false
         return url.mainFrameMatchKey() == activeUrl.mainFrameMatchKey()
-    }
-
-    private fun isActiveMainFrameHost(host: String): Boolean {
-        val activeHost = activeMainFrameUrl
-            ?.let { classifier.classify(it).displayHost }
-            ?: return false
-        return activeHost.equals(host, ignoreCase = true)
     }
 
     private fun String.mainFrameMatchKey(): String =
@@ -1361,7 +1332,6 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_LOAD_URL = "com.denuoweb.hnsdane.LOAD_URL"
 
-        private const val EPHEMERAL_GATEWAY_PORT = 0
         private const val SYNC_PROGRESS_MAX = 1000
         private const val PAGE_PROGRESS_MAX = 100
         private const val SYNC_STATUS_POLL_MS = 2_000L

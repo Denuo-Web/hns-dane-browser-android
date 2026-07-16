@@ -9,8 +9,10 @@ CARGO=(cargo "+$RUST_TOOLCHAIN")
 "$ROOT_DIR/scripts/verify-supply-chain.sh"
 python3 "$ROOT_DIR/scripts/generate-third-party-notices.py" --check
 "$ROOT_DIR/scripts/check-version-consistency.sh"
+"$ROOT_DIR/scripts/check-runtime-boundaries.sh"
 "${CARGO[@]}" fmt --manifest-path "$ROOT_DIR/rust/Cargo.toml" --all -- --check
 "${CARGO[@]}" clippy --locked --manifest-path "$ROOT_DIR/rust/Cargo.toml" --workspace --all-targets -- -D warnings
+"$ROOT_DIR/scripts/check-ios-abi.sh"
 if ! "${CARGO[@]}" deny --version >/dev/null 2>&1; then
   echo "ERROR: cargo-deny is required. Install with: cargo install cargo-deny --version $EXPECTED_CARGO_DENY_VERSION --locked" >&2
   exit 2

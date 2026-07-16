@@ -1,0 +1,13 @@
+[package]
+name = "ios-ffi"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "hns_browser_ios"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+hns-browser-runtime.workspace = true

@@ -1,5 +1,6 @@
 package com.denuoweb.hnsdane.net
 
+import com.denuoweb.hnsdane.core.BrowserNamespacePolicy
 import com.denuoweb.hnsdane.core.HnsHostPolicy
 import java.io.File
 import java.io.IOException
@@ -10,6 +11,7 @@ import java.util.Locale
 internal class HnsNativeDownloadFetcher(
     private val dataDir: File,
     private val hnsGatewayBridge: HnsGatewayBridge = NativeBridge,
+    private val namespacePolicy: BrowserNamespacePolicy,
     private val strictHnsMode: () -> Boolean = { false },
     private val dohResolverUrl: () -> String = { "" },
     private val statelessDaneCertificates: () -> Boolean = { false },
@@ -22,7 +24,7 @@ internal class HnsNativeDownloadFetcher(
     ): HnsNativeDownloadResponse {
         var currentUrl = url
         repeat(MAX_HNS_DOWNLOAD_REDIRECTS + 1) { redirectIndex ->
-            val target = HnsNativeDownloadTarget.parse(currentUrl)
+            val target = HnsNativeDownloadTarget.parse(currentUrl, namespacePolicy)
                 ?: throw HnsNativeDownloadException("HNS download URL is not supported.")
             val response = request(target, userAgent, currentUrl)
 
@@ -36,7 +38,7 @@ internal class HnsNativeDownloadFetcher(
                 response.deleteBodyFile()
                 currentUrl = redirectedUrl
                     ?: throw HnsNativeDownloadException("HNS download redirect target is invalid.")
-                val redirectedTarget = HnsNativeDownloadTarget.parse(currentUrl)
+                val redirectedTarget = HnsNativeDownloadTarget.parse(currentUrl, namespacePolicy)
                 if (redirectedTarget == null) {
                     throw HnsNativeDownloadException("HNS download redirect left native HNS resolution scope.")
                 }
@@ -64,8 +66,10 @@ internal class HnsNativeDownloadFetcher(
         finalUrl: String,
     ): HnsNativeDownloadResponse {
         val headers = gatewayHeaders(userAgent)
+        val runtimeConfig = gatewayRuntimeConfig()
         val fileResponse = hnsGatewayBridge.httpResponseBodyFile(
             dataDir = dataDir.absolutePath,
+            config = runtimeConfig,
             method = "GET",
             scheme = target.scheme,
             host = target.host,
@@ -80,6 +84,7 @@ internal class HnsNativeDownloadFetcher(
 
         val bytes = hnsGatewayBridge.httpResponse(
             dataDir = dataDir.absolutePath,
+            config = runtimeConfig,
             method = "GET",
             scheme = target.scheme,
             host = target.host,
@@ -134,20 +139,16 @@ internal class HnsNativeDownloadFetcher(
     private fun gatewayHeaders(userAgent: String?): List<Pair<String, String>> {
         val headers = mutableListOf("Accept" to "*/*")
         userAgent?.trim()?.takeIf { it.isNotBlank() }?.let { headers += "User-Agent" to it }
-        if (strictHnsMode()) {
-            headers += HNS_GATEWAY_STRICT_MODE_HEADER to "1"
-        }
-        dohResolverUrl().takeIf { it.isNotBlank() }?.let { resolver ->
-            headers += HNS_GATEWAY_DOH_RESOLVER_HEADER to resolver
-        }
-        if (statelessDaneCertificates()) {
-            headers += HNS_GATEWAY_STATELESS_DANE_HEADER to "1"
-        }
-        handshakeNetwork()
-            .takeUnless { it.equals(DEFAULT_NETWORK, ignoreCase = true) }
-            ?.let { headers += HNS_GATEWAY_NETWORK_HEADER to it }
         return headers
     }
+
+    private fun gatewayRuntimeConfig(): HnsGatewayRuntimeConfig =
+        HnsGatewayRuntimeConfig(
+            network = handshakeNetwork(),
+            strictHnsMode = strictHnsMode(),
+            dohResolverUrl = dohResolverUrl(),
+            statelessDaneCertificates = statelessDaneCertificates(),
+        )
 
     private fun createBodyFile(): File {
         return HnsDownloadStagingStore.create(dataDir)
@@ -243,14 +244,17 @@ private data class HnsNativeDownloadTarget(
     val pathAndQuery: String,
 ) {
     companion object {
-        fun parse(url: String): HnsNativeDownloadTarget? {
+        fun parse(
+            url: String,
+            namespacePolicy: BrowserNamespacePolicy,
+        ): HnsNativeDownloadTarget? {
             val uri = runCatching { URI(url) }.getOrNull() ?: return null
             val scheme = uri.scheme?.lowercase(Locale.US) ?: return null
             if (scheme != "http" && scheme != "https") {
                 return null
             }
             val host = uri.httpAuthorityHost() ?: return null
-            if (!HnsHostPolicy.requiresNativeGatewayResolution(host)) {
+            if (!HnsHostPolicy.requiresNativeGatewayResolution(host, namespacePolicy)) {
                 return null
             }
             val port = when (val explicitPort = uri.port) {

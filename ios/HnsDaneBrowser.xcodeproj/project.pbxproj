@@ -1,0 +1,627 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B10000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000001 /* AppDelegate.swift */; };
+		B10000000000000000000002 /* BrowserProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000002 /* BrowserProcess.swift */; };
+		B10000000000000000000003 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000003 /* SceneDelegate.swift */; };
+		B10000000000000000000004 /* BrowserAuthenticationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000004 /* BrowserAuthenticationPolicy.swift */; };
+		B10000000000000000000005 /* BrowserDownloadController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000005 /* BrowserDownloadController.swift */; };
+		B10000000000000000000006 /* BrowserModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000006 /* BrowserModels.swift */; };
+		B10000000000000000000007 /* BrowserProxyCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000007 /* BrowserProxyCoordinator.swift */; };
+		B10000000000000000000008 /* BrowserProxyStateMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000008 /* BrowserProxyStateMachine.swift */; };
+		B10000000000000000000009 /* HeaderSnapshotBootstrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000009 /* HeaderSnapshotBootstrapper.swift */; };
+		B1000000000000000000000A /* PersistentWebKitProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000A /* PersistentWebKitProfile.swift */; };
+		B1000000000000000000000B /* RustBrowserRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000B /* RustBrowserRuntime.swift */; };
+		B1000000000000000000000C /* BrowserViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000C /* BrowserViewController.swift */; };
+		B10000000000000000000017 /* BrowserRuntimePolicyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000027 /* BrowserRuntimePolicyStore.swift */; };
+		B10000000000000000000016 /* BrowserNavigationParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000025 /* BrowserNavigationParser.swift */; };
+		B1000000000000000000000D /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000E /* PrivacyInfo.xcprivacy */; };
+		B1000000000000000000000E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000F /* Assets.xcassets */; };
+		B1000000000000000000000F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000010 /* LaunchScreen.storyboard */; };
+		B10000000000000000000010 /* hns_headers_300000.snapshot.gzip in Resources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000012 /* hns_headers_300000.snapshot.gzip */; };
+		B10000000000000000000011 /* HnsBrowserRuntime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F10000000000000000000013 /* HnsBrowserRuntime.xcframework */; };
+		B10000000000000000000012 /* libz.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = F10000000000000000000014 /* libz.tbd */; };
+		B10000000000000000000013 /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F10000000000000000000015 /* Network.framework */; };
+		B10000000000000000000014 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F10000000000000000000016 /* WebKit.framework */; };
+		B10000000000000000000015 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F10000000000000000000017 /* Security.framework */; };
+		B10000000000000000000020 /* BrowserAuthenticationPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000020 /* BrowserAuthenticationPolicyTests.swift */; };
+		B10000000000000000000021 /* BrowserProxyStateMachineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000021 /* BrowserProxyStateMachineTests.swift */; };
+		B10000000000000000000022 /* HeaderSnapshotBootstrapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000022 /* HeaderSnapshotBootstrapperTests.swift */; };
+		B10000000000000000000023 /* MainFrameAdmissionPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000023 /* MainFrameAdmissionPolicyTests.swift */; };
+		B10000000000000000000024 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F10000000000000000000024 /* XCTest.framework */; };
+		B10000000000000000000025 /* BrowserNavigationParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000026 /* BrowserNavigationParserTests.swift */; };
+		B10000000000000000000026 /* BrowserRuntimeControlTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000028 /* BrowserRuntimeControlTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		D10000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A10000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = T10000000000000000000001;
+			remoteInfo = HnsDaneBrowser;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		F10000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		F10000000000000000000002 /* BrowserProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserProcess.swift; sourceTree = "<group>"; };
+		F10000000000000000000003 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
+		F10000000000000000000004 /* BrowserAuthenticationPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserAuthenticationPolicy.swift; sourceTree = "<group>"; };
+		F10000000000000000000005 /* BrowserDownloadController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserDownloadController.swift; sourceTree = "<group>"; };
+		F10000000000000000000006 /* BrowserModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserModels.swift; sourceTree = "<group>"; };
+		F10000000000000000000007 /* BrowserProxyCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserProxyCoordinator.swift; sourceTree = "<group>"; };
+		F10000000000000000000008 /* BrowserProxyStateMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserProxyStateMachine.swift; sourceTree = "<group>"; };
+		F10000000000000000000009 /* HeaderSnapshotBootstrapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeaderSnapshotBootstrapper.swift; sourceTree = "<group>"; };
+		F1000000000000000000000A /* PersistentWebKitProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistentWebKitProfile.swift; sourceTree = "<group>"; };
+		F1000000000000000000000B /* RustBrowserRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustBrowserRuntime.swift; sourceTree = "<group>"; };
+		F1000000000000000000000C /* BrowserViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserViewController.swift; sourceTree = "<group>"; };
+		F1000000000000000000000D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		F1000000000000000000000E /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		F1000000000000000000000F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		F10000000000000000000010 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		F10000000000000000000011 /* HnsDaneBrowser-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "HnsDaneBrowser-Bridging-Header.h"; sourceTree = "<group>"; };
+		F10000000000000000000012 /* hns_headers_300000.snapshot.gzip */ = {isa = PBXFileReference; lastKnownFileType = archive.gzip; name = hns_headers_300000.snapshot.gzip; path = ../android/app/src/main/assets/hns_headers_300000.snapshot.gzip; sourceTree = SOURCE_ROOT; };
+		F10000000000000000000013 /* HnsBrowserRuntime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = HnsBrowserRuntime.xcframework; path = ../build/apple/HnsBrowserRuntime.xcframework; sourceTree = SOURCE_ROOT; };
+		F10000000000000000000014 /* libz.tbd */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.text-based-dylib-definition; name = libz.tbd; path = usr/lib/libz.tbd; sourceTree = SDKROOT; };
+		F10000000000000000000015 /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
+		F10000000000000000000016 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		F10000000000000000000017 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		F10000000000000000000018 /* HnsDaneBrowser.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HnsDaneBrowser.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F10000000000000000000019 /* HnsDaneBrowserTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HnsDaneBrowserTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F10000000000000000000020 /* BrowserAuthenticationPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserAuthenticationPolicyTests.swift; sourceTree = "<group>"; };
+		F10000000000000000000021 /* BrowserProxyStateMachineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserProxyStateMachineTests.swift; sourceTree = "<group>"; };
+		F10000000000000000000022 /* HeaderSnapshotBootstrapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeaderSnapshotBootstrapperTests.swift; sourceTree = "<group>"; };
+		F10000000000000000000023 /* MainFrameAdmissionPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainFrameAdmissionPolicyTests.swift; sourceTree = "<group>"; };
+		F10000000000000000000024 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
+		F10000000000000000000025 /* BrowserNavigationParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserNavigationParser.swift; sourceTree = "<group>"; };
+		F10000000000000000000026 /* BrowserNavigationParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserNavigationParserTests.swift; sourceTree = "<group>"; };
+		F10000000000000000000027 /* BrowserRuntimePolicyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserRuntimePolicyStore.swift; sourceTree = "<group>"; };
+		F10000000000000000000028 /* BrowserRuntimeControlTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserRuntimeControlTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		P10000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000011 /* HnsBrowserRuntime.xcframework in Frameworks */,
+				B10000000000000000000012 /* libz.tbd in Frameworks */,
+				B10000000000000000000013 /* Network.framework in Frameworks */,
+				B10000000000000000000014 /* WebKit.framework in Frameworks */,
+				B10000000000000000000015 /* Security.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P10000000000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000024 /* XCTest.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		G10000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				G10000000000000000000002 /* HnsDaneBrowser */,
+				G10000000000000000000007 /* HnsDaneBrowserTests */,
+				G10000000000000000000008 /* Shared Resources */,
+				G10000000000000000000009 /* Frameworks */,
+				G1000000000000000000000A /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		G10000000000000000000002 /* HnsDaneBrowser */ = {
+			isa = PBXGroup;
+			children = (
+				G10000000000000000000003 /* App */,
+				G10000000000000000000004 /* Core */,
+				G10000000000000000000005 /* UI */,
+				G10000000000000000000006 /* Support */,
+			);
+			path = HnsDaneBrowser;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000003 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				F10000000000000000000001 /* AppDelegate.swift */,
+				F10000000000000000000002 /* BrowserProcess.swift */,
+				F10000000000000000000003 /* SceneDelegate.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000004 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				F10000000000000000000004 /* BrowserAuthenticationPolicy.swift */,
+				F10000000000000000000005 /* BrowserDownloadController.swift */,
+				F10000000000000000000006 /* BrowserModels.swift */,
+				F10000000000000000000025 /* BrowserNavigationParser.swift */,
+				F10000000000000000000027 /* BrowserRuntimePolicyStore.swift */,
+				F10000000000000000000007 /* BrowserProxyCoordinator.swift */,
+				F10000000000000000000008 /* BrowserProxyStateMachine.swift */,
+				F10000000000000000000009 /* HeaderSnapshotBootstrapper.swift */,
+				F1000000000000000000000A /* PersistentWebKitProfile.swift */,
+				F1000000000000000000000B /* RustBrowserRuntime.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000005 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				F1000000000000000000000C /* BrowserViewController.swift */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000006 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				F1000000000000000000000D /* Info.plist */,
+				F1000000000000000000000E /* PrivacyInfo.xcprivacy */,
+				F1000000000000000000000F /* Assets.xcassets */,
+				F10000000000000000000010 /* LaunchScreen.storyboard */,
+				F10000000000000000000011 /* HnsDaneBrowser-Bridging-Header.h */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000007 /* HnsDaneBrowserTests */ = {
+			isa = PBXGroup;
+			children = (
+				F10000000000000000000020 /* BrowserAuthenticationPolicyTests.swift */,
+				F10000000000000000000021 /* BrowserProxyStateMachineTests.swift */,
+				F10000000000000000000022 /* HeaderSnapshotBootstrapperTests.swift */,
+				F10000000000000000000023 /* MainFrameAdmissionPolicyTests.swift */,
+				F10000000000000000000026 /* BrowserNavigationParserTests.swift */,
+				F10000000000000000000028 /* BrowserRuntimeControlTests.swift */,
+			);
+			path = HnsDaneBrowserTests;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000008 /* Shared Resources */ = {
+			isa = PBXGroup;
+			children = (
+				F10000000000000000000012 /* hns_headers_300000.snapshot.gzip */,
+			);
+			name = "Shared Resources";
+			sourceTree = "<group>";
+		};
+		G10000000000000000000009 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				F10000000000000000000013 /* HnsBrowserRuntime.xcframework */,
+				F10000000000000000000014 /* libz.tbd */,
+				F10000000000000000000015 /* Network.framework */,
+				F10000000000000000000016 /* WebKit.framework */,
+				F10000000000000000000017 /* Security.framework */,
+				F10000000000000000000024 /* XCTest.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		G1000000000000000000000A /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F10000000000000000000018 /* HnsDaneBrowser.app */,
+				F10000000000000000000019 /* HnsDaneBrowserTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		T10000000000000000000001 /* HnsDaneBrowser */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C10000000000000000000002 /* Build configuration list for PBXNativeTarget "HnsDaneBrowser" */;
+			buildPhases = (
+				P10000000000000000000002 /* Sources */,
+				P10000000000000000000001 /* Frameworks */,
+				P10000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = HnsDaneBrowser;
+			productName = HnsDaneBrowser;
+			productReference = F10000000000000000000018 /* HnsDaneBrowser.app */;
+			productType = "com.apple.product-type.application";
+		};
+		T10000000000000000000002 /* HnsDaneBrowserTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C10000000000000000000003 /* Build configuration list for PBXNativeTarget "HnsDaneBrowserTests" */;
+			buildPhases = (
+				P10000000000000000000005 /* Sources */,
+				P10000000000000000000004 /* Frameworks */,
+				P10000000000000000000006 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D10000000000000000000002 /* PBXTargetDependency */,
+			);
+			name = HnsDaneBrowserTests;
+			productName = HnsDaneBrowserTests;
+			productReference = F10000000000000000000019 /* HnsDaneBrowserTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A10000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					T10000000000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					T10000000000000000000002 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = T10000000000000000000001;
+					};
+				};
+			};
+			buildConfigurationList = C10000000000000000000001 /* Build configuration list for PBXProject "HnsDaneBrowser" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = G10000000000000000000001;
+			productRefGroup = G1000000000000000000000A /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				T10000000000000000000001 /* HnsDaneBrowser */,
+				T10000000000000000000002 /* HnsDaneBrowserTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		P10000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B1000000000000000000000D /* PrivacyInfo.xcprivacy in Resources */,
+				B1000000000000000000000E /* Assets.xcassets in Resources */,
+				B1000000000000000000000F /* LaunchScreen.storyboard in Resources */,
+				B10000000000000000000010 /* hns_headers_300000.snapshot.gzip in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P10000000000000000000006 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		P10000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000001 /* AppDelegate.swift in Sources */,
+				B10000000000000000000002 /* BrowserProcess.swift in Sources */,
+				B10000000000000000000003 /* SceneDelegate.swift in Sources */,
+				B10000000000000000000004 /* BrowserAuthenticationPolicy.swift in Sources */,
+				B10000000000000000000005 /* BrowserDownloadController.swift in Sources */,
+				B10000000000000000000006 /* BrowserModels.swift in Sources */,
+				B10000000000000000000007 /* BrowserProxyCoordinator.swift in Sources */,
+				B10000000000000000000008 /* BrowserProxyStateMachine.swift in Sources */,
+				B10000000000000000000009 /* HeaderSnapshotBootstrapper.swift in Sources */,
+				B1000000000000000000000A /* PersistentWebKitProfile.swift in Sources */,
+				B1000000000000000000000B /* RustBrowserRuntime.swift in Sources */,
+				B1000000000000000000000C /* BrowserViewController.swift in Sources */,
+				B10000000000000000000016 /* BrowserNavigationParser.swift in Sources */,
+				B10000000000000000000017 /* BrowserRuntimePolicyStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P10000000000000000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000020 /* BrowserAuthenticationPolicyTests.swift in Sources */,
+				B10000000000000000000021 /* BrowserProxyStateMachineTests.swift in Sources */,
+				B10000000000000000000022 /* HeaderSnapshotBootstrapperTests.swift in Sources */,
+				B10000000000000000000023 /* MainFrameAdmissionPolicyTests.swift in Sources */,
+				B10000000000000000000025 /* BrowserNavigationParserTests.swift in Sources */,
+				B10000000000000000000026 /* BrowserRuntimeControlTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		D10000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = T10000000000000000000001 /* HnsDaneBrowser */;
+			targetProxy = D10000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		C10000000000000000000010 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		C10000000000000000000011 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		C10000000000000000000020 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 37;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/../build/apple",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = HnsDaneBrowser/Support/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.3.16;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lz",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.denuoweb.hnsdane.ios;
+				PRODUCT_MODULE_NAME = HnsDaneBrowser;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "HnsDaneBrowser/Support/HnsDaneBrowser-Bridging-Header.h";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		C10000000000000000000021 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 37;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/../build/apple",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = HnsDaneBrowser/Support/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.3.16;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lz",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.denuoweb.hnsdane.ios;
+				PRODUCT_MODULE_NAME = HnsDaneBrowser;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "HnsDaneBrowser/Support/HnsDaneBrowser-Bridging-Header.h";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		C10000000000000000000030 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 37;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.3.16;
+				PRODUCT_BUNDLE_IDENTIFIER = com.denuoweb.hnsdane.ios.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/HnsDaneBrowser.app/HnsDaneBrowser";
+			};
+			name = Debug;
+		};
+		C10000000000000000000031 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 37;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.3.16;
+				PRODUCT_BUNDLE_IDENTIFIER = com.denuoweb.hnsdane.ios.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/HnsDaneBrowser.app/HnsDaneBrowser";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		C10000000000000000000001 /* Build configuration list for PBXProject "HnsDaneBrowser" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C10000000000000000000010 /* Debug */,
+				C10000000000000000000011 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C10000000000000000000002 /* Build configuration list for PBXNativeTarget "HnsDaneBrowser" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C10000000000000000000020 /* Debug */,
+				C10000000000000000000021 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C10000000000000000000003 /* Build configuration list for PBXNativeTarget "HnsDaneBrowserTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C10000000000000000000030 /* Debug */,
+				C10000000000000000000031 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A10000000000000000000001 /* Project object */;
+}

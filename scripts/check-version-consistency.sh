@@ -6,6 +6,9 @@ cd "$root_dir"
 
 android_gradle="android/app/build.gradle.kts"
 rust_manifest="rust/Cargo.toml"
+ios_project_definition="ios/project.yml"
+ios_info_plist="ios/HnsDaneBrowser/Support/Info.plist"
+ios_xcode_project="ios/HnsDaneBrowser.xcodeproj/project.pbxproj"
 
 version_name="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)".*/\1/p' "$android_gradle")"
 version_code="$(sed -n 's/^[[:space:]]*versionCode = \([0-9][0-9]*\).*/\1/p' "$android_gradle")"
@@ -24,6 +27,9 @@ fi
 expected_files=(
   "$android_gradle"
   "$rust_manifest"
+  "$ios_project_definition"
+  "$ios_info_plist"
+  "$ios_xcode_project"
   "CHANGELOG.md"
   "scripts/play-upload-closed-testing.sh"
   "dist/play-store/metadata/README.md"
@@ -48,6 +54,12 @@ exact_checks=(
   "${android_gradle}:versionCode = ${version_code}"
   "${android_gradle}:versionName = \"${version_name}\""
   "${rust_manifest}:version = \"${version_name}\""
+  "${ios_project_definition}:MARKETING_VERSION: ${version_name}"
+  "${ios_project_definition}:CURRENT_PROJECT_VERSION: ${version_code}"
+  "${ios_info_plist}:<string>${version_name}</string>"
+  "${ios_info_plist}:<string>${version_code}</string>"
+  "${ios_xcode_project}:MARKETING_VERSION = ${version_name};"
+  "${ios_xcode_project}:CURRENT_PROJECT_VERSION = ${version_code};"
   "CHANGELOG.md:## ${version_name} -"
   "scripts/play-upload-closed-testing.sh:${artifact}"
   "scripts/play-upload-closed-testing.sh:HNS DANE Browser ${version_name}"
@@ -72,6 +84,9 @@ current_only_files=(
   "dist/play-store/metadata/README.md"
   "dist/play-store/metadata/en-US/release-notes.txt"
   "$diagnostic_test"
+  "$ios_project_definition"
+  "$ios_info_plist"
+  "$ios_xcode_project"
 )
 
 # Audit documents intentionally compare the candidate with an older live Play

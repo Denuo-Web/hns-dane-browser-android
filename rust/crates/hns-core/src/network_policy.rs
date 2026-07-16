@@ -1,5 +1,24 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+const BROWSER_SPECIAL_USE_SUFFIXES: &[&str] = &[
+    "alt",
+    "arpa",
+    "example",
+    "internal",
+    "invalid",
+    "local",
+    "localhost",
+    "onion",
+    "test",
+];
+
+/// Returns the exact special-use suffix snapshot used by browser namespace
+/// classification. Platform adapters may serialize this data, but must not
+/// maintain an independent copy of the policy.
+pub fn browser_special_use_suffixes() -> &'static [&'static str] {
+    BROWSER_SPECIAL_USE_SUFFIXES
+}
+
 /// Returns whether an address is suitable for an untrusted Internet endpoint.
 ///
 /// This is intentionally more conservative than merely checking for loopback or private-use
@@ -10,6 +29,21 @@ pub fn is_publicly_routable(address: IpAddr) -> bool {
         IpAddr::V4(address) => is_public_ipv4(address),
         IpAddr::V6(address) => is_public_ipv6(address),
     }
+}
+
+/// Returns whether a canonical DNS host is in a namespace that native browser
+/// networking must not forward to the public Internet.
+///
+/// The exact names and every subdomain are covered. Callers remain responsible
+/// for parsing and canonicalizing a URL authority before applying this policy.
+pub fn is_browser_special_use_host(host: &str) -> bool {
+    let host = host.strip_suffix('.').unwrap_or(host);
+    let Some(suffix) = host.rsplit('.').next() else {
+        return false;
+    };
+    BROWSER_SPECIAL_USE_SUFFIXES
+        .iter()
+        .any(|candidate| suffix.eq_ignore_ascii_case(candidate))
 }
 
 fn is_public_ipv4(address: Ipv4Addr) -> bool {
@@ -208,6 +242,27 @@ mod tests {
         }
         for port in [80, 443, 8080, 8443] {
             assert!(!is_browser_blocked_port(port), "{port}");
+        }
+    }
+
+    #[test]
+    fn browser_special_use_policy_covers_exact_names_and_subdomains() {
+        for host in [
+            "localhost",
+            "WWW.LOCALHOST.",
+            "printer.local",
+            "name.internal",
+            "home.arpa",
+            "service.onion",
+            "name.test",
+            "name.invalid",
+            "name.example",
+            "name.alt",
+        ] {
+            assert!(is_browser_special_use_host(host), "{host}");
+        }
+        for host in ["example.com", "public.org", "notlocalhost"] {
+            assert!(!is_browser_special_use_host(host), "{host}");
         }
     }
 }

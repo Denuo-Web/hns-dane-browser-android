@@ -3,12 +3,15 @@ resolver = "3"
 exclude = ["fuzz"]
 members = [
     "crates/android-ffi",
+    "crates/hns-browser-runtime",
     "crates/hns-cache",
     "crates/hns-chain",
     "crates/hns-core",
     "crates/hns-dane",
     "crates/hns-dnssec",
     "crates/hns-gateway",
+    "crates/hns-loopback-proxy",
+    "crates/ios-ffi",
     "crates/hns-p2p",
     "crates/hns-resolver",
     "crates/hns-sync",
@@ -23,15 +26,18 @@ license = "PolyForm-Noncommercial-1.0.0"
 rust-version = "1.92"
 
 [workspace.dependencies]
+base64 = "0.22"
 blake2 = "0.10"
 bytes = "1"
 hex = "0.4"
 hns-cache = { path = "crates/hns-cache" }
+hns-browser-runtime = { path = "crates/hns-browser-runtime" }
 hns-chain = { path = "crates/hns-chain" }
 hns-core = { path = "crates/hns-core" }
 hns-dane = { path = "crates/hns-dane" }
 hns-dnssec = { path = "crates/hns-dnssec" }
 hns-gateway = { path = "crates/hns-gateway" }
+hns-loopback-proxy = { path = "crates/hns-loopback-proxy" }
 h2 = "0.4"
 h3 = "0.0.8"
 h3-quinn = "0.0.10"
@@ -41,6 +47,8 @@ hns-sync = { path = "crates/hns-sync" }
 hns-transport = { path = "crates/hns-transport" }
 hns-urkel = { path = "crates/hns-urkel" }
 http = "1"
+httparse = "1.10"
+idna = "1.1"
 jni = "0.21"
 num-bigint = "0.4"
 num-traits = "0.2"
@@ -59,9 +67,17 @@ thiserror = "2"
 tokio = "1"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 webpki-roots = "1.0.8"
+zeroize = "1.8"
 
 [profile.release]
 codegen-units = 1
 debug = "line-tables-only"
 lto = "thin"
 panic = "abort"
+
+# FFI exports contain explicit panic boundaries. Apple release artifacts keep
+# unwinding enabled so a panic can be translated into a fail-closed ABI result
+# instead of crossing the C boundary or aborting the host application.
+[profile.ios-release]
+inherits = "release"
+panic = "unwind"

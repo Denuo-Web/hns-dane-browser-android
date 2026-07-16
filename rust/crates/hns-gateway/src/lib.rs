@@ -639,7 +639,7 @@ fn is_http3_alpn(id: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hns_core::dns::{DnsName, RecordType, ResourceRecord};
+    use hns_core::dns::{DnsMessage, DnsName, RecordType, ResourceRecord};
     use hns_dane::{DaneDecision, DaneError, TlsaMatching, TlsaSelector, TlsaUsage};
     use hns_resolver::{ResolutionAnswer, Resolver};
     use hns_transport::{
@@ -1170,6 +1170,17 @@ mod tests {
             .unwrap();
         assert_eq!(captured.host, "name");
         assert_eq!(captured.connect_host, Some("1.1.1.1".to_owned()));
+    }
+
+    #[test]
+    fn accepts_compressed_cname_target_from_dns_wire() {
+        let message = b"\x12\x34\x81\x80\x00\x01\x00\x02\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01\xc0\x0c\x00\x05\x00\x01\x00\x00\x00\x3c\x00\x07\x04edge\xc0\x0c\xc0\x29\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\x01\x01\x01\x01";
+        let parsed = DnsMessage::parse(message).unwrap();
+
+        assert_eq!(
+            first_resolved_address(&parsed.answers, "example.com").as_deref(),
+            Some("1.1.1.1")
+        );
     }
 
     #[test]

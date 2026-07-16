@@ -5,7 +5,9 @@ use hns_core::dns::{
     SVCB_PARAM_MANDATORY, SVCB_PARAM_PORT, SvcbRecord,
 };
 use hns_core::network::NetworkKind;
-use hns_core::network_policy::{is_browser_blocked_port, is_publicly_routable};
+use hns_core::network_policy::{
+    is_browser_blocked_port, is_browser_special_use_host, is_publicly_routable,
+};
 use hns_core::resource::{ResourceError, decode_handshake_resource_records};
 use hns_core::{Hash, Height, NameHash, NameHashError};
 use hns_dane::{TlsaMatching, TlsaRecord, TlsaSelector, TlsaUsage};
@@ -43,16 +45,12 @@ const MAX_CNAME_CHAIN_LEN: usize = 8;
 static DNS_QUERY_ID: AtomicU16 = AtomicU16::new(0x4d00);
 // Generated from https://data.iana.org/TLD/tlds-alpha-by-domain.txt, version 2026062302.
 const ICANN_TLDS: &str = include_str!("icann_tlds.txt");
-const SPECIAL_USE_SUFFIXES: &[&str] = &[
-    "alt",
-    "example",
-    "internal",
-    "invalid",
-    "local",
-    "localhost",
-    "onion",
-    "test",
-];
+
+/// Returns the generated IANA root-zone snapshot used by browser namespace
+/// classification. The trailing newline, when present, is not significant.
+pub fn browser_icann_tld_snapshot() -> &'static str {
+    ICANN_TLDS
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NameClass {
@@ -3939,9 +3937,7 @@ fn uses_icann_namespace(host: &str) -> bool {
     let Some(suffix) = host.rsplit('.').next() else {
         return false;
     };
-    SPECIAL_USE_SUFFIXES
-        .iter()
-        .any(|candidate| suffix.eq_ignore_ascii_case(candidate))
+    is_browser_special_use_host(host)
         || host.contains('.')
             && ICANN_TLDS
                 .lines()
@@ -4543,6 +4539,7 @@ mod tests {
             "corp.internal",
             "name.invalid",
             "printer.local",
+            "home.arpa",
             "localhost",
             "www.localhost",
             "service.onion",

@@ -1,5 +1,6 @@
 package com.denuoweb.hnsdane.net
 
+import com.denuoweb.hnsdane.core.TEST_BROWSER_NAMESPACE_POLICY
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -21,6 +22,7 @@ class HnsNativeDownloadFetcherTest {
         val fetcher = HnsNativeDownloadFetcher(
             dataDir = dataDir,
             hnsGatewayBridge = bridge,
+            namespacePolicy = TEST_BROWSER_NAMESPACE_POLICY,
             strictHnsMode = { true },
             dohResolverUrl = { "https://resolver.example/dns-query" },
             statelessDaneCertificates = { true },
@@ -43,13 +45,18 @@ class HnsNativeDownloadFetcherTest {
                 headers = listOf(
                     "Accept" to "*/*",
                     "User-Agent" to "agent/1",
-                    HNS_GATEWAY_STRICT_MODE_HEADER to "1",
-                    HNS_GATEWAY_DOH_RESOLVER_HEADER to "https://resolver.example/dns-query",
-                    HNS_GATEWAY_STATELESS_DANE_HEADER to "1",
-                    HNS_GATEWAY_NETWORK_HEADER to "testnet",
                 ),
             ),
             bridge.calls.single(),
+        )
+        assertEquals(
+            HnsGatewayRuntimeConfig(
+                network = "testnet",
+                strictHnsMode = true,
+                dohResolverUrl = "https://resolver.example/dns-query",
+                statelessDaneCertificates = true,
+            ),
+            bridge.configs.single(),
         )
         response.bodyFile.delete()
         dataDir.deleteRecursively()
@@ -68,7 +75,7 @@ class HnsNativeDownloadFetcherTest {
                 body = "done",
             ),
         )
-        val fetcher = HnsNativeDownloadFetcher(dataDir, bridge)
+        val fetcher = HnsNativeDownloadFetcher(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         val response = fetcher.fetch("https://welcome/start.bin", null)
 
@@ -89,7 +96,7 @@ class HnsNativeDownloadFetcherTest {
                 body = "",
             ),
         )
-        val fetcher = HnsNativeDownloadFetcher(dataDir, bridge)
+        val fetcher = HnsNativeDownloadFetcher(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         assertThrows(HnsNativeDownloadException::class.java) {
             fetcher.fetch("https://welcome/start.bin", null)
@@ -108,7 +115,7 @@ class HnsNativeDownloadFetcherTest {
                 body = "",
             ),
         )
-        val fetcher = HnsNativeDownloadFetcher(dataDir, bridge)
+        val fetcher = HnsNativeDownloadFetcher(dataDir, bridge, TEST_BROWSER_NAMESPACE_POLICY)
 
         assertThrows(HnsNativeDownloadException::class.java) {
             fetcher.fetch("https://welcome/start.bin", null)
@@ -147,9 +154,11 @@ class HnsNativeDownloadFetcherTest {
     ) : HnsGatewayBridge {
         val calls = mutableListOf<GatewayCall>()
         val bodyFiles = mutableListOf<File>()
+        val configs = mutableListOf<HnsGatewayRuntimeConfig>()
 
         override fun httpResponse(
             dataDir: String,
+            config: HnsGatewayRuntimeConfig,
             method: String,
             scheme: String,
             host: String,
@@ -161,6 +170,7 @@ class HnsNativeDownloadFetcherTest {
 
         override fun httpResponseBodyFile(
             dataDir: String,
+            config: HnsGatewayRuntimeConfig,
             method: String,
             scheme: String,
             host: String,
@@ -169,6 +179,7 @@ class HnsNativeDownloadFetcherTest {
             headers: List<Pair<String, String>>,
             body: ByteArray,
         ): HnsGatewayFileResponse {
+            configs += config
             calls += GatewayCall(method, scheme, host, port, pathAndQuery, headers)
             val response = responses.getOrElse(calls.lastIndex) { responses.last() } as GatewayResponse.FileBody
             val bodyFile = File.createTempFile("hns-download-test-", ".body", File(dataDir))

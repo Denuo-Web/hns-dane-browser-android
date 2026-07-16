@@ -10,6 +10,9 @@ object BrowserSecurityPolicy {
         mainFrameHnsResolverPolicy: HnsPageResolverPolicy? = null,
         mainFrameHnsSecurityPath: HnsPageSecurityPath? = null,
     ): SecurityState {
+        if (targetKind == BrowserTargetKind.Blocked) {
+            return SecurityState.ValidationFailed
+        }
         if (targetKind != BrowserTargetKind.HnsName && targetKind != BrowserTargetKind.NativeGateway) {
             return SecurityState.WebPkiOnly
         }
