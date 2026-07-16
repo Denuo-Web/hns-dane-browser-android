@@ -37,7 +37,7 @@ Generated input SHA-256:
   rust/crates/hns-sync/Cargo.toml = e573dd5bb30b3a6f89a00cb01929b268849e5d54b7c4b9cebad6dc937d8fa2e3
   rust/crates/hns-transport/Cargo.toml = 6e0c5572ca4f792df332844e6a74577e558dae64eea88afa862fb3409f021f97
   rust/crates/hns-urkel/Cargo.toml = 83ddd253d6a3699205df6647d894fcb2f081857c96fa272627b18aad1f34eb88
-  rust/crates/ios-ffi/Cargo.toml = 5cf06cfc66716d29bbf9d87fb0e1f640837f61db6e2ec536c09f726264bcce8f
+  rust/crates/ios-ffi/Cargo.toml = f12d3a7b96ae1195116a11ae9aee6a3e4da3d5585e5a70fc794d9c735f90e778
 
 ANDROID RUNTIME COMPONENTS (40)
   androidx.activity:activity-ktx:1.13.0 | Apache-2.0

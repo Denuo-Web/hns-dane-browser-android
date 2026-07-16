@@ -102,11 +102,98 @@ struct BrowserSecuritySummary: Equatable, Sendable {
 struct BrowserSyncSummary: Equatable, Sendable {
     let headline: String
     let detail: String
+    let status: String
+    let network: String?
+    let attempted: Int
+    let successful: Int
+    let accepted: Int
+    let failed: Int
+    let peerCount: Int
+    let peerGroups: Int
+    let bestHeight: UInt64?
+    let bestPeerHeight: UInt64?
+    let estimatedTipHeight: UInt64?
+    let resourceCacheEntries: Int
+    let resourceCacheBytes: UInt64
+    let resourceCacheEvicted: Int
+    let error: String?
+
+    init(
+        headline: String,
+        detail: String,
+        status: String = "unavailable",
+        network: String? = nil,
+        attempted: Int = 0,
+        successful: Int = 0,
+        accepted: Int = 0,
+        failed: Int = 0,
+        peerCount: Int = 0,
+        peerGroups: Int = 0,
+        bestHeight: UInt64? = nil,
+        bestPeerHeight: UInt64? = nil,
+        estimatedTipHeight: UInt64? = nil,
+        resourceCacheEntries: Int = 0,
+        resourceCacheBytes: UInt64 = 0,
+        resourceCacheEvicted: Int = 0,
+        error: String? = nil
+    ) {
+        self.headline = headline
+        self.detail = detail
+        self.status = status
+        self.network = network
+        self.attempted = attempted
+        self.successful = successful
+        self.accepted = accepted
+        self.failed = failed
+        self.peerCount = peerCount
+        self.peerGroups = peerGroups
+        self.bestHeight = bestHeight
+        self.bestPeerHeight = bestPeerHeight
+        self.estimatedTipHeight = estimatedTipHeight
+        self.resourceCacheEntries = resourceCacheEntries
+        self.resourceCacheBytes = resourceCacheBytes
+        self.resourceCacheEvicted = resourceCacheEvicted
+        self.error = error
+    }
+
+    var requiresRetry: Bool {
+        error != nil || ["error", "peer_failed", "seed_failed"].contains(status)
+    }
+
+    var isCaughtUp: Bool { status == "up_to_date" }
 
     static let unavailable = BrowserSyncSummary(
         headline: "Sync unavailable",
         detail: "The Handshake runtime did not return sync status."
     )
+
+    static func failure(_ error: Error) -> BrowserSyncSummary {
+        BrowserSyncSummary(
+            headline: "Header sync needs attention",
+            detail: error.localizedDescription,
+            status: "error",
+            error: error.localizedDescription
+        )
+    }
+}
+
+struct BrowserProofDetails: Equatable, Sendable {
+    let headline: String
+    let detail: String
+    let host: String
+    let name: String?
+    let network: String?
+    let nameHash: String?
+    let hnsProof: String
+    let proofStatus: String
+    let secure: Bool?
+    let exists: Bool?
+    let treeRoot: String?
+    let blockHeight: UInt64?
+    let cacheStatus: String
+    let recordTypes: [String]
+    let error: String?
+    let formattedJSON: String
 }
 
 protocol BrowserProxySession: AnyObject {
@@ -145,9 +232,17 @@ protocol BrowserRuntime: AnyObject {
     /// Imports the bounded, uncompressed mainnet bootstrap snapshot at a private file path.
     func installHeaderSnapshot(at path: String) throws
 
-    func syncOnce()
+    /// Publishes a live resolver policy. Native code revokes every older proxy generation.
+    @discardableResult
+    func updatePolicy(_ policy: BrowserRuntimePolicy) throws -> UInt64
+
+    func syncOnce() throws -> BrowserSyncSummary
 
     func syncSummary() -> BrowserSyncSummary
+
+    func clearResolverCache() throws -> BrowserSyncSummary
+
+    func proofDetails(for hostOrURL: String) throws -> BrowserProofDetails
 
     func close()
 }

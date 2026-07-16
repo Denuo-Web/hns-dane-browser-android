@@ -80,7 +80,7 @@ The iOS shell uses one persistent identified `WKWebsiteDataStore` with one authe
 - Swift may answer proxy authentication only for the exact live proxy handle, endpoint, and realm. It may accept the expected local HNS server-trust challenge only after Rust separately confirms the exact live generation, canonical host, and complete leaf certificate DER. ICANN trust challenges use WebKit's default handling.
 - Proxy credentials, certificate state, trace data, and Rust-owned buffers are memory-only and bounded. Lifecycle revocation becomes visible before any blocking worker join.
 - Swift contains no independent HNS resolver, socket transport, HTTP proxy parser, DANE validator, certificate generator, or TLS terminator.
-- The committed privacy manifest declares the platform reason APIs used for preferences and file timestamps. Physical-device traffic/challenge testing remains a release-blocking security gate.
+- The committed privacy manifest declares the platform reason APIs used for preferences and file timestamps. Optional physical-device traffic/challenge testing remains unverified.
 
 ## Review Checklist
 

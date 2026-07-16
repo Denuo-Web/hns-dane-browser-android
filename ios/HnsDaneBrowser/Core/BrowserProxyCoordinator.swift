@@ -166,6 +166,23 @@ final class BrowserProxyCoordinator: NSObject {
 
     var currentShareURL: URL? { webView?.url ?? lastNavigation?.destination.url }
 
+    /// Returns only a navigation that can be replayed after a live policy change without
+    /// duplicating a request body. The caller must revoke this coordinator before publishing the
+    /// new policy so no WebKit request survives under an older native proxy generation.
+    func replayableAddressForRuntimeChange() -> String? {
+        if let pendingNavigation {
+            guard replayPolicy.allowsAutomaticReplay(
+                httpMethod: pendingNavigation.request.httpMethod
+            ) else { return nil }
+            return pendingNavigation.destination.url.absoluteString
+        }
+        guard let lastNavigation,
+              replayPolicy.allowsAutomaticReplay(
+                  httpMethod: lastNavigation.request.httpMethod
+              ) else { return nil }
+        return lastNavigation.destination.url.absoluteString
+    }
+
     private func enqueue(_ navigation: PendingNavigation) {
         enqueue(
             request: navigation.request,

@@ -12,6 +12,13 @@ const BROWSER_SPECIAL_USE_SUFFIXES: &[&str] = &[
     "test",
 ];
 
+/// Returns the exact special-use suffix snapshot used by browser namespace
+/// classification. Platform adapters may serialize this data, but must not
+/// maintain an independent copy of the policy.
+pub fn browser_special_use_suffixes() -> &'static [&'static str] {
+    BROWSER_SPECIAL_USE_SUFFIXES
+}
+
 /// Returns whether an address is suitable for an untrusted Internet endpoint.
 ///
 /// This is intentionally more conservative than merely checking for loopback or private-use

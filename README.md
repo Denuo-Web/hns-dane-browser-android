@@ -1,6 +1,6 @@
 # HNS DANE Browser
 
-Cross-platform Handshake-first browser core with local HNS proofs, RFC 8484 DoH transport, DNSSEC, and DANE diagnostics. Android is the validated shipping baseline; the repository also contains the native iOS shell and Apple ABI/build integration, with signed-device WebKit validation still required before an iOS release claim.
+Cross-platform Handshake-first browser core with local HNS proofs, RFC 8484 DoH transport, DNSSEC, and DANE diagnostics. Android is the validated shipping baseline; the repository also contains the native iOS 17.0-or-later shell and Apple ABI/build integration. The Apple build and simulator gate uses the stable iOS 26.5 SDK with Xcode 26.5 or 26.6; signed-device WebKit validation is optional additional release confidence and has not been completed.
 
 ## Layout
 
@@ -39,11 +39,11 @@ Cross-platform Handshake-first browser core with local HNS proofs, RFC 8484 DoH 
 - Falls back only to the exact-scope compatibility interceptor if the Rust proxy cannot start. A document-start policy leaves allowed WebSockets on Chromium's native implementation while rejecting cross-scope HNS targets; all HTTP parsing, CONNECT termination, certificate generation, and Upgrade tunneling remain in Rust.
 - Provides a second, fail-closed whole-browser proxy mode for WebKit data stores that cannot express Android's reverse-bypass scope. The Rust proxy routes the admitted HNS root through the shared HNS/DNSSEC/DANE backend, forwards ICANN HTTP and opaque CONNECT only to explicit public addresses obtained through bounded WebPKI-authenticated DoH, blocks reserved/private destinations and unsafe ports before dialing, and never uses the system resolver for a browser target.
 - Exposes the shared runtime through a versioned `ios-ffi` C ABI with opaque monotonic handles, Rust-owned result buffers, bounded status mailboxes, one active proxy per runtime, immediate lifecycle revocation, and live generation/host/certificate matching. Apple device and simulator slices are packaged as `HnsBrowserRuntime.xcframework`.
-- Adds an iOS 17 UIKit/WKWebView shell using one persistent website-data-store profile and an authenticated, no-failover whole-browser proxy configuration. Swift owns navigation admission, WebView reconstruction, downloads, UI, and server-trust challenge integration; HNS classification, sync, resolution, DNSSEC, DANE, HTTP parsing, proxying, and TLS termination remain in Rust.
+- Adds an iOS 17.0-or-later UIKit/WKWebView shell using one persistent website-data-store profile and an authenticated, no-failover whole-browser proxy configuration. The deployment floor retains support for the iOS 17 and iOS 18 generations, while Apple builds use the stable iOS 26.5 SDK with Xcode 26.5 or 26.6. Swift owns navigation admission, WebView reconstruction, downloads, UI, and server-trust challenge integration; HNS classification, sync, resolution, DNSSEC, DANE, HTTP parsing, proxying, and TLS termination remain in Rust.
 
 ## Platform Migration Status
 
-Android has completed its Rust-only proxy cutover: `MainActivity` uses the shared Rust runtime and proxy, while Kotlin owns only platform UI, WebView admission, lifecycle, and JNI conversion. The Apple C ABI, XCFramework build, and native iOS shell are implemented against the same runtime and proxy. Linux validates the Rust, ABI, header, and architecture boundaries; macOS compilation and the signed physical-device matrix in `docs/ios-device-validation.md` remain mandatory before iOS is described as release-ready.
+Android has completed its Rust-only proxy cutover: `MainActivity` uses the shared Rust runtime and proxy, while Kotlin owns only platform UI, WebView admission, lifecycle, and JNI conversion. The Apple C ABI, XCFramework build, and native iOS shell are implemented against the same runtime and proxy. Linux validates the Rust, ABI, header, and architecture boundaries; macOS compilation and simulator tests against the iOS 26.5 SDK form the Apple build gate. The optional signed physical-device matrix in `docs/ios-device-validation.md` provides additional evidence that simulator success cannot provide.
 
 ## Validate
 
@@ -69,14 +69,14 @@ GRADLE="$APK_WORKBENCH/scripts/dev/apkw-gradle.sh"
 
 The debug APK is written to `android/app/build/outputs/apk/debug/app-debug.apk`.
 
-On macOS with Xcode and the configured Apple Rust targets:
+On macOS with Xcode 26.5 or 26.6, the stable iOS 26.5 SDK, and the configured Apple Rust targets:
 
 ```sh
 ./scripts/build-rust-ios.sh
 ./scripts/build-ios.sh
 ```
 
-The first command creates `build/apple/HnsBrowserRuntime.xcframework`; the second builds the checked-in iOS project and its test target. CI selects an available iPhone simulator and executes that test target with `HNS_IOS_ACTION=test`. See `docs/ios-device-validation.md` for the release-blocking signed-device matrix.
+The first command creates `build/apple/HnsBrowserRuntime.xcframework`; the second builds the checked-in iOS 17.0-or-later project and its test target. The simulator gate selects an iPhone simulator and executes that test target with `HNS_IOS_ACTION=test` against the iOS 26.5 SDK. This validates the Apple build, linkage, and simulator tests only; see `docs/ios-device-validation.md` for the optional signed physical-device matrix.
 
 Debug/demo builds are unsigned beyond the default Android debug key and are intended for testing only. The diagnostics screen identifies Denuo Web, LLC as publisher, shows the build channel and license, and states that donations are optional and unlock no app features.
 

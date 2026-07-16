@@ -1,30 +1,32 @@
 package com.denuoweb.hnsdane.net
 
+import com.denuoweb.hnsdane.core.BrowserWebSocketScopePolicySource
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HnsProxyWebSocketPolicyTest {
     @Test
-    fun policyKeepsAllowedSocketsNativeAndBlocksCrossScopeHnsTargets() {
-        val script = HnsProxyWebSocketPolicy.script()
+    fun installsTheCompleteScriptReturnedBySharedRust() {
+        val rustScript =
+            """
+            window.__hnsRustNamespacePolicyVersion = 1;
+            window.WebSocket = ProxyScopedWebSocket;
+            """.trimIndent()
+        val source = BrowserWebSocketScopePolicySource { rustScript }
 
-        assertTrue(script.contains("new NativeWebSocket"))
-        assertTrue(script.contains("requiresHnsResolution(targetHost)"))
-        assertTrue(script.contains("!inPageScope(targetHost, pageHost)"))
-        assertTrue(script.contains("HNS WebSocket target is outside the active proxy scope"))
-        assertTrue(script.contains("window.WebSocket = ProxyScopedWebSocket"))
-        assertFalse(script.contains("hnsWebSocketBridge"))
-        assertFalse(script.contains("postMessage"))
+        assertEquals(rustScript, HnsProxyWebSocketPolicy.script(source))
     }
 
     @Test
-    fun policyEmbedsCurrentIcannAndSpecialUseClassification() {
-        val script = HnsProxyWebSocketPolicy.script()
+    fun missingSharedRustPolicyDisablesWebSockets() {
+        val script = HnsProxyWebSocketPolicy.script(BrowserWebSocketScopePolicySource { null })
 
-        assertTrue(script.contains("'com'"))
-        assertTrue(script.contains("'org'"))
-        assertTrue(script.contains("'localhost'"))
-        assertTrue(script.contains("specialUseSuffixes.has(suffix)"))
+        assertTrue(script.contains("window.__hnsRustNamespacePolicyUnavailable = true"))
+        assertTrue(script.contains("window.WebSocket = BlockedWebSocket"))
+        assertTrue(script.contains("SecurityError"))
+        assertFalse(script.contains("requiresHnsResolution"))
+        assertFalse(script.contains("icannTlds"))
     }
 }

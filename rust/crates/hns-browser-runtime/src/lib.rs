@@ -11,6 +11,7 @@ use hns_core::dns::{
     ResourceRecord,
 };
 pub use hns_core::network::NetworkKind;
+use hns_core::network_policy::browser_special_use_suffixes;
 use hns_core::{BlockHeader, HEADER_SIZE, Height, NameHash};
 use hns_dane::{
     DaneDecision, MAX_STATELESS_DANE_ROOTS, StatelessDaneConfig, TlsaMatching, TlsaRecord,
@@ -36,7 +37,7 @@ use hns_resolver::{
     DnsInterceptionStatus, DnsTransport, HnsDelegation, HnsProofProvider, HnsResourceValueProvider,
     NameClass, ProvenNameRecords, ResolutionAnswer, ResolutionRequest, Resolver, ResolverError,
     ResourceValueAnchor, SqliteResourceValueProvider, SystemDnssecVerifier, UdpTcpDnsTransport,
-    classify_name, hns_root_label,
+    browser_icann_tld_snapshot, classify_name, hns_root_label,
 };
 use hns_sync::{
     HeaderSyncCoordinator, HeaderSyncRunner, HeaderSyncRunnerConfig, ProofScheduler, SyncError,
@@ -75,12 +76,149 @@ pub enum BrowserNameClass {
     Search = 2,
 }
 
+/// Browser-shell routing class. This extends namespace classification with
+/// the shared ICANN compatibility origin that must use the native gateway.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrowserHostClass {
+    Hns = 0,
+    Icann = 1,
+    NativeGateway = 2,
+    Search = 3,
+}
+
 pub fn classify_browser_name(input: &str) -> BrowserNameClass {
     match classify_name(input) {
         NameClass::Hns => BrowserNameClass::Hns,
         NameClass::Icann => BrowserNameClass::Icann,
         NameClass::Search => BrowserNameClass::Search,
     }
+}
+
+pub fn classify_browser_host(input: &str) -> BrowserHostClass {
+    if canonical_browser_host(input).as_deref() == Some(ICANN_NATIVE_GATEWAY_HOST) {
+        return BrowserHostClass::NativeGateway;
+    }
+    match classify_browser_name(input) {
+        BrowserNameClass::Hns => BrowserHostClass::Hns,
+        BrowserNameClass::Icann => BrowserHostClass::Icann,
+        BrowserNameClass::Search => BrowserHostClass::Search,
+    }
+}
+
+const ICANN_NATIVE_GATEWAY_HOST: &str = "dane-test.denuoweb.com";
+
+/// Returns the Android document-start policy used to keep WebSockets native
+/// while rejecting cross-scope HNS targets. Rust emits the complete policy so
+/// the Android shell cannot drift from the resolver's IANA and special-use
+/// namespace snapshots.
+pub fn browser_websocket_scope_policy_script() -> &'static str {
+    static SCRIPT: OnceLock<String> = OnceLock::new();
+    SCRIPT.get_or_init(|| {
+        let icann_tlds = browser_icann_tld_snapshot()
+            .lines()
+            .map(|value| format!("'{value}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let special_use_suffixes = browser_special_use_suffixes()
+            .iter()
+            .map(|value| format!("'{value}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let mut script = String::with_capacity(icann_tlds.len() + special_use_suffixes.len() + 3_200);
+        script.push_str(
+            r#"(function() {
+  'use strict';
+  if (window.__hnsProxyWebSocketPolicyInstalled) return;
+  window.__hnsProxyWebSocketPolicyInstalled = true;
+  window.__hnsRustNamespacePolicyVersion = 1;
+
+  var NativeWebSocket = window.WebSocket;
+  if (!NativeWebSocket) return;
+  var icannTlds = new Set(["#,
+        );
+        script.push_str(&icann_tlds);
+        script.push_str(
+            r#"]);
+  var specialUseSuffixes = new Set(["#,
+        );
+        script.push_str(&special_use_suffixes);
+        script.push_str(
+            r#"]);
+
+  function normalizeHost(host) {
+    return String(host || '').replace(/^\[/, '').replace(/\]$/, '').replace(/\.+$/, '').toLowerCase();
+  }
+
+  function isIpLiteral(host) {
+    if (!host) return false;
+    if (host.indexOf(':') !== -1) return /^[0-9a-f:.]+$/i.test(host);
+    var parts = host.split('.');
+    if (parts.length !== 4) return false;
+    return parts.every(function(part) {
+      if (!/^[0-9]{1,3}$/.test(part)) return false;
+      var value = Number(part);
+      return value >= 0 && value <= 255;
+    });
+  }
+
+  function isValidDnsHost(host) {
+    if (!host || host.length > 253) return false;
+    return host.split('.').every(function(label) {
+      return label.length > 0 &&
+        label.length <= 63 &&
+        label.charAt(0) !== '-' &&
+        label.charAt(label.length - 1) !== '-' &&
+        /^[a-z0-9-]+$/i.test(label);
+    });
+  }
+
+  function requiresHnsResolution(host) {
+    host = normalizeHost(host);
+    if (!isValidDnsHost(host) || isIpLiteral(host)) return false;
+    var labels = host.split('.');
+    var suffix = labels[labels.length - 1];
+    if (specialUseSuffixes.has(suffix)) return false;
+    if (labels.length === 1) return true;
+    return !icannTlds.has(suffix);
+  }
+
+  function inPageScope(targetHost, pageHost) {
+    return targetHost === pageHost || targetHost.endsWith('.' + pageHost);
+  }
+
+  function ProxyScopedWebSocket(url, protocols) {
+    if (!(this instanceof ProxyScopedWebSocket)) {
+      throw new TypeError("Failed to construct 'WebSocket': Please use the 'new' operator.");
+    }
+    var pageUrl;
+    var targetUrl;
+    try {
+      pageUrl = new URL(window.location.href);
+      targetUrl = new URL(url, window.location.href);
+    } catch (error) {
+      return protocols === undefined ? new NativeWebSocket(url) : new NativeWebSocket(url, protocols);
+    }
+    var pageHost = normalizeHost(pageUrl.hostname);
+    var targetHost = normalizeHost(targetUrl.hostname);
+    if (requiresHnsResolution(targetHost) &&
+        (!requiresHnsResolution(pageHost) || !inPageScope(targetHost, pageHost))) {
+      throw new DOMException('HNS WebSocket target is outside the active proxy scope.', 'SecurityError');
+    }
+    return protocols === undefined ? new NativeWebSocket(url) : new NativeWebSocket(url, protocols);
+  }
+
+  ProxyScopedWebSocket.prototype = NativeWebSocket.prototype;
+  ProxyScopedWebSocket.CONNECTING = NativeWebSocket.CONNECTING;
+  ProxyScopedWebSocket.OPEN = NativeWebSocket.OPEN;
+  ProxyScopedWebSocket.CLOSING = NativeWebSocket.CLOSING;
+  ProxyScopedWebSocket.CLOSED = NativeWebSocket.CLOSED;
+  window.WebSocket = ProxyScopedWebSocket;
+})();"#,
+        );
+        script
+    })
 }
 
 /// Canonicalizes a DNS host or strict IP literal for proxy status identity.
@@ -190,6 +328,17 @@ pub struct GatewayHttpRequestInput<'a> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RawGatewayHttpRequest {
+    pub method: String,
+    pub scheme: String,
+    pub host: String,
+    pub port: i32,
+    pub path_and_query: String,
+    pub header_text: String,
+    pub body: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeConfiguration {
     data_dir: PathBuf,
     network: NetworkKind,
@@ -294,6 +443,12 @@ impl GatewayHttpResponse {
     pub fn into_bytes(self) -> Vec<u8> {
         self.encoded_http
     }
+}
+
+struct RawGatewayRequestRejection {
+    status: u16,
+    reason: &'static str,
+    detail: &'static str,
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -905,6 +1060,7 @@ struct RuntimeInner {
     policy_revision: AtomicU64,
     proxy_session: OnceLock<ProxySessionId>,
     proxy_generation: AtomicU64,
+    operation: Mutex<()>,
 }
 
 struct RuntimeCoordination {
@@ -989,6 +1145,7 @@ impl BrowserRuntime {
                 policy_revision: AtomicU64::new(0),
                 proxy_session: OnceLock::new(),
                 proxy_generation: AtomicU64::new(0),
+                operation: Mutex::new(()),
             }),
         })
     }
@@ -1018,7 +1175,16 @@ impl BrowserRuntime {
         Ok((policy.clone(), revision))
     }
 
-    pub fn set_policy(&self, mut policy: RuntimePolicy) -> Result<u64, RuntimeError> {
+    pub fn set_policy(&self, policy: RuntimePolicy) -> Result<u64, RuntimeError> {
+        let _operation = self
+            .inner
+            .operation
+            .lock()
+            .map_err(|_| RuntimeError::Synchronization("runtime operation lock"))?;
+        self.set_policy_locked(policy)
+    }
+
+    fn set_policy_locked(&self, mut policy: RuntimePolicy) -> Result<u64, RuntimeError> {
         if let Some(endpoint) = policy.hns_doh_resolver.as_deref() {
             policy.hns_doh_resolver = Some(
                 HnsDohEndpoint::parse(endpoint)
@@ -1034,6 +1200,22 @@ impl BrowserRuntime {
         *current = policy;
         let revision = self.inner.policy_revision.fetch_add(1, Ordering::AcqRel) + 1;
         Ok(revision)
+    }
+
+    fn with_policy_operation<T>(
+        &self,
+        policy: RuntimePolicy,
+        operation: impl FnOnce(&BrowserRuntime) -> Result<T, RuntimeError>,
+    ) -> Result<T, RuntimeError> {
+        let _operation = self
+            .inner
+            .operation
+            .lock()
+            .map_err(|_| RuntimeError::Synchronization("runtime operation lock"))?;
+        if self.policy()? != policy {
+            self.set_policy_locked(policy)?;
+        }
+        operation(self)
     }
 
     pub fn policy_revision(&self) -> u64 {
@@ -1135,6 +1317,19 @@ impl BrowserRuntime {
             Arc::new(WholeBrowserIcannNetwork),
         )?;
         Ok(BrowserProxy { running })
+    }
+
+    pub fn start_whole_browser_proxy_with_policy_and_observer(
+        &self,
+        hns_scope_root: Option<&str>,
+        policy: RuntimePolicy,
+        observer: Arc<dyn BrowserProxyStatusObserver>,
+    ) -> Result<BrowserProxy, RuntimeError> {
+        self.with_policy_operation(policy, |runtime| {
+            runtime
+                .start_whole_browser_proxy_with_observer(hns_scope_root, observer)
+                .map_err(|error| RuntimeError::Operation(error.to_string()))
+        })
     }
 
     pub fn sync_once(&self) -> Result<SyncStatus, RuntimeError> {
@@ -1312,6 +1507,80 @@ impl BrowserRuntime {
         .map_err(RuntimeError::Operation)
     }
 
+    pub fn raw_gateway_request(
+        &self,
+        request: RawGatewayHttpRequest,
+        policy: RuntimePolicy,
+    ) -> GatewayHttpResponse {
+        let address = raw_gateway_request_address(&request);
+        let request = match prepare_raw_gateway_request(request) {
+            Ok(request) => request,
+            Err(rejection) => {
+                return GatewayHttpResponse {
+                    encoded_http: plain_response_with_address(
+                        rejection.status,
+                        rejection.reason,
+                        rejection.detail,
+                        Some(&address),
+                    ),
+                };
+            }
+        };
+        match self.with_policy_operation(policy, move |runtime| runtime.gateway_request(request)) {
+            Ok(response) => response,
+            Err(error) => {
+                let (status, reason, detail) = raw_gateway_runtime_error_parts(error);
+                GatewayHttpResponse {
+                    encoded_http: plain_response_with_address(
+                        status,
+                        reason,
+                        &detail,
+                        Some(&address),
+                    ),
+                }
+            }
+        }
+    }
+
+    pub fn raw_gateway_request_body_to_file(
+        &self,
+        request: RawGatewayHttpRequest,
+        policy: RuntimePolicy,
+        body_path: impl AsRef<Path>,
+    ) -> Result<Vec<u8>, RuntimeError> {
+        let address = raw_gateway_request_address(&request);
+        let body_path = body_path.as_ref();
+        let request = match prepare_raw_gateway_request(request) {
+            Ok(request) => request,
+            Err(rejection) => {
+                return plain_response_to_file_with_address(
+                    rejection.status,
+                    rejection.reason,
+                    rejection.detail,
+                    Some(&address),
+                    body_path,
+                )
+                .map_err(RuntimeError::Operation);
+            }
+        };
+        match self.with_policy_operation(policy, move |runtime| {
+            runtime.gateway_request_body_to_file(request, body_path)
+        }) {
+            Ok(head) => Ok(head),
+            Err(error) => {
+                let (status, reason, detail) = raw_gateway_runtime_error_parts(error);
+                plain_response_to_file_with_address(
+                    status,
+                    reason,
+                    &detail,
+                    Some(&address),
+                    body_path,
+                )
+                .map_err(RuntimeError::Operation)
+            }
+        }
+    }
+
     fn validate_gateway_request(&self, request: &GatewayHttpRequest) -> Result<(), RuntimeError> {
         if request.body.len() > DEFAULT_MAX_REQUEST_BODY_BYTES {
             return Err(RuntimeError::InvalidConfiguration(format!(
@@ -1372,6 +1641,86 @@ impl BrowserRuntime {
         header_text.push_str("\r\n");
         Ok(header_text)
     }
+}
+
+fn prepare_raw_gateway_request(
+    request: RawGatewayHttpRequest,
+) -> Result<GatewayHttpRequest, RawGatewayRequestRejection> {
+    if request.body.len() > DEFAULT_MAX_REQUEST_BODY_BYTES {
+        return Err(RawGatewayRequestRejection {
+            status: 413,
+            reason: "Origin Request Too Large",
+            detail: "Origin request body exceeds the configured gateway limit.",
+        });
+    }
+    let port = u16::try_from(request.port).map_err(|_| RawGatewayRequestRejection {
+        status: 400,
+        reason: "Bad Request",
+        detail: "origin port is invalid",
+    })?;
+    let headers = parse_untrusted_gateway_headers(&request.header_text).map_err(|detail| {
+        RawGatewayRequestRejection {
+            status: 400,
+            reason: "Bad Request",
+            detail,
+        }
+    })?;
+    Ok(GatewayHttpRequest {
+        method: request.method,
+        scheme: request.scheme,
+        host: request.host,
+        port,
+        path_and_query: request.path_and_query,
+        headers,
+        body: request.body,
+    })
+}
+
+fn parse_untrusted_gateway_headers(
+    header_text: &str,
+) -> Result<Vec<(String, String)>, &'static str> {
+    if header_text.len() > MAX_GATEWAY_HEADER_TEXT_BYTES {
+        return Err("request headers are too large");
+    }
+    let mut headers = Vec::new();
+    for line in header_text.split("\r\n").filter(|line| !line.is_empty()) {
+        let Some(separator) = line.find(':') else {
+            return Err("request header is malformed");
+        };
+        let name = line[..separator].trim();
+        let value = line[separator + 1..].trim();
+        if !is_valid_gateway_header_name(name) || !is_valid_gateway_header_value(value) {
+            return Err("request header is invalid");
+        }
+        if !is_reserved_hns_header(name) {
+            headers.push((name.to_owned(), value.to_owned()));
+        }
+    }
+    Ok(headers)
+}
+
+fn raw_gateway_runtime_error_parts(error: RuntimeError) -> (u16, &'static str, String) {
+    match error {
+        RuntimeError::InvalidConfiguration(detail) => (400, "Bad Request", detail),
+        RuntimeError::Operation(detail) => (500, "Gateway Runtime Error", detail),
+        error @ RuntimeError::Synchronization(_) => {
+            (500, "Gateway Runtime Error", error.to_string())
+        }
+    }
+}
+
+fn raw_gateway_request_address(request: &RawGatewayHttpRequest) -> String {
+    let scheme = request.scheme.to_ascii_lowercase();
+    let port = match (scheme.as_str(), request.port) {
+        ("http" | "ws", 80) | ("https" | "wss", 443) => String::new(),
+        (_, port) => format!(":{port}"),
+    };
+    let path = if request.path_and_query.is_empty() {
+        "/"
+    } else {
+        &request.path_and_query
+    };
+    format!("{scheme}://{}{port}{path}", request.host)
 }
 
 struct PreparedRuntimeGateway {
@@ -6716,10 +7065,32 @@ mod tests {
         );
         assert_eq!(classify_browser_name("  "), BrowserNameClass::Search);
         assert_eq!(
+            classify_browser_host("DANE-TEST.DENUOWEB.COM."),
+            BrowserHostClass::NativeGateway
+        );
+        assert_eq!(
+            classify_browser_host("example.com"),
+            BrowserHostClass::Icann
+        );
+        assert_eq!(
             browser_hns_root_label("sub.welcome"),
             Some("welcome".to_owned())
         );
         assert_eq!(browser_hns_root_label("example.com"), None);
+    }
+
+    #[test]
+    fn websocket_scope_script_is_emitted_from_shared_namespace_snapshots() {
+        let script = browser_websocket_scope_policy_script();
+
+        assert!(script.contains("window.__hnsRustNamespacePolicyVersion = 1"));
+        assert!(script.contains("var icannTlds = new Set(['aaa','aarp'"));
+        assert!(script.contains("'com'"));
+        assert!(script.contains("var specialUseSuffixes = new Set(['alt','arpa'"));
+        assert!(script.contains("requiresHnsResolution(targetHost)"));
+        assert!(script.contains("window.WebSocket = ProxyScopedWebSocket"));
+        assert!(!script.contains("hnsWebSocketBridge"));
+        assert!(!script.contains("postMessage"));
     }
 
     #[test]
@@ -7381,6 +7752,98 @@ mod tests {
             Err(RuntimeError::InvalidConfiguration(_))
         ));
         cleanup_dir(&data_dir);
+    }
+
+    #[test]
+    fn raw_gateway_operation_owns_validation_policy_and_error_mapping() {
+        let data_dir = temp_dir_path("browser-runtime-raw-gateway");
+        let runtime =
+            BrowserRuntime::open(RuntimeConfiguration::new(&data_dir, NetworkKind::Regtest))
+                .unwrap();
+        let request = |port, header_text: &str, body: Vec<u8>| RawGatewayHttpRequest {
+            method: "GET".to_owned(),
+            scheme: "https".to_owned(),
+            host: "welcome".to_owned(),
+            port,
+            path_and_query: "/resource".to_owned(),
+            header_text: header_text.to_owned(),
+            body,
+        };
+
+        let invalid_port = runtime
+            .raw_gateway_request(request(-1, "", Vec::new()), RuntimePolicy::compatibility())
+            .into_bytes();
+        assert!(invalid_port.starts_with(b"HTTP/1.1 400 Bad Request\r\n"));
+
+        let oversized = runtime
+            .raw_gateway_request(
+                request(443, "", vec![0; DEFAULT_MAX_REQUEST_BODY_BYTES + 1]),
+                RuntimePolicy::compatibility(),
+            )
+            .into_bytes();
+        assert!(oversized.starts_with(b"HTTP/1.1 413 Origin Request Too Large\r\n"));
+
+        let invalid_policy = runtime
+            .raw_gateway_request(
+                request(443, "Accept: text/html\r\n", Vec::new()),
+                RuntimePolicy {
+                    resolution_mode: ResolutionMode::Strict,
+                    hns_doh_resolver: Some("not-a-doh-url".to_owned()),
+                    stateless_dane_certificates: true,
+                },
+            )
+            .into_bytes();
+        assert!(invalid_policy.starts_with(b"HTTP/1.1 400 Bad Request\r\n"));
+        assert_eq!(
+            parse_untrusted_gateway_headers(
+                "Accept: text/html\r\nX-HNS-Browser-Network: mainnet\r\nx-hns-spoofed: yes\r\n",
+            )
+            .unwrap(),
+            vec![("Accept".to_owned(), "text/html".to_owned())]
+        );
+        cleanup_dir(&data_dir);
+    }
+
+    #[test]
+    fn raw_gateway_file_rejections_write_fixed_length_error_bodies() {
+        let data_dir = temp_dir_path("browser-runtime-raw-gateway-file");
+        let runtime =
+            BrowserRuntime::open(RuntimeConfiguration::new(&data_dir, NetworkKind::Regtest))
+                .unwrap();
+        let body_path = data_dir.join("rejection.body");
+        let head = runtime
+            .raw_gateway_request_body_to_file(
+                RawGatewayHttpRequest {
+                    method: "GET".to_owned(),
+                    scheme: "https".to_owned(),
+                    host: "welcome".to_owned(),
+                    port: -1,
+                    path_and_query: "/resource".to_owned(),
+                    header_text: String::new(),
+                    body: Vec::new(),
+                },
+                RuntimePolicy::compatibility(),
+                &body_path,
+            )
+            .unwrap();
+        let body = fs::read(&body_path).unwrap();
+        let head = String::from_utf8(head).unwrap();
+        assert!(head.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+        assert!(head.contains(&format!("Content-Length: {}\r\n", body.len())));
+        assert!(head.ends_with("\r\n\r\n"));
+        cleanup_dir(&data_dir);
+    }
+
+    #[test]
+    fn raw_gateway_runtime_errors_map_to_browser_500() {
+        assert_eq!(
+            raw_gateway_runtime_error_parts(RuntimeError::Operation("failed".to_owned())).0,
+            500
+        );
+        assert_eq!(
+            raw_gateway_runtime_error_parts(RuntimeError::Synchronization("test")).0,
+            500
+        );
     }
 
     fn runtime_with_cached_loopback_name(label: &str) -> (PathBuf, BrowserRuntime) {

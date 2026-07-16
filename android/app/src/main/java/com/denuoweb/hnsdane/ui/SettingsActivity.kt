@@ -518,7 +518,7 @@ class SettingsActivity : ComponentActivity() {
             .create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val saved = BrowserPreferences.setHomepage(this, input.text.toString())
+                val saved = BrowserPreferences.setHomepage(this, input.text.toString(), NativeBridge)
                 if (saved == null) {
                     input.error = getString(R.string.settings_homepage_error)
                     return@setOnClickListener
@@ -624,7 +624,7 @@ class SettingsActivity : ComponentActivity() {
     }
 
     private fun useCurrentPageAsHomepage(currentUrl: String) {
-        val saved = BrowserPreferences.setHomepage(this, currentUrl)
+        val saved = BrowserPreferences.setHomepage(this, currentUrl, NativeBridge)
         if (saved == null) {
             Toast.makeText(this, getString(R.string.settings_homepage_current_unsupported), Toast.LENGTH_SHORT).show()
             return

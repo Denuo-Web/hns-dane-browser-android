@@ -1,57 +1,42 @@
 package com.denuoweb.hnsdane.net
 
+import com.denuoweb.hnsdane.core.TEST_BROWSER_NAMESPACE_POLICY
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HnsWebViewSslErrorPolicyTest {
+    private val namespacePolicy = TEST_BROWSER_NAMESPACE_POLICY
+
     @Test
     fun pinnedLocalCertificatesAreEligibleForWebSocketSslErrors() {
-        assertTrue(HnsWebViewSslErrorPolicy.isEligiblePinnedLocalCertificateUrl("wss://welcome/socket"))
+        assertTrue(HnsWebViewSslErrorPolicy.isEligiblePinnedLocalCertificateUrl("wss://welcome/socket", namespacePolicy))
     }
 
     @Test
     fun pinnedLocalCertificatesAreEligibleForHttpsSslErrors() {
-        assertTrue(HnsWebViewSslErrorPolicy.isEligiblePinnedLocalCertificateUrl("https://welcome/"))
+        assertTrue(HnsWebViewSslErrorPolicy.isEligiblePinnedLocalCertificateUrl("https://welcome/", namespacePolicy))
     }
 
     @Test
     fun emojiHnsTlsUrlsAreEligibleAfterPunycodeNormalization() {
-        assertTrue(HnsWebViewSslErrorPolicy.isEligiblePinnedLocalCertificateUrl("https://🤝/"))
+        assertTrue(HnsWebViewSslErrorPolicy.isEligiblePinnedLocalCertificateUrl("https://🤝/", namespacePolicy))
     }
 
     @Test
     fun pinnedLocalCertificatesRejectNonHnsAndNonTlsUrls() {
-        assertFalse(HnsWebViewSslErrorPolicy.isEligiblePinnedLocalCertificateUrl("https://example.com/"))
-        assertFalse(HnsWebViewSslErrorPolicy.isEligiblePinnedLocalCertificateUrl("ws://welcome/socket"))
-        assertFalse(HnsWebViewSslErrorPolicy.isEligiblePinnedLocalCertificateUrl("not a url"))
+        assertFalse(HnsWebViewSslErrorPolicy.isEligiblePinnedLocalCertificateUrl("https://example.com/", namespacePolicy))
+        assertFalse(HnsWebViewSslErrorPolicy.isEligiblePinnedLocalCertificateUrl("ws://welcome/socket", namespacePolicy))
+        assertFalse(HnsWebViewSslErrorPolicy.isEligiblePinnedLocalCertificateUrl("not a url", namespacePolicy))
     }
 
     @Test
     fun injectedVerifierAuthorizesOnlyTheExactHnsHostAndCertificateDer() {
         val verifier = exactVerifier("welcome", EXPECTED_CERTIFICATE_DER)
 
-        assertTrue(
-            HnsWebViewSslErrorPolicy.canProceed(
-                "https://welcome/",
-                EXPECTED_CERTIFICATE_DER,
-                verifier,
-            ),
-        )
-        assertFalse(
-            HnsWebViewSslErrorPolicy.canProceed(
-                "https://other/",
-                EXPECTED_CERTIFICATE_DER,
-                verifier,
-            ),
-        )
-        assertFalse(
-            HnsWebViewSslErrorPolicy.canProceed(
-                "https://welcome/",
-                OTHER_CERTIFICATE_DER,
-                verifier,
-            ),
-        )
+        assertTrue(HnsWebViewSslErrorPolicy.canProceed("https://welcome/", EXPECTED_CERTIFICATE_DER, verifier, namespacePolicy))
+        assertFalse(HnsWebViewSslErrorPolicy.canProceed("https://other/", EXPECTED_CERTIFICATE_DER, verifier, namespacePolicy))
+        assertFalse(HnsWebViewSslErrorPolicy.canProceed("https://welcome/", OTHER_CERTIFICATE_DER, verifier, namespacePolicy))
     }
 
     @Test
@@ -64,31 +49,11 @@ class HnsWebViewSslErrorPolicyTest {
                 certificateDer.contentEquals(EXPECTED_CERTIFICATE_DER)
         }
 
-        assertTrue(
-            HnsWebViewSslErrorPolicy.canProceed(
-                "https://welcome/",
-                EXPECTED_CERTIFICATE_DER,
-                verifier,
-            ),
-        )
-
+        assertTrue(HnsWebViewSslErrorPolicy.canProceed("https://welcome/", EXPECTED_CERTIFICATE_DER, verifier, namespacePolicy))
         activeGeneration = 8L
-        assertFalse(
-            HnsWebViewSslErrorPolicy.canProceed(
-                "https://welcome/",
-                EXPECTED_CERTIFICATE_DER,
-                verifier,
-            ),
-        )
-
+        assertFalse(HnsWebViewSslErrorPolicy.canProceed("https://welcome/", EXPECTED_CERTIFICATE_DER, verifier, namespacePolicy))
         activeGeneration = 0L
-        assertFalse(
-            HnsWebViewSslErrorPolicy.canProceed(
-                "https://welcome/",
-                EXPECTED_CERTIFICATE_DER,
-                verifier,
-            ),
-        )
+        assertFalse(HnsWebViewSslErrorPolicy.canProceed("https://welcome/", EXPECTED_CERTIFICATE_DER, verifier, namespacePolicy))
     }
 
     @Test
@@ -96,21 +61,9 @@ class HnsWebViewSslErrorPolicyTest {
         val verifier = exactVerifier("welcome", EXPECTED_CERTIFICATE_DER)
         val permissiveVerifier = HnsLocalCertificateDerVerifier { _, _ -> true }
 
-        assertFalse(HnsWebViewSslErrorPolicy.canProceed("https://welcome/", null, permissiveVerifier))
-        assertFalse(
-            HnsWebViewSslErrorPolicy.canProceed(
-                "https://welcome/",
-                ByteArray(0),
-                permissiveVerifier,
-            ),
-        )
-        assertFalse(
-            HnsWebViewSslErrorPolicy.canProceed(
-                "https://welcome/",
-                MALFORMED_CERTIFICATE_DER,
-                verifier,
-            ),
-        )
+        assertFalse(HnsWebViewSslErrorPolicy.canProceed("https://welcome/", null, permissiveVerifier, namespacePolicy))
+        assertFalse(HnsWebViewSslErrorPolicy.canProceed("https://welcome/", ByteArray(0), permissiveVerifier, namespacePolicy))
+        assertFalse(HnsWebViewSslErrorPolicy.canProceed("https://welcome/", MALFORMED_CERTIFICATE_DER, verifier, namespacePolicy))
     }
 
     @Test
@@ -122,20 +75,8 @@ class HnsWebViewSslErrorPolicyTest {
             true
         }
 
-        assertFalse(
-            HnsWebViewSslErrorPolicy.canProceed(
-                "https://welcome/",
-                EXPECTED_CERTIFICATE_DER,
-                throwingVerifier,
-            ),
-        )
-        assertFalse(
-            HnsWebViewSslErrorPolicy.canProceed(
-                "https://example.com/",
-                EXPECTED_CERTIFICATE_DER,
-                permissiveVerifier,
-            ),
-        )
+        assertFalse(HnsWebViewSslErrorPolicy.canProceed("https://welcome/", EXPECTED_CERTIFICATE_DER, throwingVerifier, namespacePolicy))
+        assertFalse(HnsWebViewSslErrorPolicy.canProceed("https://example.com/", EXPECTED_CERTIFICATE_DER, permissiveVerifier, namespacePolicy))
         assertFalse(icannVerifierCalled)
     }
 

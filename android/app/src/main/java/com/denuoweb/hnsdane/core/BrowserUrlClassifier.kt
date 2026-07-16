@@ -9,6 +9,7 @@ enum class BrowserTargetKind {
     ExactUrl,
     HnsName,
     NativeGateway,
+    Blocked,
     Search,
 }
 
@@ -19,6 +20,7 @@ data class BrowserTarget(
 )
 
 class BrowserUrlClassifier(
+    private val namespacePolicy: BrowserNamespacePolicy,
     private val searchBaseUrl: String = "https://duckduckgo.com/?q=",
 ) {
     fun classify(input: String): BrowserTarget {
@@ -74,12 +76,16 @@ class BrowserUrlClassifier(
         return BrowserTarget(kind, uri.withAuthority(authority) ?: return search(url), host)
     }
 
-    private fun targetKindForHost(host: String): BrowserTargetKind =
-        when {
-            HnsHostPolicy.isIcannDaneTestHost(host) -> BrowserTargetKind.NativeGateway
-            HnsHostPolicy.requiresHnsResolution(host) -> BrowserTargetKind.HnsName
-            else -> BrowserTargetKind.ExactUrl
+    private fun targetKindForHost(host: String): BrowserTargetKind {
+        return when (namespacePolicy.classifyHost(host)) {
+            BrowserNamespaceClass.Hns -> BrowserTargetKind.HnsName
+            BrowserNamespaceClass.Icann -> BrowserTargetKind.ExactUrl
+            BrowserNamespaceClass.NativeGateway -> BrowserTargetKind.NativeGateway
+            BrowserNamespaceClass.Invalid,
+            BrowserNamespaceClass.Unavailable,
+            -> BrowserTargetKind.Blocked
         }
+    }
 
     private fun search(query: String): BrowserTarget {
         val encoded = URLEncoder.encode(query, StandardCharsets.UTF_8)

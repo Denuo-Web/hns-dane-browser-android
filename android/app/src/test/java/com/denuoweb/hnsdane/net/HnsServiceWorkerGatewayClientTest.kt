@@ -1,14 +1,19 @@
 package com.denuoweb.hnsdane.net
 
+import com.denuoweb.hnsdane.core.BrowserNamespaceClass
+import com.denuoweb.hnsdane.core.FixedBrowserNamespacePolicy
+import com.denuoweb.hnsdane.core.TEST_BROWSER_NAMESPACE_POLICY
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class HnsServiceWorkerGatewayClientTest {
+    private val namespacePolicy = TEST_BROWSER_NAMESPACE_POLICY
+
     @Test
     fun admittedProxyRouteUsesSharedRuntimeGatewayBecauseWorkerCannotAcceptLocalTlsChallenge() {
         assertEquals(
             ServiceWorkerRouteAction.SharedRuntimeGateway,
-            serviceWorkerRouteAction(BrowserProxyRoute.Proxy),
+            serviceWorkerRouteAction(BrowserProxyRoute.Proxy, namespacePolicy = namespacePolicy),
         )
     }
 
@@ -16,11 +21,14 @@ class HnsServiceWorkerGatewayClientTest {
     fun compatibilityAndUnclassifiedRoutesKeepExistingGatewayBehavior() {
         assertEquals(
             ServiceWorkerRouteAction.SharedRuntimeGateway,
-            serviceWorkerRouteAction(BrowserProxyRoute.CompatibilityInterceptor),
+            serviceWorkerRouteAction(
+                BrowserProxyRoute.CompatibilityInterceptor,
+                namespacePolicy = namespacePolicy,
+            ),
         )
         assertEquals(
             ServiceWorkerRouteAction.SharedRuntimeGateway,
-            serviceWorkerRouteAction(null),
+            serviceWorkerRouteAction(null, namespacePolicy = namespacePolicy),
         )
     }
 
@@ -28,7 +36,7 @@ class HnsServiceWorkerGatewayClientTest {
     fun transitionRouteFailsClosed() {
         assertEquals(
             ServiceWorkerRouteAction.Block,
-            serviceWorkerRouteAction(BrowserProxyRoute.Block),
+            serviceWorkerRouteAction(BrowserProxyRoute.Block, namespacePolicy = namespacePolicy),
         )
     }
 
@@ -37,46 +45,43 @@ class HnsServiceWorkerGatewayClientTest {
         val routedHosts = mutableListOf<String>()
         assertEquals(
             BrowserProxyRoute.Block,
-            serviceWorkerProxyRoute("https", "otherhns.") { host ->
+            serviceWorkerProxyRoute("https", "otherhns.", namespacePolicy) { host ->
                 routedHosts += host
                 BrowserProxyRoute.Block
             },
         )
         assertEquals(listOf("otherhns."), routedHosts)
-
         assertEquals(
             BrowserProxyRoute.Proxy,
-            serviceWorkerProxyRoute("https", "allowedhns.") { BrowserProxyRoute.Proxy },
+            serviceWorkerProxyRoute("https", "allowedhns.", namespacePolicy) { BrowserProxyRoute.Proxy },
         )
     }
 
     @Test
     fun missingRouteForNativeGatewayTargetFailsClosedInForegroundAndBackground() {
-        assertEquals(
-            ServiceWorkerRouteAction.Block,
-            serviceWorkerRouteAction(
-                route = null,
-                enabled = true,
-                scheme = "https",
-                host = "otherhns.",
-            ),
-        )
-        assertEquals(
-            ServiceWorkerRouteAction.Block,
-            serviceWorkerRouteAction(
-                route = null,
-                enabled = false,
-                scheme = "https",
-                host = "otherhns.",
-            ),
-        )
+        for (enabled in listOf(true, false)) {
+            assertEquals(
+                ServiceWorkerRouteAction.Block,
+                serviceWorkerRouteAction(
+                    route = null,
+                    enabled = enabled,
+                    scheme = "https",
+                    host = "otherhns.",
+                    namespacePolicy = namespacePolicy,
+                ),
+            )
+        }
     }
 
     @Test
-    fun icannDaneTestHostUsesTheCompatibilityGatewayRoute() {
+    fun sharedRustCompatibilityHostUsesTheGatewayRoute() {
         assertEquals(
             BrowserProxyRoute.CompatibilityInterceptor,
-            serviceWorkerProxyRoute("https", "dane-test.denuoweb.com") { BrowserProxyRoute.Block },
+            serviceWorkerProxyRoute(
+                "https",
+                "dane-test.denuoweb.com",
+                namespacePolicy,
+            ) { BrowserProxyRoute.Block },
         )
     }
 
@@ -84,15 +89,23 @@ class HnsServiceWorkerGatewayClientTest {
     fun suspendedSecuritySensitiveRoutesFailClosedWhileIcannRemainsDirect() {
         assertEquals(
             ServiceWorkerRouteAction.Block,
-            serviceWorkerRouteAction(BrowserProxyRoute.Proxy, enabled = false),
+            serviceWorkerRouteAction(
+                BrowserProxyRoute.Proxy,
+                enabled = false,
+                namespacePolicy = namespacePolicy,
+            ),
         )
         assertEquals(
             ServiceWorkerRouteAction.Block,
-            serviceWorkerRouteAction(BrowserProxyRoute.CompatibilityInterceptor, enabled = false),
+            serviceWorkerRouteAction(
+                BrowserProxyRoute.CompatibilityInterceptor,
+                enabled = false,
+                namespacePolicy = namespacePolicy,
+            ),
         )
         assertEquals(
             ServiceWorkerRouteAction.Direct,
-            serviceWorkerRouteAction(null, enabled = false),
+            serviceWorkerRouteAction(null, enabled = false, namespacePolicy = namespacePolicy),
         )
     }
 
@@ -100,15 +113,29 @@ class HnsServiceWorkerGatewayClientTest {
     fun destroyedClientBlocksHnsWithoutCapturingAnActivityAndLeavesIcannDirect() {
         assertEquals(
             ServiceWorkerRouteAction.Block,
-            disabledServiceWorkerRouteAction("https", "shakeshift"),
+            disabledServiceWorkerRouteAction("https", "shakeshift", namespacePolicy),
         )
         assertEquals(
             ServiceWorkerRouteAction.Direct,
-            disabledServiceWorkerRouteAction("https", "example.com"),
+            disabledServiceWorkerRouteAction("https", "example.com", namespacePolicy),
         )
         assertEquals(
             ServiceWorkerRouteAction.Direct,
-            disabledServiceWorkerRouteAction("data", null),
+            disabledServiceWorkerRouteAction("data", null, namespacePolicy),
+        )
+    }
+
+    @Test
+    fun unavailableSharedPolicyNeverFallsThroughToDirectNetworking() {
+        val unavailable = FixedBrowserNamespacePolicy(emptyMap(), BrowserNamespaceClass.Unavailable)
+
+        assertEquals(
+            BrowserProxyRoute.Block,
+            serviceWorkerProxyRoute("https", "unknown.example", unavailable) { BrowserProxyRoute.Proxy },
+        )
+        assertEquals(
+            ServiceWorkerRouteAction.Block,
+            disabledServiceWorkerRouteAction("https", "unknown.example", unavailable),
         )
     }
 

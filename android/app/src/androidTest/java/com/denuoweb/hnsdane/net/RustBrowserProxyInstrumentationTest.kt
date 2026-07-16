@@ -31,21 +31,24 @@ class RustBrowserProxyInstrumentationTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val dataDir = context.filesDir.resolve("runtime-gateway-instrumentation-${UUID.randomUUID()}")
         assertTrue(dataDir.mkdirs())
-        val headers = listOf(
-            HNS_GATEWAY_NETWORK_HEADER to "regtest",
-            HNS_GATEWAY_DOH_RESOLVER_HEADER to "not-a-valid-doh-url",
+        val config = HnsGatewayRuntimeConfig(
+            network = "regtest",
+            strictHnsMode = false,
+            dohResolverUrl = "not-a-valid-doh-url",
+            statelessDaneCertificates = false,
         )
 
         try {
             val encoded = requireNotNull(
                 NativeBridge.httpResponse(
                     dataDir = dataDir.absolutePath,
+                    config = config,
                     method = "GET",
                     scheme = "https",
                     host = TEST_HOST,
                     port = 443,
                     pathAndQuery = "/gateway-smoke",
-                    headers = headers,
+                    headers = emptyList(),
                     body = ByteArray(0),
                 ),
             )
@@ -54,12 +57,13 @@ class RustBrowserProxyInstrumentationTest {
             val fileResponse = requireNotNull(
                 NativeBridge.httpResponseBodyFile(
                     dataDir = dataDir.absolutePath,
+                    config = config,
                     method = "GET",
                     scheme = "https",
                     host = TEST_HOST,
                     port = 443,
                     pathAndQuery = "/gateway-file-smoke",
-                    headers = headers,
+                    headers = emptyList(),
                     body = ByteArray(0),
                 ),
             )

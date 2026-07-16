@@ -46,6 +46,12 @@ static DNS_QUERY_ID: AtomicU16 = AtomicU16::new(0x4d00);
 // Generated from https://data.iana.org/TLD/tlds-alpha-by-domain.txt, version 2026062302.
 const ICANN_TLDS: &str = include_str!("icann_tlds.txt");
 
+/// Returns the generated IANA root-zone snapshot used by browser namespace
+/// classification. The trailing newline, when present, is not significant.
+pub fn browser_icann_tld_snapshot() -> &'static str {
+    ICANN_TLDS
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NameClass {
     Hns,

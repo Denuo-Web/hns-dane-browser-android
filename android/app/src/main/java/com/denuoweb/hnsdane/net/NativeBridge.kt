@@ -1,5 +1,8 @@
 package com.denuoweb.hnsdane.net
 
+import com.denuoweb.hnsdane.core.BrowserNamespaceClass
+import com.denuoweb.hnsdane.core.BrowserNamespacePolicy
+import com.denuoweb.hnsdane.core.BrowserWebSocketScopePolicySource
 import java.io.File
 import java.io.InputStream
 import java.util.Locale
@@ -8,6 +11,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock
 interface HnsGatewayBridge {
     fun httpResponse(
         dataDir: String,
+        config: HnsGatewayRuntimeConfig,
         method: String,
         scheme: String,
         host: String,
@@ -19,6 +23,7 @@ interface HnsGatewayBridge {
 
     fun httpResponseBodyFile(
         dataDir: String,
+        config: HnsGatewayRuntimeConfig,
         method: String,
         scheme: String,
         host: String,
@@ -29,6 +34,13 @@ interface HnsGatewayBridge {
     ): HnsGatewayFileResponse? = null
 
 }
+
+data class HnsGatewayRuntimeConfig(
+    val network: String,
+    val strictHnsMode: Boolean,
+    val dohResolverUrl: String,
+    val statelessDaneCertificates: Boolean,
+)
 
 interface HnsSyncBridge {
     fun syncOnce(dataDir: String): String
@@ -47,7 +59,11 @@ data class HnsGatewayFileResponse(
     }
 }
 
-object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
+object NativeBridge :
+    HnsGatewayBridge,
+    HnsSyncBridge,
+    BrowserNamespacePolicy,
+    BrowserWebSocketScopePolicySource {
     val isLoaded: Boolean = runCatching {
         System.loadLibrary("hns_dane_browser_ffi")
     }.isSuccess
@@ -64,6 +80,28 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
         """{"core":"unavailable","version":"unavailable","features":[],"securityDefault":"fail-closed"}"""
     }
 
+    override fun classifyHost(host: String): BrowserNamespaceClass {
+        if (!isLoaded) return BrowserNamespaceClass.Unavailable
+        val code = runCatching { nativeClassifyBrowserHost(host) }
+            .getOrElse { return BrowserNamespaceClass.Unavailable }
+        return when (code) {
+            NAMESPACE_HNS -> BrowserNamespaceClass.Hns
+            NAMESPACE_ICANN -> BrowserNamespaceClass.Icann
+            NAMESPACE_NATIVE_GATEWAY -> BrowserNamespaceClass.NativeGateway
+            NAMESPACE_INVALID -> BrowserNamespaceClass.Invalid
+            else -> BrowserNamespaceClass.Unavailable
+        }
+    }
+
+    override fun webSocketScopePolicyScript(): String? =
+        if (isLoaded) {
+            runCatching { nativeBrowserWebSocketScopePolicyScript() }
+                .getOrNull()
+                ?.takeIf { it.isNotBlank() }
+        } else {
+            null
+        }
+
     fun pruneGatewayResponseBodyFiles(dataDir: String) {
         GatewayResponseBodyStore.prune(dataDir)
     }
@@ -74,7 +112,6 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
         dataDir = dataDir,
         network = network,
         unavailable = unavailableSyncJson(network = network),
-        createFailure = { nativeSyncOnce(dataDir, network) },
         block = ::nativeRuntimeSyncOnce,
     )
 
@@ -82,7 +119,6 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
         dataDir = dataDir,
         network = network,
         unavailable = unavailableSyncJson(network = network),
-        createFailure = { nativeSyncStatus(dataDir, network) },
         block = ::nativeRuntimeSyncStatus,
     )
 
@@ -90,7 +126,6 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
         dataDir = dataDir,
         network = network,
         unavailable = unavailableSyncJson("rust-core-unavailable", network),
-        createFailure = { nativeClearResolverCache(dataDir, network) },
         block = ::nativeRuntimeClearResolverCache,
     )
 
@@ -102,14 +137,12 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
         dataDir = dataDir,
         network = network,
         unavailable = unavailableSyncJson("rust-core-unavailable", network),
-        createFailure = { nativeInstallHeaderSnapshot(dataDir, snapshotPath, network) },
     ) { handle -> nativeRuntimeInstallHeaderSnapshot(handle, snapshotPath) }
 
     fun resetHeadersFromPeers(dataDir: String, network: String = DEFAULT_NETWORK): String = withRuntime(
         dataDir = dataDir,
         network = network,
         unavailable = unavailableSyncJson("rust-core-unavailable", network),
-        createFailure = { nativeResetHeadersFromPeers(dataDir, network) },
         block = ::nativeRuntimeResetHeadersFromPeers,
     )
 
@@ -121,11 +154,11 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
         dataDir = dataDir,
         network = network,
         unavailable = """{"host":"${jsonEscape(host)}","name":null,"network":"${jsonEscape(network)}","nameHash":null,"hnsProof":"error","proofStatus":"error","secure":null,"exists":null,"treeRoot":null,"blockHeight":null,"cacheStatus":"rust_core_unavailable","resourceValueHex":null,"recordTypes":[],"resourceRecords":[],"currentTip":null,"error":"rust-core-unavailable"}""",
-        createFailure = { nativeHnsProofDetails(dataDir, host, network) },
     ) { handle -> nativeRuntimeHnsProofDetails(handle, host) }
 
     override fun httpResponse(
         dataDir: String,
+        config: HnsGatewayRuntimeConfig,
         method: String,
         scheme: String,
         host: String,
@@ -136,19 +169,16 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
     ): ByteArray? {
         if (!isLoaded) return null
         val headerText = serializeHeaders(headers)
-        val controls = gatewayRuntimeControls(headers)
         return withRuntime(
             dataDir = dataDir,
-            network = controls.network,
+            network = config.network,
             unavailable = null,
-            createFailure = { null },
         ) { handle ->
             nativeRuntimeGatewayHttpResponse(
                 handle,
-                controls.network,
-                controls.strictHnsMode,
-                controls.dohResolverUrl,
-                controls.statelessDaneCertificates,
+                config.strictHnsMode,
+                config.dohResolverUrl,
+                config.statelessDaneCertificates,
                 method,
                 scheme,
                 host,
@@ -162,6 +192,7 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
 
     override fun httpResponseBodyFile(
         dataDir: String,
+        config: HnsGatewayRuntimeConfig,
         method: String,
         scheme: String,
         host: String,
@@ -174,21 +205,18 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
             return null
         }
         val headerText = serializeHeaders(headers)
-        val controls = gatewayRuntimeControls(headers)
         val bodyFile = GatewayResponseBodyStore.create(dataDir) ?: return null
         val head = runCatching {
             withRuntime(
                 dataDir = dataDir,
-                network = controls.network,
+                network = config.network,
                 unavailable = null,
-                createFailure = { null },
             ) { handle ->
                 nativeRuntimeGatewayHttpResponseBodyToFile(
                     handle,
-                    controls.network,
-                    controls.strictHnsMode,
-                    controls.dohResolverUrl,
-                    controls.statelessDaneCertificates,
+                    config.strictHnsMode,
+                    config.dohResolverUrl,
+                    config.statelessDaneCertificates,
                     method,
                     scheme,
                     host,
@@ -211,11 +239,9 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
         dataDir = config.dataDir,
         network = config.network,
         unavailable = null,
-        createFailure = { null },
     ) { runtimeHandle ->
         val bundle = nativeRuntimeStartProxy(
             runtimeHandle,
-            config.network,
             config.strictHnsMode,
             config.dohResolverUrl,
             config.statelessDaneCertificates,
@@ -293,7 +319,6 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
         dataDir: String,
         network: String,
         unavailable: T,
-        createFailure: () -> T,
         block: (Long) -> T,
     ): T {
         if (!isLoaded) return unavailable
@@ -313,7 +338,7 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
             val existing = runtimeHandles[key]
             if (existing != null) return block(existing)
             val created = nativeRuntimeCreate(dataDir, canonicalNetwork)
-            if (created == INVALID_RUNTIME_HANDLE) return createFailure()
+            if (created == INVALID_RUNTIME_HANDLE) return unavailable
             runtimeHandles[key] = created
             return block(created)
         } finally {
@@ -324,6 +349,10 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
     private external fun nativeVersion(): String
 
     private external fun nativeDiagnostics(): String
+
+    private external fun nativeClassifyBrowserHost(host: String): Int
+
+    private external fun nativeBrowserWebSocketScopePolicyScript(): String?
 
     private external fun nativeRuntimeCreate(dataDir: String, network: String): Long
 
@@ -343,7 +372,6 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
 
     private external fun nativeRuntimeStartProxy(
         handle: Long,
-        network: String,
         strictHnsMode: Boolean,
         dohResolverUrl: String,
         statelessDaneCertificates: Boolean,
@@ -352,7 +380,6 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
 
     private external fun nativeRuntimeGatewayHttpResponse(
         handle: Long,
-        network: String,
         strictHnsMode: Boolean,
         dohResolverUrl: String,
         statelessDaneCertificates: Boolean,
@@ -367,7 +394,6 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
 
     private external fun nativeRuntimeGatewayHttpResponseBodyToFile(
         handle: Long,
-        network: String,
         strictHnsMode: Boolean,
         dohResolverUrl: String,
         statelessDaneCertificates: Boolean,
@@ -413,22 +439,6 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
         certificateDer: ByteArray,
     ): Boolean
 
-    private external fun nativeSyncOnce(dataDir: String, network: String): String
-
-    private external fun nativeSyncStatus(dataDir: String, network: String): String
-
-    private external fun nativeClearResolverCache(dataDir: String, network: String): String
-
-    private external fun nativeInstallHeaderSnapshot(
-        dataDir: String,
-        snapshotPath: String,
-        network: String,
-    ): String
-
-    private external fun nativeResetHeadersFromPeers(dataDir: String, network: String): String
-
-    private external fun nativeHnsProofDetails(dataDir: String, host: String, network: String): String
-
     private fun serializeHeaders(headers: List<Pair<String, String>>): String = buildString {
         headers.forEach { (name, value) ->
             append(name)
@@ -436,38 +446,6 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
             append(value)
             append("\r\n")
         }
-    }
-
-    private fun gatewayRuntimeControls(headers: List<Pair<String, String>>): GatewayRuntimeControls {
-        var strictHnsMode = false
-        var dohResolverUrl = ""
-        var statelessDaneCertificates = false
-        var network = DEFAULT_NETWORK
-        headers.forEach { (name, rawValue) ->
-            val value = rawValue.trim()
-            when {
-                name.equals(HNS_GATEWAY_STRICT_MODE_HEADER, ignoreCase = true) -> {
-                    strictHnsMode = strictHnsMode ||
-                        value == "1" || value.equals("true", ignoreCase = true)
-                }
-                name.equals(HNS_GATEWAY_DOH_RESOLVER_HEADER, ignoreCase = true) -> {
-                    dohResolverUrl = value
-                }
-                name.equals(HNS_GATEWAY_STATELESS_DANE_HEADER, ignoreCase = true) -> {
-                    statelessDaneCertificates = statelessDaneCertificates ||
-                        value == "1" || value.equals("true", ignoreCase = true)
-                }
-                name.equals(HNS_GATEWAY_NETWORK_HEADER, ignoreCase = true) -> {
-                    network = value
-                }
-            }
-        }
-        return GatewayRuntimeControls(
-            network = canonicalRuntimeNetwork(network),
-            strictHnsMode = strictHnsMode,
-            dohResolverUrl = dohResolverUrl,
-            statelessDaneCertificates = statelessDaneCertificates,
-        )
     }
 
     private fun canonicalRuntimeNetwork(network: String): String =
@@ -493,16 +471,13 @@ object NativeBridge : HnsGatewayBridge, HnsSyncBridge {
             .replace("\t", "\\t")
 
     private const val INVALID_RUNTIME_HANDLE = 0L
+    private const val NAMESPACE_INVALID = 0
+    private const val NAMESPACE_HNS = 1
+    private const val NAMESPACE_ICANN = 2
+    private const val NAMESPACE_NATIVE_GATEWAY = 3
     private const val DEFAULT_NETWORK = "mainnet"
 
     private data class RuntimeKey(val dataDir: String, val network: String)
-
-    private data class GatewayRuntimeControls(
-        val network: String,
-        val strictHnsMode: Boolean,
-        val dohResolverUrl: String,
-        val statelessDaneCertificates: Boolean,
-    )
 
     private val runtimeLifecycleLock = ReentrantReadWriteLock()
     private val runtimeHandles = mutableMapOf<RuntimeKey, Long>()

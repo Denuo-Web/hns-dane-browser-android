@@ -41,6 +41,26 @@ if matches="$(grep -RInE \
   exit 1
 fi
 
+android_ffi_dir="$ROOT_DIR/rust/crates/android-ffi"
+if matches="$(grep -RInE \
+  --include='Cargo.toml' \
+  --include='*.rs' \
+  'gateway_lock|runtime_gateway_from_handle|with_configured_runtime_gateway|[.]set_policy[[:space:]]*\(|Java_com_denuoweb_hnsdane_net_NativeBridge_native(SyncOnce|SyncStatus|ClearResolverCache|InstallHeaderSnapshot|ResetHeadersFromPeers|HnsProofDetails)|hns_(resolver|loopback_proxy|gateway|transport)::|hns-(resolver|loopback-proxy|gateway|transport)[[:space:]]*=' \
+  "$android_ffi_dir" || true)" && [[ -n "$matches" ]]; then
+  echo "ERROR: android-ffi contains runtime orchestration or legacy JNI entry points." >&2
+  printf '%s\n' "$matches" >&2
+  exit 1
+fi
+
+if matches="$(grep -RInE \
+  --include='*.kt' \
+  'HNS_GATEWAY_(STRICT_MODE|DOH_RESOLVER|STATELESS_DANE|NETWORK)_HEADER|X-HNS-Browser-(Strict-Mode|DoH-Resolver|Stateless-DANE|Network)' \
+  "$ROOT_DIR/android/app/src/main" || true)" && [[ -n "$matches" ]]; then
+  echo "ERROR: the Android shell must pass runtime policy as typed fields, not request headers." >&2
+  printf '%s\n' "$matches" >&2
+  exit 1
+fi
+
 ios_ffi_dir="$ROOT_DIR/rust/crates/ios-ffi"
 if [[ ! -s "$ios_ffi_dir/include/hns_browser.h" ]] || \
   [[ ! -s "$ios_ffi_dir/include/module.modulemap" ]]; then

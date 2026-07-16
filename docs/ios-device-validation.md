@@ -1,12 +1,12 @@
 # iOS Device Validation
 
-The iOS shell targets iOS 17 or later because `Network.ProxyConfiguration`, authenticated HTTP CONNECT proxy configuration, persistent profile data stores, and `WKWebsiteDataStore.proxyConfigurations` are available together from iOS 17.
+The iOS shell has an iOS 17.0 deployment floor, retaining support for the iOS 17 and iOS 18 generations. That minimum supported runtime is independent of the build SDK: Apple builds use the stable iOS 26.5 SDK with Xcode 26.5 or 26.6.
 
-The Rust and C boundaries can be validated on Linux, and the Apple slices and Swift shell can be built in macOS CI. Security claims about WebKit's out-of-process networking require a signed physical-device run. Simulator success is not a substitute for the checks below.
+The Rust and C boundaries can be validated on Linux. The Apple slices, Swift shell, and unit tests can then be compiled and exercised in a macOS simulator gate. An optional signed physical-device pass can add evidence about WebKit's out-of-process networking that simulator success cannot provide; it has not been completed.
 
-## macOS Build Gate
+## macOS Build and Simulator Gate
 
-Run with the repository-pinned Rust toolchain and a current Xcode 26 installation:
+Run with the repository-pinned Rust toolchain, Xcode 26.5 or 26.6, and the iOS 26.5 device and simulator SDKs selected:
 
 ```sh
 ./scripts/check.sh
@@ -14,11 +14,11 @@ Run with the repository-pinned Rust toolchain and a current Xcode 26 installatio
 ./scripts/build-ios.sh
 ```
 
-The build must produce device arm64 and universal arm64/x86_64 simulator slices, create `HnsBrowserRuntime.xcframework`, compile the C header smoke test, and link the iOS application and test target without undefined FFI symbols.
+The gate must produce device arm64 and universal arm64/x86_64 simulator slices, create `HnsBrowserRuntime.xcframework`, compile the C header smoke test, link the iOS application and test target without undefined FFI symbols, and execute the unit tests on an iPhone simulator. Completion establishes build, linkage, and simulator behavior only; it is not evidence that the signed physical-device matrix passed.
 
-## Physical Device Gate
+## Signed Physical Device Gate — Pending
 
-Use a signed development build on an iPhone or iPad running iOS 17 or later. Capture device traffic from a controlled Wi-Fi network while running the matrix.
+No physical-device pass is currently claimed. If a device or external TestFlight tester becomes available, use a signed build on iOS 17.0 or later and capture device traffic from a controlled Wi-Fi network while running the optional matrix.
 
 ### Proxy isolation
 

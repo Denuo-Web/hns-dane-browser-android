@@ -89,7 +89,7 @@ import java.util.Locale
 import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
-    private val classifier = BrowserUrlClassifier()
+    private val classifier = BrowserUrlClassifier(NativeBridge)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val syncStatusExecutor = Executors.newSingleThreadExecutor()
     private val downloadExecutor = Executors.newSingleThreadExecutor()
@@ -155,6 +155,7 @@ class MainActivity : ComponentActivity() {
         )
         webViewGatewayInterceptor = HnsWebViewGatewayInterceptor(
             dataDir = filesDir,
+            namespacePolicy = NativeBridge,
             allowProxyFallbackForBodyRequests = { proxyAvailable },
             strictHnsMode = { HnsResolutionPreferences.strictHnsMode(this) },
             dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
@@ -410,11 +411,13 @@ class MainActivity : ComponentActivity() {
             serviceWorkerController.setServiceWorkerClient(
                 HnsServiceWorkerGatewayClient(
                     interceptor = webViewGatewayInterceptor,
+                    namespacePolicy = NativeBridge,
                     enabled = { gatewayInterceptionEnabled },
                     proxyRoute = { request ->
                         serviceWorkerProxyRoute(
                             scheme = request.url.scheme,
                             host = request.url.host,
+                            namespacePolicy = NativeBridge,
                             routeForHnsHost = proxyCoordinator::routeForHnsHost,
                         )
                     },
@@ -440,7 +443,7 @@ class MainActivity : ComponentActivity() {
         }
         WebViewCompat.addDocumentStartJavaScript(
             webView,
-            HnsProxyWebSocketPolicy.script(),
+            HnsProxyWebSocketPolicy.script(NativeBridge),
             setOf("*"),
         )
     }
@@ -714,6 +717,17 @@ class MainActivity : ComponentActivity() {
         omnibox.setText(target.url)
         currentTargetKind = target.kind
         clearMainFrameHnsStatus()
+        if (target.kind == BrowserTargetKind.Blocked) {
+            pendingMainFrameUrl = null
+            admittedMainFrameUrl = null
+            pageIsLoading = false
+            pageLoadProgress = 0
+            refreshSecurityState()
+            refreshPageProgress()
+            refreshTransportWarning()
+            Toast.makeText(this, getString(R.string.toast_link_not_supported), Toast.LENGTH_SHORT).show()
+            return
+        }
         pendingMainFrameUrl = target.url
         pageIsLoading = true
         pageLoadProgress = 0
@@ -919,7 +933,7 @@ class MainActivity : ComponentActivity() {
             }
 
             val target = classifier.classify(requestUrl)
-            if (target.kind == BrowserTargetKind.Search) {
+            if (target.kind == BrowserTargetKind.Search || target.kind == BrowserTargetKind.Blocked) {
                 Toast.makeText(this@MainActivity, getString(R.string.toast_link_not_supported), Toast.LENGTH_SHORT).show()
                 return true
             }
@@ -945,6 +959,9 @@ class MainActivity : ComponentActivity() {
             }
             val requestUrl = request.url.toString()
             val target = classifier.classify(requestUrl)
+            if (target.kind == BrowserTargetKind.Blocked) {
+                return blockedHnsProxyResponse()
+            }
             if (target.kind == BrowserTargetKind.HnsName) {
                 val route = target.displayHost
                     ?.let(proxyCoordinator::routeForHnsHost)
@@ -968,7 +985,7 @@ class MainActivity : ComponentActivity() {
 
         @SuppressLint("WebViewClientOnReceivedSslError")
         override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-            if (HnsWebViewSslErrorPolicy.canProceed(error, proxyCoordinator)) {
+            if (HnsWebViewSslErrorPolicy.canProceed(error, proxyCoordinator, NativeBridge)) {
                 handler.proceed()
             } else {
                 handler.cancel()
@@ -1085,7 +1102,12 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        if (classifier.classify(downloadUrl).kind in NATIVE_GATEWAY_TARGET_KINDS) {
+        val target = classifier.classify(downloadUrl)
+        if (target.kind == BrowserTargetKind.Blocked || target.kind == BrowserTargetKind.Search) {
+            Toast.makeText(this, getString(R.string.toast_link_not_supported), Toast.LENGTH_LONG).show()
+            return
+        }
+        if (target.kind in NATIVE_GATEWAY_TARGET_KINDS) {
             handleHnsDownload(downloadUrl, userAgent, contentDisposition, mimeType)
             return
         }
@@ -1143,6 +1165,7 @@ class MainActivity : ComponentActivity() {
             val result = runCatching {
                 val fetcher = HnsNativeDownloadFetcher(
                     dataDir = filesDir,
+                    namespacePolicy = NativeBridge,
                     strictHnsMode = { strictMode },
                     dohResolverUrl = { dohResolver },
                     statelessDaneCertificates = { statelessDane },

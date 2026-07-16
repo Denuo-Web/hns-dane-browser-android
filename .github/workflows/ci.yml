@@ -76,12 +76,39 @@ jobs:
   ios:
     name: Apple ABI, XCFramework, and iOS shell
     runs-on: macos-26
-    timeout-minutes: 60
+    # Three release-mode Rust slices plus simulator XCTest and a device-slice
+    # Release link routinely exceed the old one-hour budget on the standard
+    # 3-core hosted runner even when every command is making progress.
+    timeout-minutes: 90
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
+
+      - name: Lock and report the selected Xcode
+        run: |
+          developer_dir="$(xcode-select --print-path)"
+          test -x "$developer_dir/usr/bin/xcodebuild"
+          printf '%s\n' \
+            "DEVELOPER_DIR=$developer_dir" \
+            "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+          export DEVELOPER_DIR="$developer_dir"
+          xcodebuild -version
+          xcode_version="$(xcodebuild -version | sed -n '1s/^Xcode //p')"
+          case "$xcode_version" in
+            26.5|26.5.*|26.6|26.6.*) ;;
+            *)
+              echo "ERROR: Xcode 26.5 or 26.6 is required; selected $xcode_version." >&2
+              exit 1
+              ;;
+          esac
+          iphoneos_sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
+          simulator_sdk="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          printf 'iphoneos SDK %s\niphonesimulator SDK %s\n' \
+            "$iphoneos_sdk" "$simulator_sdk"
+          test "$iphoneos_sdk" = "26.5"
+          test "$simulator_sdk" = "26.5"
 
       - name: Install pinned Rust toolchain and Apple targets
         run: |
@@ -92,19 +119,35 @@ jobs:
             aarch64-apple-ios-sim \
             x86_64-apple-ios
 
-      - name: Verify Apple adapter boundaries and host ABI
+      - name: Verify Apple adapter boundaries, selector, and host ABI
         run: |
           ./scripts/check-version-consistency.sh
           ./scripts/check-runtime-boundaries.sh
-          ./scripts/check-ios-abi.sh
+          python3 ./scripts/test_select_ios_simulator.py
+          abi_target_dir="$(mktemp -d "$RUNNER_TEMP/hns-ios-abi.XXXXXX")"
+          cleanup_abi_target() {
+            rm -rf -- "$abi_target_dir"
+          }
+          trap cleanup_abi_target EXIT
+          HNS_IOS_ABI_TARGET_DIR="$abi_target_dir" ./scripts/check-ios-abi.sh
+          cleanup_abi_target
+          trap - EXIT
 
-      - name: Build XCFramework and run iOS tests
+      - name: Build XCFramework, run tests, and link the device app
         run: |
           simulator_id="$(
             xcrun simctl list devices available -j |
-              python3 -c 'import json, sys; devices = json.load(sys.stdin)["devices"]; print(next(device["udid"] for runtime in sorted(devices, reverse=True) for device in devices[runtime] if device.get("isAvailable") and device["name"].startswith("iPhone")))'
+              python3 ./scripts/select_ios_simulator.py --runtime 26.5
           )"
           test -n "$simulator_id"
-          HNS_IOS_ACTION=test \
+          xcrun simctl boot "$simulator_id" || true
+          xcrun simctl bootstatus "$simulator_id" -b
+          HNS_RUST_IOS_CLEAN_TARGET=1 \
+            HNS_IOS_ACTION=test \
             HNS_IOS_DESTINATION="platform=iOS Simulator,id=$simulator_id" \
+            ./scripts/build-ios.sh
+          HNS_IOS_REUSE_XCFRAMEWORK=1 \
+            HNS_IOS_ACTION=build \
+            HNS_IOS_CONFIGURATION=Release \
+            HNS_IOS_DESTINATION="generic/platform=iOS" \
             ./scripts/build-ios.sh

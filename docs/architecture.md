@@ -1,6 +1,6 @@
 # Architecture
 
-The validated shipping product is currently Android, not a system-wide resolver. Its security engine is a platform-neutral Rust runtime so Android WebView and iOS WKWebView shells share URL classification, HNS and DANE policy, transport policy, persistent state, proxy parsing, and validation results while retaining platform-native UI and lifecycle integration. The iOS shell is implemented but is not release-ready until the signed-device WebKit validation gate passes.
+The validated shipping product is currently Android, not a system-wide resolver. Its security engine is a platform-neutral Rust runtime so Android WebView and iOS WKWebView shells share URL classification, HNS and DANE policy, transport policy, persistent state, proxy parsing, and validation results while retaining platform-native UI and lifecycle integration. The iOS shell is implemented; its signed-device WebKit matrix remains optional and unverified.
 
 ## Layers
 
@@ -52,7 +52,7 @@ iOS UI / Browser Shell                             [device gate open]
 - `MainActivity` supplies a Rust-only `LocalBrowserProxyFactory`. If Rust proxy startup fails, only the exact admitted scope may use the compatibility interceptor; Android contains no second HTTP proxy, CONNECT terminator, certificate generator, or Upgrade tunnel.
 - `ios-ffi`, the XCFramework build scripts, and the UIKit/WKWebView shell are present. The shell installs a single authenticated `ProxyConfiguration` with `allowFailover = false` on a persistent identified `WKWebsiteDataStore`, and reconstructs the WebView only after proxy rotation completes. Cross-root and HNS/ICANN main-frame changes rotate immutable Rust scope generations; subframes cannot expand that scope.
 - Swift delegates shared classification, HNS-root extraction, runtime policy, sync, proxy parsing, ICANN forwarding, HNS resolution, DNSSEC, DANE, and local TLS identity generation to Rust. Swift retains UIKit/WebKit navigation, profile ownership, lifecycle, download, UI, and exact live server-trust challenge integration.
-- Rust/ABI/header checks run cross-platform and Apple slices plus the Swift targets build in macOS CI. Release support remains gated on the signed physical-device matrix because simulator or unit-test success cannot prove WebKit network-process challenge and failover behavior for every subresource, Service Worker, WebSocket, lifecycle, and renderer-restart case.
+- Rust/ABI/header checks run cross-platform and Apple slices plus the Swift targets build in macOS CI. The optional signed physical-device matrix can add evidence for WebKit network-process challenge and failover behavior that simulator or unit-test success cannot prove.
 
 ## iOS Modules
 

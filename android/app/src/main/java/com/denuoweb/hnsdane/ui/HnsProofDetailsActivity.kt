@@ -24,7 +24,8 @@ class HnsProofDetailsActivity : ComponentActivity() {
 
         val host = proofHost()
         val trace = parsedTrace()
-        val isIcann = HnsResolutionTraceFormat.isIcann(trace) || HnsHostPolicy.isIcannDaneTestHost(host)
+        val isIcann =
+            HnsResolutionTraceFormat.isIcann(trace) || HnsHostPolicy.isNativeGatewayHost(host, NativeBridge)
         val detailsJson = if (host.isBlank()) {
             """{"host":"","name":null,"nameHash":null,"hnsProof":"error","proofStatus":"error","secure":null,"exists":null,"treeRoot":null,"blockHeight":null,"cacheStatus":"invalid_input","resourceValueHex":null,"recordTypes":[],"resourceRecords":[],"currentTip":null,"error":"no_hns_host_available"}"""
         } else if (isIcann) {

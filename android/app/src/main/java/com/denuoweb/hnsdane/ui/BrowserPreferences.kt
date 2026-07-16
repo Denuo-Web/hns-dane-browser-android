@@ -1,6 +1,7 @@
 package com.denuoweb.hnsdane.ui
 
 import android.content.Context
+import com.denuoweb.hnsdane.core.BrowserNamespacePolicy
 import com.denuoweb.hnsdane.core.BrowserTargetKind
 import com.denuoweb.hnsdane.core.BrowserUrlClassifier
 import java.util.Locale
@@ -17,8 +18,12 @@ internal object BrowserPreferences {
             ?.ifBlank { DEFAULT_HOME }
             ?: DEFAULT_HOME
 
-    fun setHomepage(context: Context, input: String): String? {
-        val normalized = normalizeHomepage(input) ?: return null
+    fun setHomepage(
+        context: Context,
+        input: String,
+        namespacePolicy: BrowserNamespacePolicy,
+    ): String? {
+        val normalized = normalizeHomepage(input, namespacePolicy) ?: return null
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_HOMEPAGE, normalized)
@@ -33,7 +38,10 @@ internal object BrowserPreferences {
             .apply()
     }
 
-    fun normalizeHomepage(input: String): String? {
+    fun normalizeHomepage(
+        input: String,
+        namespacePolicy: BrowserNamespacePolicy,
+    ): String? {
         val trimmed = input.trim()
         if (trimmed.isBlank() || trimmed.length > MAX_HOMEPAGE_CHARS) {
             return null
@@ -48,8 +56,10 @@ internal object BrowserPreferences {
             return null
         }
 
-        val target = BrowserUrlClassifier().classify(trimmed)
-        return target.url.takeUnless { target.kind == BrowserTargetKind.Search }
+        val target = BrowserUrlClassifier(namespacePolicy).classify(trimmed)
+        return target.url.takeUnless {
+            target.kind == BrowserTargetKind.Search || target.kind == BrowserTargetKind.Blocked
+        }
     }
 
     private const val MAX_HOMEPAGE_CHARS = 16 * 1024

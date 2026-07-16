@@ -1,71 +1,63 @@
 package com.denuoweb.hnsdane.core
 
-import java.util.Locale
+/** Browser namespace decisions returned by the shared Rust resolver policy. */
+enum class BrowserNamespaceClass {
+    Hns,
+    Icann,
+    NativeGateway,
+    Invalid,
+    Unavailable,
+}
 
+fun interface BrowserNamespacePolicy {
+    fun classifyHost(host: String): BrowserNamespaceClass
+}
+
+fun interface BrowserWebSocketScopePolicySource {
+    /** Returns the complete document-start policy emitted by shared Rust. */
+    fun webSocketScopePolicyScript(): String?
+}
+
+enum class NativeGatewayHostDecision {
+    Required,
+    Direct,
+    Block,
+}
+
+/**
+ * Android routing helpers around the shared Rust namespace decision.
+ *
+ * This object deliberately contains no IANA list, special-use suffix list, or
+ * independent HNS classification algorithm. An unavailable or malformed Rust
+ * result is kept distinct so production callers can fail closed.
+ */
 object HnsHostPolicy {
-    fun requiresHnsResolution(host: String): Boolean {
-        val normalized = normalizedHost(host)
-
-        if (normalized.isEmpty()) {
-            return false
+    fun nativeGatewayDecision(
+        host: String,
+        namespacePolicy: BrowserNamespacePolicy,
+    ): NativeGatewayHostDecision =
+        when (namespacePolicy.classifyHost(host)) {
+            BrowserNamespaceClass.Hns,
+            BrowserNamespaceClass.NativeGateway,
+            -> NativeGatewayHostDecision.Required
+            BrowserNamespaceClass.Icann -> NativeGatewayHostDecision.Direct
+            BrowserNamespaceClass.Invalid,
+            BrowserNamespaceClass.Unavailable,
+            -> NativeGatewayHostDecision.Block
         }
 
-        if (!isValidDnsHost(normalized)) {
-            return false
-        }
+    fun requiresHnsResolution(
+        host: String,
+        namespacePolicy: BrowserNamespacePolicy,
+    ): Boolean = namespacePolicy.classifyHost(host) == BrowserNamespaceClass.Hns
 
-        if (isIpLiteral(normalized)) {
-            return false
-        }
+    fun requiresNativeGatewayResolution(
+        host: String,
+        namespacePolicy: BrowserNamespacePolicy,
+    ): Boolean = nativeGatewayDecision(host, namespacePolicy) == NativeGatewayHostDecision.Required
 
-        val labels = normalized.split('.')
-        if (labels.last() in SPECIAL_USE_SUFFIXES) {
-            return false
-        }
-        if (labels.size == 1) {
-            return true
-        }
-
-        return labels.last() !in IcannTlds.ALL
-    }
-
-    fun requiresNativeGatewayResolution(host: String): Boolean =
-        normalizedHost(host) in ICANN_DANE_TEST_HOSTS || requiresHnsResolution(host)
-
-    fun isIcannDaneTestHost(host: String): Boolean =
-        normalizedHost(host) in ICANN_DANE_TEST_HOSTS
-
-    private fun normalizedHost(host: String): String =
-        host
-            .trim()
-            .removeSurrounding("[", "]")
-            .trimEnd('.')
-            .lowercase(Locale.US)
-
-    private fun isIpLiteral(host: String): Boolean {
-        if (host.contains(':')) {
-            return host.all { it.isDigit() || it in 'a'..'f' || it == ':' || it == '.' }
-        }
-
-        val parts = host.split('.')
-        return parts.size == 4 && parts.all { part ->
-            part.isNotEmpty() &&
-                part.length <= 3 &&
-                part.all(Char::isDigit) &&
-                part.toIntOrNull()?.let { it in 0..255 } == true
-        }
-    }
-
-    private fun isValidDnsHost(host: String): Boolean =
-        host.length <= 253 && host.split('.').all { label ->
-            label.isNotEmpty() &&
-                label.length <= 63 &&
-                !label.startsWith('-') &&
-                !label.endsWith('-') &&
-                label.all { it.isLetterOrDigit() || it == '-' }
-        }
-
-    private val SPECIAL_USE_SUFFIXES = setOf("alt", "example", "internal", "invalid", "local", "localhost", "onion", "test")
-    private val ICANN_DANE_TEST_HOSTS = setOf("dane-test.denuoweb.com")
-
+    fun isNativeGatewayHost(
+        host: String,
+        namespacePolicy: BrowserNamespacePolicy,
+    ): Boolean = namespacePolicy.classifyHost(host) == BrowserNamespaceClass.NativeGateway
 }

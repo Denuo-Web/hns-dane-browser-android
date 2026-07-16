@@ -16,6 +16,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 const MAX_LOCAL_CERTIFICATE_DER_BYTES: usize = 64 * 1024;
+const MAX_BROWSER_NAMESPACE_INPUT_BYTES: usize = 1_024;
+const ANDROID_BROWSER_NAMESPACE_INVALID: jint = 0;
+const ANDROID_BROWSER_NAMESPACE_HNS: jint = 1;
+const ANDROID_BROWSER_NAMESPACE_ICANN: jint = 2;
+const ANDROID_BROWSER_NAMESPACE_NATIVE_GATEWAY: jint = 3;
 const PROXY_ENDPOINT_BUNDLE_MAGIC: &[u8; 4] = b"HNSP";
 const PROXY_ENDPOINT_BUNDLE_VERSION: u8 = 1;
 const PROXY_STATUS_BUNDLE_MAGIC: &[u8; 4] = b"HNSS";
@@ -29,7 +34,6 @@ static PROXY_HANDLES: OnceLock<Mutex<HashMap<jlong, Arc<AndroidProxyRecord>>>> =
 
 struct AndroidRuntimeRecord {
     runtime: BrowserRuntime,
-    gateway_lock: Arc<Mutex<()>>,
 }
 
 struct AndroidProxyRecord {
@@ -249,20 +253,6 @@ fn runtime_from_handle(handle: jlong) -> Option<BrowserRuntime> {
     unsafe { record.as_ref().map(|record| record.runtime.clone()) }
 }
 
-fn runtime_gateway_from_handle(handle: jlong) -> Option<(BrowserRuntime, Arc<Mutex<()>>)> {
-    if handle == 0 {
-        return None;
-    }
-    let record = handle as usize as *const AndroidRuntimeRecord;
-    // SAFETY: the platform lifecycle lock keeps the AndroidRuntimeRecord alive while its
-    // Arc-backed runtime and gateway lock are cloned for this call.
-    unsafe {
-        record
-            .as_ref()
-            .map(|record| (record.runtime.clone(), Arc::clone(&record.gateway_lock)))
-    }
-}
-
 fn proxy_registry() -> &'static Mutex<HashMap<jlong, Arc<AndroidProxyRecord>>> {
     PROXY_HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -477,27 +467,9 @@ struct JniRuntimeGatewayHttpRequest<'local> {
 }
 
 struct RuntimeGatewayPolicyInput<'local> {
-    network: JString<'local>,
     strict_hns_mode: jboolean,
     doh_resolver_url: JString<'local>,
     stateless_dane_certificates: jboolean,
-}
-
-struct PreparedRuntimeGatewayRequest {
-    request: GatewayHttpRequest,
-    address: String,
-}
-
-struct RuntimeGatewayRequestRejection {
-    status: u16,
-    reason: &'static str,
-    detail: &'static str,
-    address: String,
-}
-
-enum RuntimeGatewayRequestInput {
-    Prepared(PreparedRuntimeGatewayRequest),
-    Rejected(RuntimeGatewayRequestRejection),
 }
 
 #[unsafe(no_mangle)]
@@ -510,10 +482,50 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeVersion(
         .unwrap_or(std::ptr::null_mut())
 }
 
+fn android_browser_namespace_code(input: &str) -> jint {
+    if input.len() > MAX_BROWSER_NAMESPACE_INPUT_BYTES {
+        return ANDROID_BROWSER_NAMESPACE_INVALID;
+    }
+    match classify_browser_host(input) {
+        BrowserHostClass::Hns => ANDROID_BROWSER_NAMESPACE_HNS,
+        BrowserHostClass::Icann => ANDROID_BROWSER_NAMESPACE_ICANN,
+        BrowserHostClass::NativeGateway => ANDROID_BROWSER_NAMESPACE_NATIVE_GATEWAY,
+        BrowserHostClass::Search => ANDROID_BROWSER_NAMESPACE_INVALID,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeClassifyBrowserHost(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    host: JString<'_>,
+) -> jint {
+    catch_unwind(AssertUnwindSafe(|| {
+        env.get_string(&host)
+            .ok()
+            .map(|host| android_browser_namespace_code(&host.to_string_lossy()))
+            .unwrap_or(ANDROID_BROWSER_NAMESPACE_INVALID)
+    }))
+    .unwrap_or(ANDROID_BROWSER_NAMESPACE_INVALID)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeBrowserWebSocketScopePolicyScript(
+    env: JNIEnv<'_>,
+    _class: JClass<'_>,
+) -> jstring {
+    catch_unwind(AssertUnwindSafe(|| {
+        env.new_string(browser_websocket_scope_policy_script())
+            .map(|value| value.into_raw())
+            .unwrap_or(std::ptr::null_mut())
+    }))
+    .unwrap_or(std::ptr::null_mut())
+}
+
 fn jni_runtime_gateway_request(
     env: &mut JNIEnv<'_>,
     input: JniRuntimeGatewayHttpRequest<'_>,
-) -> Option<RuntimeGatewayRequestInput> {
+) -> Option<RawGatewayHttpRequest> {
     let method = env
         .get_string(&input.method)
         .ok()?
@@ -539,280 +551,37 @@ fn jni_runtime_gateway_request(
         .ok()?
         .to_string_lossy()
         .into_owned();
-    let port = u16::try_from(input.port).ok()?;
-    let address = runtime_gateway_request_address(&scheme, &host, port, &path_and_query);
-    let body_len = usize::try_from(env.get_array_length(&input.body).ok()?).ok()?;
-    if body_len > DEFAULT_MAX_REQUEST_BODY_BYTES {
-        return Some(RuntimeGatewayRequestInput::Rejected(
-            RuntimeGatewayRequestRejection {
-                status: 413,
-                reason: "Origin Request Too Large",
-                detail: "Origin request body exceeds the configured gateway limit.",
-                address,
-            },
-        ));
-    }
-    let headers = match parse_runtime_gateway_headers(&header_text) {
-        Ok(headers) => headers,
-        Err(detail) => {
-            return Some(RuntimeGatewayRequestInput::Rejected(
-                RuntimeGatewayRequestRejection {
-                    status: 400,
-                    reason: "Bad Request",
-                    detail,
-                    address,
-                },
-            ));
-        }
-    };
     let body = env.convert_byte_array(&input.body).ok()?;
-    Some(RuntimeGatewayRequestInput::Prepared(
-        PreparedRuntimeGatewayRequest {
-            request: GatewayHttpRequest {
-                method,
-                scheme,
-                host,
-                port,
-                path_and_query,
-                headers,
-                body,
-            },
-            address,
-        },
-    ))
-}
-
-fn parse_runtime_gateway_headers(header_text: &str) -> Result<Vec<(String, String)>, &'static str> {
-    if header_text.len() > MAX_GATEWAY_HEADER_TEXT_BYTES {
-        return Err("request headers are too large");
-    }
-    let mut headers = Vec::new();
-    for line in header_text.split("\r\n").filter(|line| !line.is_empty()) {
-        let Some(separator) = line.find(':') else {
-            return Err("request header is malformed");
-        };
-        let name = line[..separator].trim();
-        let value = line[separator + 1..].trim();
-        if !is_valid_runtime_gateway_header_name(name)
-            || !is_valid_runtime_gateway_header_value(value)
-        {
-            return Err("request header is invalid");
-        }
-        if !name
-            .get(..6)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("X-HNS-"))
-        {
-            headers.push((name.to_owned(), value.to_owned()));
-        }
-    }
-    Ok(headers)
-}
-
-fn is_valid_runtime_gateway_header_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(
-                    byte,
-                    b'!' | b'#'
-                        | b'$'
-                        | b'%'
-                        | b'&'
-                        | b'\''
-                        | b'*'
-                        | b'+'
-                        | b'-'
-                        | b'.'
-                        | b'^'
-                        | b'_'
-                        | b'`'
-                        | b'|'
-                        | b'~'
-                )
-        })
-}
-
-fn is_valid_runtime_gateway_header_value(value: &str) -> bool {
-    value
-        .bytes()
-        .all(|byte| byte == b'\t' || (byte >= b' ' && byte != 0x7f))
-}
-
-fn runtime_gateway_request_address(
-    scheme: &str,
-    host: &str,
-    port: u16,
-    path_and_query: &str,
-) -> String {
-    let normalized_scheme = scheme.to_ascii_lowercase();
-    let port = match (normalized_scheme.as_str(), port) {
-        ("http" | "ws", 80) | ("https" | "wss", 443) => String::new(),
-        (_, port) => format!(":{port}"),
-    };
-    let path = if path_and_query.is_empty() {
-        "/"
-    } else {
-        path_and_query
-    };
-    format!("{normalized_scheme}://{host}{port}{path}")
+    Some(RawGatewayHttpRequest {
+        method,
+        scheme,
+        host,
+        port: input.port,
+        path_and_query,
+        header_text,
+        body,
+    })
 }
 
 fn runtime_gateway_policy(
     env: &mut JNIEnv<'_>,
     input: RuntimeGatewayPolicyInput<'_>,
-) -> Option<(String, RuntimePolicy)> {
-    let network = env
-        .get_string(&input.network)
-        .ok()?
-        .to_string_lossy()
-        .into_owned();
+) -> Option<RuntimePolicy> {
     let doh_resolver_url = env
         .get_string(&input.doh_resolver_url)
         .ok()?
         .to_string_lossy()
         .trim()
         .to_owned();
-    Some((
-        network,
-        RuntimePolicy {
-            resolution_mode: if input.strict_hns_mode == 0 {
-                ResolutionMode::Compatibility
-            } else {
-                ResolutionMode::Strict
-            },
-            hns_doh_resolver: (!doh_resolver_url.is_empty()).then_some(doh_resolver_url),
-            stateless_dane_certificates: input.stateless_dane_certificates != 0,
+    Some(RuntimePolicy {
+        resolution_mode: if input.strict_hns_mode == 0 {
+            ResolutionMode::Compatibility
+        } else {
+            ResolutionMode::Strict
         },
-    ))
-}
-
-fn with_configured_runtime_gateway<T>(
-    runtime: BrowserRuntime,
-    gateway_lock: Arc<Mutex<()>>,
-    expected_network: &str,
-    policy: RuntimePolicy,
-    operation: impl FnOnce(&BrowserRuntime) -> Result<T, RuntimeError>,
-) -> Result<T, RuntimeError> {
-    let _gateway = match gateway_lock.lock() {
-        Ok(gateway) => gateway,
-        Err(_) => {
-            return Err(RuntimeError::Synchronization(
-                "Android runtime gateway lock",
-            ));
-        }
-    };
-    let expected_network = match parse_network_kind(expected_network) {
-        Ok(network) => network,
-        Err(error) => return Err(RuntimeError::InvalidConfiguration(error)),
-    };
-    if runtime.network() != expected_network {
-        return Err(RuntimeError::InvalidConfiguration(
-            "gateway network does not match the runtime handle".to_owned(),
-        ));
-    }
-    match runtime.policy() {
-        Ok(current) if current == policy => {}
-        Ok(_) => {
-            runtime.set_policy(policy)?;
-        }
-        Err(error) => return Err(error),
-    }
-    operation(&runtime)
-}
-
-fn runtime_gateway_error_parts(error: RuntimeError) -> (u16, &'static str, String) {
-    match error {
-        RuntimeError::InvalidConfiguration(detail) => (400, "Bad Request", detail),
-        RuntimeError::Operation(detail) => (500, "Gateway Runtime Error", detail),
-        error @ RuntimeError::Synchronization(_) => {
-            (500, "Gateway Runtime Error", error.to_string())
-        }
-    }
-}
-
-fn runtime_gateway_error_response(error: RuntimeError, address: &str) -> Vec<u8> {
-    let (status, reason, detail) = runtime_gateway_error_parts(error);
-    plain_response_with_address(status, reason, &detail, Some(address))
-}
-
-fn runtime_gateway_error_response_to_file(
-    error: RuntimeError,
-    address: &str,
-    body_path: &Path,
-) -> Option<Vec<u8>> {
-    let (status, reason, detail) = runtime_gateway_error_parts(error);
-    plain_response_to_file_with_address(status, reason, &detail, Some(address), body_path).ok()
-}
-
-fn jni_runtime_gateway_http_response(
-    env: &mut JNIEnv<'_>,
-    handle: jlong,
-    policy_input: RuntimeGatewayPolicyInput<'_>,
-    request_input: JniRuntimeGatewayHttpRequest<'_>,
-) -> Option<Vec<u8>> {
-    let (runtime, gateway_lock) = runtime_gateway_from_handle(handle)?;
-    let (network, policy) = runtime_gateway_policy(env, policy_input)?;
-    match jni_runtime_gateway_request(env, request_input)? {
-        RuntimeGatewayRequestInput::Rejected(rejection) => Some(plain_response_with_address(
-            rejection.status,
-            rejection.reason,
-            rejection.detail,
-            Some(&rejection.address),
-        )),
-        RuntimeGatewayRequestInput::Prepared(prepared) => {
-            let address = prepared.address;
-            match with_configured_runtime_gateway(
-                runtime,
-                gateway_lock,
-                &network,
-                policy,
-                |runtime| runtime.gateway_request(prepared.request),
-            ) {
-                Ok(response) => Some(response.into_bytes()),
-                Err(error) => Some(runtime_gateway_error_response(error, &address)),
-            }
-        }
-    }
-}
-
-fn jni_runtime_gateway_http_response_body_to_file(
-    env: &mut JNIEnv<'_>,
-    handle: jlong,
-    policy_input: RuntimeGatewayPolicyInput<'_>,
-    request_input: JniRuntimeGatewayHttpRequest<'_>,
-    body_path: JString<'_>,
-) -> Option<Vec<u8>> {
-    let (runtime, gateway_lock) = runtime_gateway_from_handle(handle)?;
-    let body_path = env
-        .get_string(&body_path)
-        .ok()?
-        .to_string_lossy()
-        .into_owned();
-    let body_path = Path::new(&body_path);
-    let (network, policy) = runtime_gateway_policy(env, policy_input)?;
-    match jni_runtime_gateway_request(env, request_input)? {
-        RuntimeGatewayRequestInput::Rejected(rejection) => plain_response_to_file_with_address(
-            rejection.status,
-            rejection.reason,
-            rejection.detail,
-            Some(&rejection.address),
-            body_path,
-        )
-        .ok(),
-        RuntimeGatewayRequestInput::Prepared(prepared) => {
-            let address = prepared.address;
-            match with_configured_runtime_gateway(
-                runtime,
-                gateway_lock,
-                &network,
-                policy,
-                |runtime| runtime.gateway_request_body_to_file(prepared.request, body_path),
-            ) {
-                Ok(head) => Some(head),
-                Err(error) => runtime_gateway_error_response_to_file(error, &address, body_path),
-            }
-        }
-    }
+        hns_doh_resolver: (!doh_resolver_url.is_empty()).then_some(doh_resolver_url),
+        stateless_dane_certificates: input.stateless_dane_certificates != 0,
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -834,10 +603,7 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeC
     )) else {
         return 0;
     };
-    Box::into_raw(Box::new(AndroidRuntimeRecord {
-        runtime,
-        gateway_lock: Arc::new(Mutex::new(())),
-    })) as usize as jlong
+    Box::into_raw(Box::new(AndroidRuntimeRecord { runtime })) as usize as jlong
 }
 
 #[unsafe(no_mangle)]
@@ -957,43 +723,34 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeS
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
-    network: JString<'_>,
     strict_hns_mode: jboolean,
     doh_resolver_url: JString<'_>,
     stateless_dane_certificates: jboolean,
     scope_root: JString<'_>,
 ) -> jbyteArray {
     catch_unwind(AssertUnwindSafe(|| {
-        let result = runtime_gateway_from_handle(handle)
+        let result = runtime_from_handle(handle)
             .zip(runtime_gateway_policy(
                 &mut env,
                 RuntimeGatewayPolicyInput {
-                    network,
                     strict_hns_mode,
                     doh_resolver_url,
                     stateless_dane_certificates,
                 },
             ))
             .zip(env.get_string(&scope_root).ok())
-            .and_then(
-                |(((runtime, gateway_lock), (network, policy)), scope_root)| {
-                    let scope_root = scope_root.to_string_lossy();
-                    let statuses = Arc::new(AndroidProxyStatusMailbox::new());
-                    with_configured_runtime_gateway(
-                        runtime,
-                        gateway_lock,
-                        &network,
+            .and_then(|((runtime, policy), scope_root)| {
+                let scope_root = scope_root.to_string_lossy();
+                let statuses = Arc::new(AndroidProxyStatusMailbox::new());
+                runtime
+                    .start_whole_browser_proxy_with_policy_and_observer(
+                        Some(&scope_root),
                         policy,
-                        |runtime| {
-                            runtime
-                                .start_proxy_with_observer(&scope_root, statuses.clone())
-                                .map_err(|error| RuntimeError::Operation(error.to_string()))
-                        },
+                        statuses.clone(),
                     )
                     .ok()
                     .map(|proxy| (proxy, statuses))
-                },
-            )
+            })
             .and_then(|(proxy, statuses)| register_proxy(proxy, statuses));
         let Some((proxy_handle, record)) = result else {
             return std::ptr::null_mut();
@@ -1019,7 +776,6 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeG
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
-    network: JString<'_>,
     strict_hns_mode: jboolean,
     doh_resolver_url: JString<'_>,
     stateless_dane_certificates: jboolean,
@@ -1032,25 +788,30 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeG
     body: JByteArray<'_>,
 ) -> jbyteArray {
     catch_unwind(AssertUnwindSafe(|| {
-        let response = jni_runtime_gateway_http_response(
-            &mut env,
-            handle,
-            RuntimeGatewayPolicyInput {
-                network,
-                strict_hns_mode,
-                doh_resolver_url,
-                stateless_dane_certificates,
-            },
-            JniRuntimeGatewayHttpRequest {
-                method,
-                scheme,
-                host,
-                port,
-                path_and_query,
-                header_text,
-                body,
-            },
-        );
+        let response = runtime_from_handle(handle)
+            .zip(runtime_gateway_policy(
+                &mut env,
+                RuntimeGatewayPolicyInput {
+                    strict_hns_mode,
+                    doh_resolver_url,
+                    stateless_dane_certificates,
+                },
+            ))
+            .zip(jni_runtime_gateway_request(
+                &mut env,
+                JniRuntimeGatewayHttpRequest {
+                    method,
+                    scheme,
+                    host,
+                    port,
+                    path_and_query,
+                    header_text,
+                    body,
+                },
+            ))
+            .map(|((runtime, policy), request)| {
+                runtime.raw_gateway_request(request, policy).into_bytes()
+            });
         match response.and_then(|bytes| env.byte_array_from_slice(&bytes).ok()) {
             Some(array) => array.into_raw(),
             None => std::ptr::null_mut(),
@@ -1065,7 +826,6 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeG
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
-    network: JString<'_>,
     strict_hns_mode: jboolean,
     doh_resolver_url: JString<'_>,
     stateless_dane_certificates: jboolean,
@@ -1079,26 +839,37 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeG
     body_path: JString<'_>,
 ) -> jbyteArray {
     catch_unwind(AssertUnwindSafe(|| {
-        let response = jni_runtime_gateway_http_response_body_to_file(
-            &mut env,
-            handle,
-            RuntimeGatewayPolicyInput {
-                network,
-                strict_hns_mode,
-                doh_resolver_url,
-                stateless_dane_certificates,
-            },
-            JniRuntimeGatewayHttpRequest {
-                method,
-                scheme,
-                host,
-                port,
-                path_and_query,
-                header_text,
-                body,
-            },
-            body_path,
-        );
+        let body_path = env
+            .get_string(&body_path)
+            .ok()
+            .map(|value| value.to_string_lossy().into_owned());
+        let response = runtime_from_handle(handle)
+            .zip(runtime_gateway_policy(
+                &mut env,
+                RuntimeGatewayPolicyInput {
+                    strict_hns_mode,
+                    doh_resolver_url,
+                    stateless_dane_certificates,
+                },
+            ))
+            .zip(jni_runtime_gateway_request(
+                &mut env,
+                JniRuntimeGatewayHttpRequest {
+                    method,
+                    scheme,
+                    host,
+                    port,
+                    path_and_query,
+                    header_text,
+                    body,
+                },
+            ))
+            .zip(body_path)
+            .and_then(|(((runtime, policy), request), body_path)| {
+                runtime
+                    .raw_gateway_request_body_to_file(request, policy, Path::new(&body_path))
+                    .ok()
+            });
         match response.and_then(|bytes| env.byte_array_from_slice(&bytes).ok()) {
             Some(array) => array.into_raw(),
             None => std::ptr::null_mut(),
@@ -1293,270 +1064,58 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeDiagnost
         .unwrap_or(std::ptr::null_mut())
 }
 
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeSyncOnce(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    data_dir: JString<'_>,
-    network: JString<'_>,
-) -> jstring {
-    let status = match (env.get_string(&data_dir), env.get_string(&network)) {
-        (Ok(data_dir), Ok(network)) => match parse_network_kind(&network.to_string_lossy()) {
-            Ok(network) => sync_once_for_network(&data_dir.to_string_lossy(), network),
-            Err(error) => NativeSyncStatus::error(error).to_json(),
-        },
-        _ => NativeSyncStatus::error("invalid sync input".to_owned()).to_json(),
-    };
-
-    env.new_string(status)
-        .map(|value| value.into_raw())
-        .unwrap_or(std::ptr::null_mut())
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeSyncStatus(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    data_dir: JString<'_>,
-    network: JString<'_>,
-) -> jstring {
-    let status = match (env.get_string(&data_dir), env.get_string(&network)) {
-        (Ok(data_dir), Ok(network)) => match parse_network_kind(&network.to_string_lossy()) {
-            Ok(network) => sync_status_for_network(&data_dir.to_string_lossy(), network),
-            Err(error) => NativeSyncStatus::error(error).to_json(),
-        },
-        _ => NativeSyncStatus::error("invalid sync status input".to_owned()).to_json(),
-    };
-
-    env.new_string(status)
-        .map(|value| value.into_raw())
-        .unwrap_or(std::ptr::null_mut())
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeClearResolverCache(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    data_dir: JString<'_>,
-    network: JString<'_>,
-) -> jstring {
-    let status = match (env.get_string(&data_dir), env.get_string(&network)) {
-        (Ok(data_dir), Ok(network)) => match parse_network_kind(&network.to_string_lossy()) {
-            Ok(network) => clear_resolver_cache_for_network(&data_dir.to_string_lossy(), network),
-            Err(error) => NativeSyncStatus::error(error).to_json(),
-        },
-        _ => NativeSyncStatus::error("invalid clear cache input".to_owned()).to_json(),
-    };
-
-    env.new_string(status)
-        .map(|value| value.into_raw())
-        .unwrap_or(std::ptr::null_mut())
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeInstallHeaderSnapshot(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    data_dir: JString<'_>,
-    snapshot_path: JString<'_>,
-    network: JString<'_>,
-) -> jstring {
-    let status = match (
-        env.get_string(&data_dir),
-        env.get_string(&snapshot_path),
-        env.get_string(&network),
-    ) {
-        (Ok(data_dir), Ok(snapshot_path), Ok(network)) => {
-            match parse_network_kind(&network.to_string_lossy()) {
-                Ok(network) => install_header_snapshot_for_network(
-                    &data_dir.to_string_lossy(),
-                    &snapshot_path.to_string_lossy(),
-                    network,
-                ),
-                Err(error) => NativeSyncStatus::error(error).to_json(),
-            }
-        }
-        _ => NativeSyncStatus::error("invalid header snapshot input".to_owned()).to_json(),
-    };
-
-    env.new_string(status)
-        .map(|value| value.into_raw())
-        .unwrap_or(std::ptr::null_mut())
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeResetHeadersFromPeers(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    data_dir: JString<'_>,
-    network: JString<'_>,
-) -> jstring {
-    let status = match (env.get_string(&data_dir), env.get_string(&network)) {
-        (Ok(data_dir), Ok(network)) => match parse_network_kind(&network.to_string_lossy()) {
-            Ok(network) => {
-                reset_headers_from_peers_for_network(&data_dir.to_string_lossy(), network)
-            }
-            Err(error) => NativeSyncStatus::error(error).to_json(),
-        },
-        _ => NativeSyncStatus::error("invalid reset headers input".to_owned()).to_json(),
-    };
-
-    env.new_string(status)
-        .map(|value| value.into_raw())
-        .unwrap_or(std::ptr::null_mut())
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeHnsProofDetails(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    data_dir: JString<'_>,
-    host: JString<'_>,
-    network: JString<'_>,
-) -> jstring {
-    let details = match (
-        env.get_string(&data_dir),
-        env.get_string(&host),
-        env.get_string(&network),
-    ) {
-        (Ok(data_dir), Ok(host), Ok(network)) => {
-            match parse_network_kind(&network.to_string_lossy()) {
-                Ok(network) => hns_proof_details_for_network(
-                    &data_dir.to_string_lossy(),
-                    &host.to_string_lossy(),
-                    network,
-                ),
-                Err(error) => hns_proof_details_error_json(&host.to_string_lossy(), &error),
-            }
-        }
-        _ => hns_proof_details_error_json("", "invalid proof detail input"),
-    };
-
-    env.new_string(details)
-        .map(|value| value.into_raw())
-        .unwrap_or(std::ptr::null_mut())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn runtime_gateway_header_parser_strips_internal_headers_and_rejects_unsafe_input() {
+    fn browser_namespace_jni_codes_follow_the_shared_rust_policy() {
         assert_eq!(
-            parse_runtime_gateway_headers(
-                "Accept: text/html\r\nX-HNS-Browser-Network: regtest\r\nx-hns-untrusted: value\r\nAccept: */*\r\n",
-            )
-            .unwrap(),
-            vec![
-                ("Accept".to_owned(), "text/html".to_owned()),
-                ("Accept".to_owned(), "*/*".to_owned()),
-            ]
+            android_browser_namespace_code("welcome"),
+            ANDROID_BROWSER_NAMESPACE_HNS
         );
         assert_eq!(
-            parse_runtime_gateway_headers("missing-separator\r\n").unwrap_err(),
-            "request header is malformed"
+            android_browser_namespace_code("sub.welcome"),
+            ANDROID_BROWSER_NAMESPACE_HNS
         );
         assert_eq!(
-            parse_runtime_gateway_headers("X-Test: value\rnot-a-header\r\n").unwrap_err(),
-            "request header is invalid"
+            android_browser_namespace_code("DANE-TEST.DENUOWEB.COM."),
+            ANDROID_BROWSER_NAMESPACE_NATIVE_GATEWAY
         );
+        for host in [
+            "example.com",
+            "home.arpa",
+            "printer.local",
+            "127.0.0.1",
+            "::1",
+        ] {
+            assert_eq!(
+                android_browser_namespace_code(host),
+                ANDROID_BROWSER_NAMESPACE_ICANN,
+                "{host}"
+            );
+        }
+        for host in ["", "two words", "https://"] {
+            assert_eq!(
+                android_browser_namespace_code(host),
+                ANDROID_BROWSER_NAMESPACE_INVALID,
+                "{host}"
+            );
+        }
         assert_eq!(
-            parse_runtime_gateway_headers(&"a".repeat(MAX_GATEWAY_HEADER_TEXT_BYTES + 1))
-                .unwrap_err(),
-            "request headers are too large"
+            android_browser_namespace_code(&"a".repeat(MAX_BROWSER_NAMESPACE_INPUT_BYTES + 1)),
+            ANDROID_BROWSER_NAMESPACE_INVALID
         );
     }
 
     #[test]
-    fn runtime_gateway_configuration_uses_the_persistent_handle() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let data_dir = std::env::temp_dir().join(format!(
-            "hns-dane-browser-android-runtime-gateway-{}-{unique}",
-            std::process::id()
-        ));
-        let runtime =
-            BrowserRuntime::open(RuntimeConfiguration::new(&data_dir, NetworkKind::Regtest))
-                .unwrap();
-        let handle = Box::into_raw(Box::new(AndroidRuntimeRecord {
-            runtime,
-            gateway_lock: Arc::new(Mutex::new(())),
-        })) as usize as jlong;
-        let (call_runtime, gateway_lock) = runtime_gateway_from_handle(handle).unwrap();
-        // SAFETY: this test owns the unique Box pointer and destroys it exactly once. The call
-        // clones must keep both the runtime and gateway lock alive after platform destruction.
-        unsafe { drop(Box::from_raw(handle as usize as *mut AndroidRuntimeRecord)) };
-        let policy = RuntimePolicy {
-            resolution_mode: ResolutionMode::Strict,
-            hns_doh_resolver: Some("https://resolver.example/dns-query".to_owned()),
-            stateless_dane_certificates: true,
-        };
-
-        let configured = with_configured_runtime_gateway(
-            call_runtime.clone(),
-            Arc::clone(&gateway_lock),
-            "reg",
-            policy.clone(),
-            |runtime| runtime.policy(),
-        )
-        .unwrap();
-        assert_eq!(configured, policy);
-        let policy_revision = call_runtime.policy_revision();
-        let idempotent_revision = with_configured_runtime_gateway(
-            call_runtime.clone(),
-            Arc::clone(&gateway_lock),
-            "regtest",
-            policy,
-            |runtime| Ok(runtime.policy_revision()),
-        )
-        .unwrap();
-        assert_eq!(idempotent_revision, policy_revision);
-        assert!(matches!(
-            with_configured_runtime_gateway(
-                call_runtime,
-                gateway_lock,
-                "mainnet",
-                RuntimePolicy::compatibility(),
-                |runtime| runtime.policy(),
-            ),
-            Err(RuntimeError::InvalidConfiguration(_))
-        ));
-
-        let _ = std::fs::remove_dir_all(data_dir);
-    }
-
-    #[test]
-    fn runtime_gateway_file_errors_keep_head_and_body_separate() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let data_dir = std::env::temp_dir().join(format!(
-            "hns-dane-browser-android-runtime-gateway-file-{}-{unique}",
-            std::process::id()
-        ));
-        let body_path = data_dir.join("response.body");
-        let head = runtime_gateway_error_response_to_file(
-            RuntimeError::InvalidConfiguration("invalid request".to_owned()),
-            "https://welcome.test/resource",
-            &body_path,
-        )
-        .unwrap();
-        let body = std::fs::read(&body_path).unwrap();
-        let head_text = String::from_utf8(head).unwrap();
-
-        assert!(head_text.starts_with("HTTP/1.1 400 Bad Request\r\n"));
-        assert!(head_text.ends_with("\r\n\r\n"));
-        assert!(head_text.contains(&format!("Content-Length: {}\r\n", body.len())));
-        assert_eq!(
-            body,
-            b"https://welcome.test/resource\n400 Bad Request\ninvalid request\n"
-        );
-        let _ = std::fs::remove_dir_all(data_dir);
+    fn websocket_policy_jni_payload_is_the_shared_runtime_script() {
+        let script = browser_websocket_scope_policy_script();
+        assert!(script.contains("window.__hnsRustNamespacePolicyVersion = 1"));
+        assert!(script.contains("'com'"));
+        assert!(script.contains("'localhost'"));
+        assert!(script.contains("requiresHnsResolution(targetHost)"));
     }
 
     #[test]
@@ -1572,10 +1131,7 @@ mod tests {
         let runtime =
             BrowserRuntime::open(RuntimeConfiguration::new(&data_dir, NetworkKind::Regtest))
                 .unwrap();
-        let handle = Box::into_raw(Box::new(AndroidRuntimeRecord {
-            runtime,
-            gateway_lock: Arc::new(Mutex::new(())),
-        })) as usize as jlong;
+        let handle = Box::into_raw(Box::new(AndroidRuntimeRecord { runtime })) as usize as jlong;
 
         let call_runtime = runtime_from_handle(handle).unwrap();
         // SAFETY: this test owns the unique Box pointer and destroys it exactly once.

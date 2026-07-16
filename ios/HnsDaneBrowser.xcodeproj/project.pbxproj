@@ -19,6 +19,7 @@
 		B1000000000000000000000A /* PersistentWebKitProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000A /* PersistentWebKitProfile.swift */; };
 		B1000000000000000000000B /* RustBrowserRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000B /* RustBrowserRuntime.swift */; };
 		B1000000000000000000000C /* BrowserViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000C /* BrowserViewController.swift */; };
+		B10000000000000000000017 /* BrowserRuntimePolicyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000027 /* BrowserRuntimePolicyStore.swift */; };
 		B10000000000000000000016 /* BrowserNavigationParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000025 /* BrowserNavigationParser.swift */; };
 		B1000000000000000000000D /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000E /* PrivacyInfo.xcprivacy */; };
 		B1000000000000000000000E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000F /* Assets.xcassets */; };
@@ -35,6 +36,7 @@
 		B10000000000000000000023 /* MainFrameAdmissionPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000023 /* MainFrameAdmissionPolicyTests.swift */; };
 		B10000000000000000000024 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F10000000000000000000024 /* XCTest.framework */; };
 		B10000000000000000000025 /* BrowserNavigationParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000026 /* BrowserNavigationParserTests.swift */; };
+		B10000000000000000000026 /* BrowserRuntimeControlTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000028 /* BrowserRuntimeControlTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -80,6 +82,8 @@
 		F10000000000000000000024 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 		F10000000000000000000025 /* BrowserNavigationParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserNavigationParser.swift; sourceTree = "<group>"; };
 		F10000000000000000000026 /* BrowserNavigationParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserNavigationParserTests.swift; sourceTree = "<group>"; };
+		F10000000000000000000027 /* BrowserRuntimePolicyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserRuntimePolicyStore.swift; sourceTree = "<group>"; };
+		F10000000000000000000028 /* BrowserRuntimeControlTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserRuntimeControlTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -145,6 +149,7 @@
 				F10000000000000000000005 /* BrowserDownloadController.swift */,
 				F10000000000000000000006 /* BrowserModels.swift */,
 				F10000000000000000000025 /* BrowserNavigationParser.swift */,
+				F10000000000000000000027 /* BrowserRuntimePolicyStore.swift */,
 				F10000000000000000000007 /* BrowserProxyCoordinator.swift */,
 				F10000000000000000000008 /* BrowserProxyStateMachine.swift */,
 				F10000000000000000000009 /* HeaderSnapshotBootstrapper.swift */,
@@ -182,6 +187,7 @@
 				F10000000000000000000022 /* HeaderSnapshotBootstrapperTests.swift */,
 				F10000000000000000000023 /* MainFrameAdmissionPolicyTests.swift */,
 				F10000000000000000000026 /* BrowserNavigationParserTests.swift */,
+				F10000000000000000000028 /* BrowserRuntimeControlTests.swift */,
 			);
 			path = HnsDaneBrowserTests;
 			sourceTree = "<group>";
@@ -331,6 +337,7 @@
 				B1000000000000000000000B /* RustBrowserRuntime.swift in Sources */,
 				B1000000000000000000000C /* BrowserViewController.swift in Sources */,
 				B10000000000000000000016 /* BrowserNavigationParser.swift in Sources */,
+				B10000000000000000000017 /* BrowserRuntimePolicyStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -343,6 +350,7 @@
 				B10000000000000000000022 /* HeaderSnapshotBootstrapperTests.swift in Sources */,
 				B10000000000000000000023 /* MainFrameAdmissionPolicyTests.swift in Sources */,
 				B10000000000000000000025 /* BrowserNavigationParserTests.swift in Sources */,
+				B10000000000000000000026 /* BrowserRuntimeControlTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

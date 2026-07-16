@@ -111,6 +111,7 @@ final class BrowserAuthenticationPolicyTests: XCTestCase {
 final class FakeRuntime: BrowserRuntime {
     var hostKind: BrowserHostKind
     var installedSnapshotPath: String?
+    var runtimePolicy = BrowserRuntimePolicy.default
 
     init(hostKind: BrowserHostKind) {
         self.hostKind = hostKind
@@ -132,8 +133,34 @@ final class FakeRuntime: BrowserRuntime {
         installedSnapshotPath = path
     }
 
-    func syncOnce() {}
+    func updatePolicy(_ policy: BrowserRuntimePolicy) throws -> UInt64 {
+        runtimePolicy = policy
+        return 1
+    }
+
+    func syncOnce() throws -> BrowserSyncSummary { .unavailable }
     func syncSummary() -> BrowserSyncSummary { .unavailable }
+    func clearResolverCache() throws -> BrowserSyncSummary { .unavailable }
+    func proofDetails(for hostOrURL: String) throws -> BrowserProofDetails {
+        BrowserProofDetails(
+            headline: "Unused fake proof",
+            detail: hostOrURL,
+            host: hostOrURL,
+            name: nil,
+            network: nil,
+            nameHash: nil,
+            hnsProof: "unavailable",
+            proofStatus: "unavailable",
+            secure: nil,
+            exists: nil,
+            treeRoot: nil,
+            blockHeight: nil,
+            cacheStatus: "unused",
+            recordTypes: [],
+            error: nil,
+            formattedJSON: "{}"
+        )
+    }
     func close() {}
 }
 

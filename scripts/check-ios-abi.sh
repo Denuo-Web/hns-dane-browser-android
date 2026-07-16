@@ -12,6 +12,8 @@ CC_BIN="${CC:-cc}"
 CXX_BIN="${CXX:-c++}"
 NM_BIN="${NM:-nm}"
 
+export CARGO_INCREMENTAL=0
+
 for command in cargo "$CC_BIN" "$CXX_BIN" "$NM_BIN" comm sed sort; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "ERROR: required iOS ABI check command is unavailable: $command" >&2

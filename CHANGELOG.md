@@ -6,19 +6,20 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Added a stable versioned Apple C ABI, deterministic device/simulator Rust builds, XCFramework packaging, C/C++ header/export checks, and macOS CI integration.
-- Added an iOS 17 UIKit/WKWebView shell using the same Rust runtime, resolver, HNS/DNSSEC/DANE policy, proxy parser, TLS terminator, and persistent state as Android.
+- Added a stable versioned Apple C ABI, deterministic device/simulator Rust builds, XCFramework packaging, C/C++ header/export checks, and a macOS build and simulator gate using the stable iOS 26.5 SDK with Xcode 26.5 or 26.6.
+- Added an iOS 17.0-or-later UIKit/WKWebView shell using the same Rust runtime, resolver, HNS/DNSSEC/DANE policy, proxy parser, TLS terminator, and persistent state as Android.
 - Added a fail-closed whole-browser Rust proxy mode for WebKit, with authenticated admission, optional immutable HNS scope, bounded explicit-bootstrap WebPKI DoH for ICANN addresses, public-address and unsafe-port enforcement, opaque CONNECT, streamed HTTP forwarding, and WebSocket Upgrade tunneling without system target DNS.
 
 ### Changed
 
 - Centralized browser special-use hostname policy in `hns-core` and shared it across classification, HNS resolution, and proxy admission.
 - Kept Android on its exact HNS-scoped proxy mode while exposing platform-neutral classifier, root extraction, live challenge matching, and typed status APIs to both native shells.
+- Kept the iOS deployment floor at 17.0 to support the iOS 17 and iOS 18 generations independently of the iOS 26.5 build SDK; Xcode 26.5 and 26.6 are accepted for that Apple build gate.
 
 ### Security
 
 - Added monotonic opaque Apple handles, bounded Rust-owned buffers and mailboxes, panic-contained C exports, one active proxy per runtime, policy/start race protection, immediate stop revocation, and joined runtime-owned teardown.
-- Added a signed physical-device validation matrix as a release-blocking gate for WebKit proxy isolation, server-trust challenges, Service Workers, WebSockets, lifecycle changes, and renderer/network-process restarts; iOS release readiness is not claimed until it passes.
+- Added an optional signed physical-device validation matrix for extra confidence in WebKit proxy isolation, server-trust challenges, Service Workers, WebSockets, lifecycle changes, and renderer/network-process restarts. Simulator validation does not satisfy this matrix, and no physical-device pass is claimed.
 
 ## 0.3.16 - 2026-07-14
 

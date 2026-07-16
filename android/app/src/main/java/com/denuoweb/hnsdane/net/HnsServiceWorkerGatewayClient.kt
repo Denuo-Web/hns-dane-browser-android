@@ -3,11 +3,15 @@ package com.denuoweb.hnsdane.net
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import androidx.webkit.ServiceWorkerClientCompat
+import com.denuoweb.hnsdane.core.BrowserNamespaceClass
+import com.denuoweb.hnsdane.core.BrowserNamespacePolicy
 import com.denuoweb.hnsdane.core.HnsHostPolicy
+import com.denuoweb.hnsdane.core.NativeGatewayHostDecision
 import java.io.ByteArrayInputStream
 
 internal class HnsServiceWorkerGatewayClient(
     private val interceptor: HnsWebViewGatewayInterceptor,
+    private val namespacePolicy: BrowserNamespacePolicy,
     private val enabled: () -> Boolean = { true },
     private val proxyRoute: (WebResourceRequest) -> BrowserProxyRoute? = { null },
 ) : ServiceWorkerClientCompat() {
@@ -18,6 +22,7 @@ internal class HnsServiceWorkerGatewayClient(
                 enabled = enabled(),
                 scheme = request.url.scheme,
                 host = request.url.host,
+                namespacePolicy = namespacePolicy,
             )
         ) {
             ServiceWorkerRouteAction.Direct -> null
@@ -44,13 +49,15 @@ internal fun serviceWorkerRouteAction(
     enabled: Boolean = true,
     scheme: String? = null,
     host: String? = null,
+    namespacePolicy: BrowserNamespacePolicy,
 ): ServiceWorkerRouteAction =
     when {
-        !enabled && (route != null || isNativeGatewayHttpTarget(scheme, host)) ->
+        !enabled && (route != null || requiresProtectedHttpRouting(scheme, host, namespacePolicy)) ->
             ServiceWorkerRouteAction.Block
         !enabled -> ServiceWorkerRouteAction.Direct
         route == BrowserProxyRoute.Block -> ServiceWorkerRouteAction.Block
-        route == null && isNativeGatewayHttpTarget(scheme, host) -> ServiceWorkerRouteAction.Block
+        route == null && requiresProtectedHttpRouting(scheme, host, namespacePolicy) ->
+            ServiceWorkerRouteAction.Block
         else -> ServiceWorkerRouteAction.SharedRuntimeGateway
     }
 
@@ -63,20 +70,24 @@ internal fun serviceWorkerRouteAction(
 internal fun serviceWorkerProxyRoute(
     scheme: String?,
     host: String?,
+    namespacePolicy: BrowserNamespacePolicy,
     routeForHnsHost: (String) -> BrowserProxyRoute,
 ): BrowserProxyRoute? {
     if (!isHttpScheme(scheme)) return null
     val requestHost = host.orEmpty()
-    return when {
-        HnsHostPolicy.isIcannDaneTestHost(requestHost) -> BrowserProxyRoute.CompatibilityInterceptor
-        HnsHostPolicy.requiresHnsResolution(requestHost) -> routeForHnsHost(requestHost)
-        else -> null
+    return when (namespacePolicy.classifyHost(requestHost)) {
+        BrowserNamespaceClass.NativeGateway -> BrowserProxyRoute.CompatibilityInterceptor
+        BrowserNamespaceClass.Hns -> routeForHnsHost(requestHost)
+        BrowserNamespaceClass.Icann -> null
+        BrowserNamespaceClass.Invalid,
+        BrowserNamespaceClass.Unavailable,
+        -> BrowserProxyRoute.Block
     }
 }
 
 object DisabledServiceWorkerClient : ServiceWorkerClientCompat() {
     override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? {
-        return when (disabledServiceWorkerRouteAction(request.url.scheme, request.url.host)) {
+        return when (disabledServiceWorkerRouteAction(request.url.scheme, request.url.host, NativeBridge)) {
             ServiceWorkerRouteAction.Block -> blockedHnsProxyResponse()
             ServiceWorkerRouteAction.Direct,
             ServiceWorkerRouteAction.SharedRuntimeGateway,
@@ -88,15 +99,22 @@ object DisabledServiceWorkerClient : ServiceWorkerClientCompat() {
 internal fun disabledServiceWorkerRouteAction(
     scheme: String?,
     host: String?,
+    namespacePolicy: BrowserNamespacePolicy,
 ): ServiceWorkerRouteAction =
-    if (isNativeGatewayHttpTarget(scheme, host)) {
+    if (requiresProtectedHttpRouting(scheme, host, namespacePolicy)) {
         ServiceWorkerRouteAction.Block
     } else {
         ServiceWorkerRouteAction.Direct
     }
 
-private fun isNativeGatewayHttpTarget(scheme: String?, host: String?): Boolean =
-    isHttpScheme(scheme) && HnsHostPolicy.requiresNativeGatewayResolution(host.orEmpty())
+private fun requiresProtectedHttpRouting(
+    scheme: String?,
+    host: String?,
+    namespacePolicy: BrowserNamespacePolicy,
+): Boolean =
+    isHttpScheme(scheme) &&
+        HnsHostPolicy.nativeGatewayDecision(host.orEmpty(), namespacePolicy) !=
+        NativeGatewayHostDecision.Direct
 
 private fun isHttpScheme(scheme: String?): Boolean =
     scheme.equals("http", ignoreCase = true) || scheme.equals("https", ignoreCase = true)

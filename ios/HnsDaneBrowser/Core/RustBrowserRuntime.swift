@@ -104,41 +104,115 @@ final class RustBrowserRuntime: BrowserRuntime {
         _ = try RustBridge.data(copying: output)
     }
 
-    func syncOnce() {
-        guard let handle = currentHandle() else { return }
-        var output = HnsBrowserBuffer()
-        let result = hns_browser_runtime_sync_once(handle, &output)
-        defer { RustBridge.free(output) }
-        guard result == HNS_BROWSER_RESULT_OK else { return }
-        _ = try? RustBridge.data(copying: output)
+    @discardableResult
+    func updatePolicy(_ policy: BrowserRuntimePolicy) throws -> UInt64 {
+        let handle = try liveHandle()
+        var nativePolicy = HnsBrowserPolicy()
+        try RustBridge.check(
+            hns_browser_policy_default(&nativePolicy),
+            operation: "policy defaults"
+        )
+        switch policy.resolutionMode {
+        case .compatibility:
+            nativePolicy.resolution_mode = HNS_BROWSER_RESOLUTION_COMPATIBILITY
+        case .strict:
+            nativePolicy.resolution_mode = HNS_BROWSER_RESOLUTION_STRICT
+        }
+        nativePolicy.stateless_dane_certificates = policy.statelessDANECertificates ? 1 : 0
+
+        var revision: UInt64 = 0
+        let result: HnsBrowserResult
+        if let endpoint = policy.hnsDohResolver {
+            result = RustBridge.withUTF8Slice(endpoint) { endpointSlice in
+                nativePolicy.hns_doh_resolver = endpointSlice
+                return hns_browser_runtime_set_policy(handle, &nativePolicy, &revision)
+            }
+        } else {
+            result = hns_browser_runtime_set_policy(handle, &nativePolicy, &revision)
+        }
+        try RustBridge.check(result, operation: "runtime policy update")
+        guard revision != 0 else {
+            throw RustBridgeError.invalidOutput("policy revision is zero")
+        }
+        return revision
+    }
+
+    func syncOnce() throws -> BrowserSyncSummary {
+        let object = try runtimeJSONObject(operation: "header sync") { handle, output in
+            hns_browser_runtime_sync_once(handle, output)
+        }
+        return try Self.syncSummary(from: object)
     }
 
     func syncSummary() -> BrowserSyncSummary {
-        guard let handle = currentHandle() else { return .unavailable }
-        var output = HnsBrowserBuffer()
-        let result = hns_browser_runtime_sync_status(handle, &output)
-        defer { RustBridge.free(output) }
-        guard result == HNS_BROWSER_RESULT_OK,
-              let data = try? RustBridge.data(copying: output),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return .unavailable
+        guard let object = try? runtimeJSONObject(operation: "sync status", invoke: {
+            handle, output in
+            hns_browser_runtime_sync_status(handle, output)
+        }) else { return .unavailable }
+        return (try? Self.syncSummary(from: object)) ?? .unavailable
+    }
+
+    func clearResolverCache() throws -> BrowserSyncSummary {
+        let object = try runtimeJSONObject(operation: "resolver cache clear") { handle, output in
+            hns_browser_runtime_clear_resolver_cache(handle, output)
+        }
+        return try Self.syncSummary(from: object)
+    }
+
+    func proofDetails(for hostOrURL: String) throws -> BrowserProofDetails {
+        let object = try RustBridge.withUTF8Slice(hostOrURL) { input in
+            try runtimeJSONObject(operation: "proof details") { handle, output in
+                hns_browser_runtime_proof_details(handle, input, output)
+            }
+        }
+        return try Self.proofDetails(from: object, fallbackHost: hostOrURL)
+    }
+
+    static func proofDetails(
+        from object: [String: Any],
+        fallbackHost: String
+    ) throws -> BrowserProofDetails {
+        let formattedData = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        guard let formattedJSON = String(data: formattedData, encoding: .utf8) else {
+            throw RustBridgeError.invalidOutput("proof details are not UTF-8")
         }
 
-        let status = object["status"] as? String ?? "idle"
-        let bestHeight = (object["bestHeight"] as? NSNumber)?.uint64Value
-        let peerHeight = (object["bestPeerHeight"] as? NSNumber)?.uint64Value
+        let host = Self.string(in: object, key: "host") ?? fallbackHost
+        let proofStatus = Self.string(in: object, key: "proofStatus") ?? "unknown"
+        let hnsProof = Self.string(in: object, key: "hnsProof") ?? proofStatus
+        let cacheStatus = Self.string(in: object, key: "cacheStatus") ?? "unknown"
+        let error = Self.string(in: object, key: "error")
         let headline: String
-        switch status {
-        case "up_to_date": headline = "Handshake headers current"
-        case "syncing": headline = "Syncing Handshake headers"
-        case "error", "peer_failed", "seed_failed": headline = "Header sync needs attention"
-        default: headline = "Handshake sync \(status.replacingOccurrences(of: "_", with: " "))"
+        switch proofStatus {
+        case "verified": headline = "Handshake proof verified"
+        case "not_found": headline = "Handshake name not found"
+        case "unavailable": headline = "Handshake proof unavailable"
+        case "failed", "error", "invalid_resource": headline = "Handshake proof failed"
+        default: headline = "Handshake proof \(proofStatus.replacingOccurrences(of: "_", with: " "))"
         }
-        let best = bestHeight.map(String.init) ?? "unknown"
-        let peer = peerHeight.map(String.init) ?? "unknown"
-        return BrowserSyncSummary(
+        var detailParts = [host, "cache \(cacheStatus.replacingOccurrences(of: "_", with: " "))"]
+        if let error { detailParts.append(error) }
+
+        return BrowserProofDetails(
             headline: headline,
-            detail: "Local height \(best) · peer height \(peer)"
+            detail: detailParts.joined(separator: " · "),
+            host: host,
+            name: Self.string(in: object, key: "name"),
+            network: Self.string(in: object, key: "network"),
+            nameHash: Self.string(in: object, key: "nameHash"),
+            hnsProof: hnsProof,
+            proofStatus: proofStatus,
+            secure: (object["secure"] as? NSNumber)?.boolValue,
+            exists: (object["exists"] as? NSNumber)?.boolValue,
+            treeRoot: Self.string(in: object, key: "treeRoot"),
+            blockHeight: (object["blockHeight"] as? NSNumber)?.uint64Value,
+            cacheStatus: cacheStatus,
+            recordTypes: object["recordTypes"] as? [String] ?? [],
+            error: error,
+            formattedJSON: formattedJSON
         )
     }
 
@@ -201,6 +275,87 @@ final class RustBrowserRuntime: BrowserRuntime {
         handleLock.lock()
         defer { handleLock.unlock() }
         return runtimeHandle == 0 ? nil : runtimeHandle
+    }
+
+    private func runtimeJSONObject(
+        operation: String,
+        invoke: (HnsBrowserRuntimeHandle, UnsafeMutablePointer<HnsBrowserBuffer>) -> HnsBrowserResult
+    ) throws -> [String: Any] {
+        let handle = try liveHandle()
+        var output = HnsBrowserBuffer()
+        let result = withUnsafeMutablePointer(to: &output) { outputPointer in
+            invoke(handle, outputPointer)
+        }
+        defer { RustBridge.free(output) }
+        try RustBridge.check(result, operation: operation)
+        let data = try RustBridge.data(copying: output)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw RustBridgeError.invalidOutput("\(operation) did not return a JSON object")
+        }
+        return object
+    }
+
+    static func syncSummary(from object: [String: Any]) throws -> BrowserSyncSummary {
+        guard let status = string(in: object, key: "status"), !status.isEmpty else {
+            throw RustBridgeError.invalidOutput("sync status is missing")
+        }
+        let error = string(in: object, key: "error")
+        let bestHeight = (object["bestHeight"] as? NSNumber)?.uint64Value
+        let peerHeight = (object["bestPeerHeight"] as? NSNumber)?.uint64Value
+        let estimatedTipHeight = (object["estimatedTipHeight"] as? NSNumber)?.uint64Value
+        let attempted = (object["attempted"] as? NSNumber)?.intValue ?? 0
+        let successful = (object["successful"] as? NSNumber)?.intValue ?? 0
+        let accepted = (object["accepted"] as? NSNumber)?.intValue ?? 0
+        let failed = (object["failed"] as? NSNumber)?.intValue ?? 0
+        let cacheEntries = (object["resourceCacheEntries"] as? NSNumber)?.intValue ?? 0
+        let cacheBytes = (object["resourceCacheBytes"] as? NSNumber)?.uint64Value ?? 0
+        let cacheEvicted = (object["resourceCacheEvicted"] as? NSNumber)?.intValue ?? 0
+
+        let headline: String
+        switch status {
+        case "up_to_date": headline = "Handshake headers current"
+        case "syncing": headline = "Syncing Handshake headers"
+        case "cleared": headline = "Resolver cache cleared"
+        case "idle": headline = "Handshake sync idle"
+        case "error", "peer_failed", "seed_failed": headline = "Header sync needs attention"
+        default: headline = "Handshake sync \(status.replacingOccurrences(of: "_", with: " "))"
+        }
+
+        let detail: String
+        if let error {
+            detail = error
+        } else if status == "cleared" {
+            detail = "The runtime resolver cache now contains \(cacheEntries) entries."
+        } else {
+            let best = bestHeight.map(String.init) ?? "unknown"
+            let peer = peerHeight.map(String.init) ?? "unknown"
+            detail = "Local height \(best) · peer height \(peer) · accepted \(accepted)/\(attempted)"
+        }
+
+        return BrowserSyncSummary(
+            headline: headline,
+            detail: detail,
+            status: status,
+            network: string(in: object, key: "network"),
+            attempted: attempted,
+            successful: successful,
+            accepted: accepted,
+            failed: failed,
+            peerCount: (object["peerCount"] as? NSNumber)?.intValue ?? 0,
+            peerGroups: (object["peerGroups"] as? NSNumber)?.intValue ?? 0,
+            bestHeight: bestHeight,
+            bestPeerHeight: peerHeight,
+            estimatedTipHeight: estimatedTipHeight,
+            resourceCacheEntries: cacheEntries,
+            resourceCacheBytes: cacheBytes,
+            resourceCacheEvicted: cacheEvicted,
+            error: error
+        )
+    }
+
+    private static func string(in object: [String: Any], key: String) -> String? {
+        guard let value = object[key] as? String, !value.isEmpty else { return nil }
+        return value
     }
 
 }
@@ -399,10 +554,13 @@ private final class RustBrowserProxySession: BrowserProxySession {
 }
 
 private enum RustBridge {
-    static func withUTF8Slice<T>(_ value: String, body: (HnsBrowserSlice) -> T) -> T {
+    static func withUTF8Slice<T>(
+        _ value: String,
+        body: (HnsBrowserSlice) throws -> T
+    ) rethrows -> T {
         let bytes = Array(value.utf8)
-        return bytes.withUnsafeBufferPointer { buffer in
-            body(
+        return try bytes.withUnsafeBufferPointer { buffer in
+            try body(
                 HnsBrowserSlice(
                     ptr: buffer.baseAddress,
                     len: UInt64(buffer.count)
