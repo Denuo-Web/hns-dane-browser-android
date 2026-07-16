@@ -23,23 +23,55 @@ for command in python3 rustup xcode-select xcodebuild xcrun; do
   command -v "$command" >/dev/null 2>&1 || fail "required command is unavailable: $command"
 done
 
-developer_dir="$(xcode-select --print-path)"
-[[ -x "$developer_dir/usr/bin/xcodebuild" ]] ||
-  fail "the selected developer directory does not contain xcodebuild: $developer_dir"
-export DEVELOPER_DIR="$developer_dir"
 export CARGO_INCREMENTAL=0
 
-xcodebuild -version
-xcode_version="$(xcodebuild -version | sed -n '1s/^Xcode //p')"
-case "$xcode_version" in
-  26.5|26.5.*|26.6|26.6.*) ;;
-  *) fail "Xcode 26.5 or 26.6 is required; selected $xcode_version." ;;
-esac
+if [[ -n "${HNS_XCODE_DEVELOPER_DIR:-}" ]]; then
+  xcode_candidates=("$HNS_XCODE_DEVELOPER_DIR")
+else
+  xcode_candidates=("$(xcode-select --print-path)")
+  shopt -s nullglob
+  for xcode_app in \
+    /Applications/Xcode_26.6.app \
+    /Applications/Xcode_26.6*.app \
+    /Applications/Xcode_26.5.app \
+    /Applications/Xcode_26.5*.app; do
+    xcode_candidates+=("$xcode_app/Contents/Developer")
+  done
+  shopt -u nullglob
+fi
 
+developer_dir=""
+for candidate in "${xcode_candidates[@]}"; do
+  [[ -x "$candidate/usr/bin/xcodebuild" ]] || continue
+  candidate_version="$(
+    DEVELOPER_DIR="$candidate" xcodebuild -version | sed -n '1s/^Xcode //p'
+  )"
+  case "$candidate_version" in
+    26.5|26.5.*|26.6|26.6.*) ;;
+    *) continue ;;
+  esac
+  candidate_iphoneos_sdk="$(
+    DEVELOPER_DIR="$candidate" xcrun --sdk iphoneos --show-sdk-version
+  )"
+  candidate_simulator_sdk="$(
+    DEVELOPER_DIR="$candidate" xcrun --sdk iphonesimulator --show-sdk-version
+  )"
+  if [[ "$candidate_iphoneos_sdk" == "$IOS_SDK_VERSION" ]] &&
+    [[ "$candidate_simulator_sdk" == "$IOS_SDK_VERSION" ]]; then
+    developer_dir="$candidate"
+    break
+  fi
+done
+
+[[ -n "$developer_dir" ]] ||
+  fail "no installed Xcode 26.5/26.6 provides both iOS $IOS_SDK_VERSION SDKs."
+export DEVELOPER_DIR="$developer_dir"
+
+xcodebuild -version
 iphoneos_sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
 simulator_sdk="$(xcrun --sdk iphonesimulator --show-sdk-version)"
-printf 'iphoneos SDK %s\niphonesimulator SDK %s\n' \
-  "$iphoneos_sdk" "$simulator_sdk"
+printf 'DEVELOPER_DIR=%s\niphoneos SDK %s\niphonesimulator SDK %s\n' \
+  "$DEVELOPER_DIR" "$iphoneos_sdk" "$simulator_sdk"
 [[ "$iphoneos_sdk" == "$IOS_SDK_VERSION" ]] ||
   fail "iphoneos SDK $IOS_SDK_VERSION is required; selected $iphoneos_sdk."
 [[ "$simulator_sdk" == "$IOS_SDK_VERSION" ]] ||
