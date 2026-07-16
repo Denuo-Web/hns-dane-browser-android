@@ -79,7 +79,7 @@ printf 'DEVELOPER_DIR=%s\niphoneos SDK %s\niphonesimulator SDK %s\n' \
 
 rustup toolchain install "$RUST_TOOLCHAIN" \
   --profile minimal \
-  --component rustfmt clippy
+  --component rustfmt --component clippy
 rustup target add --toolchain "$RUST_TOOLCHAIN" "${APPLE_TARGETS[@]}"
 
 cd "$ROOT_DIR"
