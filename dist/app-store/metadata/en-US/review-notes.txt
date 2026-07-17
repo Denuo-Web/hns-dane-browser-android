@@ -1,14 +1,20 @@
-HNS DANE Browser is a general-purpose WebKit browser with additional Handshake name resolution and diagnostics. It does not require an account, subscription, wallet, payment, or special credentials.
+No sign-in is required. The app has no account, subscription, in-app purchase, wallet, or payment flow.
 
-Normal internet test:
-1. Launch the app and wait for “Enter an address to begin.”
-2. Enter `https://denuoweb.com/work/hns-dane-browser` and tap Go.
-3. The page uses normal WebKit/WebPKI browsing through the app's fail-closed local proxy.
+HNS DANE Browser uses WKWebView for rendering and an authenticated loopback proxy at 127.0.0.1 for app traffic. It does not install a VPN or change the device's system proxy.
+
+Ordinary web test:
+1. Launch the app. When "Enter an address to begin" appears, enter https://denuoweb.com/work/hns-dane-browser and tap Go.
+2. Confirm the page loads and the security label shows the WebPKI path.
 
 Handshake test:
-1. Enter `https://denuoweb/` in the address field.
-2. The bundled header snapshot permits startup without waiting for a full chain download; live synchronization continues in the foreground.
-3. The security label reports the resolver and TLS validation path. If the review network blocks direct Handshake peer or authoritative DNS traffic, the default compatibility resolver can provide the HNS answer while DNSSEC/DANE validation remains local.
-4. Open the slider menu for Strict Handshake mode, resolver controls, Sync Headers Now, Clear Resolver Cache, and Proof Details.
+1. Enter https://denuoweb/ and tap Go.
+2. The bundled Handshake header snapshot allows immediate proof-backed resolution while foreground header sync continues.
+3. Confirm the security label identifies the resolver and TLS validation path.
+4. Open the slider menu to inspect Strict Handshake mode, resolver settings, Sync Headers Now, Clear Resolver Cache, Proof Details, Privacy Policy, and Support.
 
-The experimental P2P DNS relay is disabled by default on iOS. Legacy HNS DoH compatibility is enabled by default and can be disabled independently. Cleartext HTTP pages are marked insecure. No reviewer-supplied personal data is needed.
+Compatibility note: some review networks block Handshake peer traffic or direct authoritative DNS. In Compatibility mode, the app may use its HNS DNS-over-HTTPS fallback and labels that path. Strict Handshake mode disables that fallback. The experimental P2P DNS relay is disabled by default on iOS.
+
+Cleartext HTTP pages are marked insecure. No reviewer-supplied personal data or credentials are needed. The two test URLs above are developer-controlled.
+
+Privacy policy: https://denuoweb.com/work/hns-dane-browser/privacy
+Source code: https://github.com/Denuo-Web/hns-dane-browser

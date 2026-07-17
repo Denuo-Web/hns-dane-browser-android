@@ -1,19 +1,17 @@
-HNS DANE Browser is a Handshake-first browser with local HNS proof verification, authoritative DNS, RFC 8484 authoritative DoH, DNSSEC, DANE, and resolver diagnostics.
-
-The app syncs Handshake headers, verifies name proofs, resolves delegated names, and displays clear security status for local HNS, DANE, WebPKI, and compatibility fallback paths.
+HNS DANE Browser is a Handshake-first WebKit browser that verifies HNS proofs locally and shows how each name and connection was resolved.
 
 Features:
 
-- HNS-aware address field for names such as `example/` and `name.tld/`
-- Local Handshake proof verification and resolver cache
-- Authoritative DNS and RFC 8484 DoH for delegated HNS nameservers
-- Locally validated DNSSEC, TLSA, and DANE policy
-- Optional experimental HNS P2P DNS relay after local proof and authoritative DNS attempts
-- Optional third-party HNS DoH compatibility fallback
-- Strict Handshake mode to disable third-party HNS DoH fallback
-- HNS proof details and visible resolver/security paths
-- Persistent website data, downloads, sharing, and normal WebKit browsing
+- Browse Handshake names such as example/ and name.tld/
+- Sync Handshake headers and verify name proofs on your device
+- Resolve delegated names through authoritative DNS or RFC 8484 DNS-over-HTTPS
+- Validate DNSSEC, TLSA, and DANE policies locally
+- Inspect resolver paths, proof details, and security status
+- Use Strict Handshake mode to disable third-party HNS compatibility fallback
+- Optionally enable an experimental HNS peer-to-peer DNS relay
+- Keep website data in a persistent WebKit profile
+- Download files and share pages with standard iOS controls
 
-The shared Rust runtime handles HNS resolution, DNSSEC, DANE, and the fail-closed local browser proxy. Apple's WebKit renders website content and retains its normal WebPKI handling for ordinary internet sites.
+The shared Rust runtime performs HNS resolution, DNSSEC and DANE validation, and app-local proxying. WebKit renders pages and handles normal WebPKI trust for ordinary internet sites.
 
-This app is for browsing and diagnostics. It is not a wallet, exchange, financial service, or investment product. Donations are optional and do not unlock features.
+The app has no developer-operated account, advertising SDK, analytics SDK, subscription, wallet, exchange, or paid feature unlocks.

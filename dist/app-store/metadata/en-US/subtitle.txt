@@ -1,1 +1,1 @@
-Handshake DNSSEC & DANE
+Handshake Proofs & DNSSEC
