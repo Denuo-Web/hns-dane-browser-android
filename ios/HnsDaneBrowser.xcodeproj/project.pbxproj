@@ -25,6 +25,7 @@
 		B1000000000000000000000E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000F /* Assets.xcassets */; };
 		B1000000000000000000000F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000010 /* LaunchScreen.storyboard */; };
 		B10000000000000000000010 /* hns_headers_300000.snapshot.gzip in Resources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000012 /* hns_headers_300000.snapshot.gzip */; };
+		B10000000000000000000027 /* third_party_notices.txt in Resources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000029 /* third_party_notices.txt */; };
 		B10000000000000000000011 /* HnsBrowserRuntime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F10000000000000000000013 /* HnsBrowserRuntime.xcframework */; };
 		B10000000000000000000012 /* libz.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = F10000000000000000000014 /* libz.tbd */; };
 		B10000000000000000000013 /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F10000000000000000000015 /* Network.framework */; };
@@ -84,6 +85,7 @@
 		F10000000000000000000026 /* BrowserNavigationParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserNavigationParserTests.swift; sourceTree = "<group>"; };
 		F10000000000000000000027 /* BrowserRuntimePolicyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserRuntimePolicyStore.swift; sourceTree = "<group>"; };
 		F10000000000000000000028 /* BrowserRuntimeControlTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserRuntimeControlTests.swift; sourceTree = "<group>"; };
+		F10000000000000000000029 /* third_party_notices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = third_party_notices.txt; path = ../android/app/src/main/assets/third_party_notices.txt; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -196,6 +198,7 @@
 			isa = PBXGroup;
 			children = (
 				F10000000000000000000012 /* hns_headers_300000.snapshot.gzip */,
+				F10000000000000000000029 /* third_party_notices.txt */,
 			);
 			name = "Shared Resources";
 			sourceTree = "<group>";
@@ -307,6 +310,7 @@
 				B1000000000000000000000E /* Assets.xcassets in Resources */,
 				B1000000000000000000000F /* LaunchScreen.storyboard in Resources */,
 				B10000000000000000000010 /* hns_headers_300000.snapshot.gzip in Resources */,
+				B10000000000000000000027 /* third_party_notices.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -484,7 +488,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 40;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 45NQQK3G3S;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -511,7 +515,7 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "HnsDaneBrowser/Support/HnsDaneBrowser-Bridging-Header.h";
 				SWIFT_STRICT_CONCURRENCY = minimal;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -522,7 +526,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 40;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 45NQQK3G3S;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -549,7 +553,7 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "HnsDaneBrowser/Support/HnsDaneBrowser-Bridging-Header.h";
 				SWIFT_STRICT_CONCURRENCY = minimal;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -559,7 +563,7 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 40;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 45NQQK3G3S;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 0.5.0;
@@ -578,7 +582,7 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 40;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 45NQQK3G3S;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 0.5.0;

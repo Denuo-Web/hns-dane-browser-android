@@ -6,6 +6,7 @@ options:
   createIntermediateGroups: true
 settings:
   base:
+    DEVELOPMENT_TEAM: 45NQQK3G3S
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     SWIFT_VERSION: "5.0"
     CLANG_ENABLE_MODULES: YES
@@ -24,6 +25,9 @@ targets:
       - path: ../android/app/src/main/assets/hns_headers_300000.snapshot.gzip
         type: file
         buildPhase: resources
+      - path: ../android/app/src/main/assets/third_party_notices.txt
+        type: file
+        buildPhase: resources
     dependencies:
       - framework: ../build/apple/HnsBrowserRuntime.xcframework
         embed: false
@@ -40,7 +44,7 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: HnsDaneBrowser/Support/HnsDaneBrowser-Bridging-Header.h
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        TARGETED_DEVICE_FAMILY: "1,2"
+        TARGETED_DEVICE_FAMILY: "1"
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/../build/apple"
         OTHER_LDFLAGS: "$(inherited) -lz"
   HnsDaneBrowserTests:

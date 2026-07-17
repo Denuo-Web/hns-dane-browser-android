@@ -42,6 +42,14 @@ classify_path() {
       set_all_targets
       ;;
 
+    # The generated third-party notice is packaged by both application shells.
+    android/app/src/main/assets/third_party_notices.txt | \
+      scripts/generate-third-party-notices.py | \
+      scripts/third-party-notices.sha256)
+      android=true
+      ios=true
+      ;;
+
     # Workspace-wide Rust inputs and shared runtime crates feed both native
     # adapters. The global lockfile is intentionally treated conservatively.
     rust/Cargo.toml | \
@@ -83,9 +91,7 @@ classify_path() {
       gradle/* | \
       scripts/build-android.sh | \
       scripts/build-rust-android.sh | \
-      scripts/generate-third-party-notices.py | \
       scripts/play-upload-closed-testing.sh | \
-      scripts/third-party-notices.sha256 | \
       scripts/with-local-signing.sh)
       android=true
       ;;
@@ -100,6 +106,7 @@ classify_path() {
       scripts/build-ios.sh | \
       scripts/build-rust-ios.sh | \
       scripts/run-ios-gate.sh | \
+      scripts/upload-ios-testflight.sh | \
       scripts/select_ios_simulator.py | \
       scripts/test_select_ios_simulator.py)
       ios=true

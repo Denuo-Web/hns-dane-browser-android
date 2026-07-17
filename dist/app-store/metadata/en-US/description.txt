@@ -1,0 +1,19 @@
+HNS DANE Browser is a Handshake-first browser with local HNS proof verification, authoritative DNS, RFC 8484 authoritative DoH, DNSSEC, DANE, and resolver diagnostics.
+
+The app syncs Handshake headers, verifies name proofs, resolves delegated names, and displays clear security status for local HNS, DANE, WebPKI, and compatibility fallback paths.
+
+Features:
+
+- HNS-aware address field for names such as `example/` and `name.tld/`
+- Local Handshake proof verification and resolver cache
+- Authoritative DNS and RFC 8484 DoH for delegated HNS nameservers
+- Locally validated DNSSEC, TLSA, and DANE policy
+- Optional experimental HNS P2P DNS relay after local proof and authoritative DNS attempts
+- Optional third-party HNS DoH compatibility fallback
+- Strict Handshake mode to disable third-party HNS DoH fallback
+- HNS proof details and visible resolver/security paths
+- Persistent website data, downloads, sharing, and normal WebKit browsing
+
+The shared Rust runtime handles HNS resolution, DNSSEC, DANE, and the fail-closed local browser proxy. Apple's WebKit renders website content and retains its normal WebPKI handling for ordinary internet sites.
+
+This app is for browsing and diagnostics. It is not a wallet, exchange, financial service, or investment product. Donations are optional and do not unlock features.

@@ -1,23 +1,26 @@
 HNS DANE BROWSER THIRD-PARTY SOFTWARE NOTICES
 
 This app includes open-source components. The inventories below are generated from the
-locked Android release runtime classpath and the non-development Cargo dependency closure
-reachable from the Android native library for each shipped Rust target. The Rust inventory
-is the union of the aarch64-linux-android and x86_64-linux-android closures. Cargo build-time
+locked Android release runtime classpath and the non-development Cargo dependency closures
+reachable from the Android and iOS native libraries for each shipped Rust target. The Rust
+inventory is the union of the Android and Apple device/simulator closures. Cargo build-time
 dependencies are retained conservatively. Workspace-owned HNS DANE Browser crates and
-test-only, lint, Android build-tool, fuzz, and snapshot-exporter dependencies are excluded.
+test-only, lint, platform build-tool, fuzz, and snapshot-exporter dependencies are excluded.
 
 Shipped Rust target closure counts:
   aarch64-linux-android: 169 registry components
   x86_64-linux-android: 169 registry components
+  aarch64-apple-ios: 158 registry components
+  aarch64-apple-ios-sim: 158 registry components
+  x86_64-apple-ios: 158 registry components
 
 License expressions are the declarations in the verified package metadata. The reproduced
 texts come from the checksum-verified Cargo packages or dependency-verified Android
 artifacts. Inclusion here does not imply endorsement by the component authors.
 
-Generator schema: 1
+Generator schema: 2
 Generated input SHA-256:
-  scripts/generate-third-party-notices.py = ded9126310be915cea33920fba85f226ff354616e0284aa358d98b0b9eb6c7ef
+  scripts/generate-third-party-notices.py = 0bd93d79c143729596380a52fe22f2099134185517792014e027671f5992540e
   rust/Cargo.toml = 0efa18ff141f1947702bf29ad553227d2df353209aa9671903f393366c2b1014
   rust/Cargo.lock = facb6cb495d9e9b23681408bfc193966db6a7896bee280320fd5fb680cfb05c8
   android/gradle/libs.versions.toml = e38501dbbb112b0fa54e67c21f5ecb7d31cd3dfd20e67082cb5be43114c37143
@@ -37,6 +40,7 @@ Generated input SHA-256:
   rust/crates/hns-sync/Cargo.toml = e573dd5bb30b3a6f89a00cb01929b268849e5d54b7c4b9cebad6dc937d8fa2e3
   rust/crates/hns-transport/Cargo.toml = 6e0c5572ca4f792df332844e6a74577e558dae64eea88afa862fb3409f021f97
   rust/crates/hns-urkel/Cargo.toml = 83ddd253d6a3699205df6647d894fcb2f081857c96fa272627b18aad1f34eb88
+  rust/crates/ios-ffi/Cargo.toml = f12d3a7b96ae1195116a11ae9aee6a3e4da3d5585e5a70fc794d9c735f90e778
 
 ANDROID RUNTIME COMPONENTS (40)
   androidx.activity:activity-ktx:1.13.0 | Apache-2.0

@@ -2,7 +2,7 @@
 
 The iOS shell has an iOS 17.0 deployment floor, retaining support for the iOS 17 and iOS 18 generations. That minimum supported runtime is independent of the build SDK: Apple builds use the stable iOS 26.5 SDK with Xcode 26.5 or 26.6.
 
-The Rust and C boundaries can be validated on Linux. The Apple slices, Swift shell, and unit tests can then be compiled and exercised in a macOS simulator gate. An optional signed physical-device pass can add evidence about WebKit's out-of-process networking that simulator success cannot provide; it has not been completed.
+The Rust and C boundaries can be validated on Linux. The Apple slices, Swift shell, and unit tests can then be compiled and exercised in a macOS simulator gate. A signed physical-device pass adds evidence about WebKit's out-of-process networking that simulator success cannot provide. It is not required to archive or upload, but it is a recommended final release gate and has not been completed.
 
 ## macOS Build and Simulator Gate
 
@@ -17,7 +17,7 @@ The first command is the portable repository check. The second is the same compl
 
 ## Signed Physical Device Gate — Pending
 
-No physical-device pass is currently claimed. If a device or external TestFlight tester becomes available, use a signed build on iOS 17.0 or later and capture device traffic from a controlled Wi-Fi network while running the optional matrix.
+No physical-device pass is currently claimed. Before final App Review, arrange an external TestFlight tester with an iPhone running iOS 17.0 or later and capture the applicable evidence below. The user who builds and submits the app does not need to own that device.
 
 ### Proxy isolation
 

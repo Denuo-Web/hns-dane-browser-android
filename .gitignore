@@ -27,6 +27,8 @@ rust/fuzz/target/
 *.p12
 *.pfx
 *.pkcs12
+*.p8
+*.mobileprovision
 *.kdbx
 *.pem
 *.key
@@ -58,6 +60,8 @@ captures/
 
 # Apple/Xcode build state
 DerivedData/
+*.ipa
+*.xcarchive
 *.xcuserstate
 **/xcuserdata/
 

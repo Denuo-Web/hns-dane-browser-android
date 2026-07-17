@@ -1,0 +1,14 @@
+HNS DANE Browser is a general-purpose WebKit browser with additional Handshake name resolution and diagnostics. It does not require an account, subscription, wallet, payment, or special credentials.
+
+Normal internet test:
+1. Launch the app and wait for “Enter an address to begin.”
+2. Enter `https://denuoweb.com/work/hns-dane-browser` and tap Go.
+3. The page uses normal WebKit/WebPKI browsing through the app's fail-closed local proxy.
+
+Handshake test:
+1. Enter `https://denuoweb/` in the address field.
+2. The bundled header snapshot permits startup without waiting for a full chain download; live synchronization continues in the foreground.
+3. The security label reports the resolver and TLS validation path. If the review network blocks direct Handshake peer or authoritative DNS traffic, the default compatibility resolver can provide the HNS answer while DNSSEC/DANE validation remains local.
+4. Open the slider menu for Strict Handshake mode, resolver controls, Sync Headers Now, Clear Resolver Cache, and Proof Details.
+
+The experimental P2P DNS relay is disabled by default on iOS. Legacy HNS DoH compatibility is enabled by default and can be disabled independently. Cleartext HTTP pages are marked insecure. No reviewer-supplied personal data is needed.

@@ -1,0 +1,60 @@
+name: iOS TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_upload:
+        description: Upload the current main-branch iOS build to App Store Connect
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-testflight
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    name: Validate, sign, and upload
+    if: ${{ github.ref == 'refs/heads/main' && inputs.confirm_upload }}
+    runs-on: macos-26
+    timeout-minutes: 150
+    environment: app-store
+    steps:
+      - name: Check out the reviewed main branch
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Run the complete unsigned iOS gate
+        run: ./scripts/run-ios-gate.sh
+
+      - name: Materialize the App Store Connect API key
+        env:
+          API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$API_KEY_ID" =~ ^[A-Z0-9]{10}$ ]]
+          [[ -n "$API_PRIVATE_KEY" ]]
+          key_path="$RUNNER_TEMP/AuthKey_${API_KEY_ID}.p8"
+          umask 077
+          printf '%s' "$API_PRIVATE_KEY" >"$key_path"
+          printf 'HNS_ASC_API_KEY_PATH=%s\n' "$key_path" >>"$GITHUB_ENV"
+
+      - name: Create the signed archive and upload it
+        env:
+          HNS_IOS_TEAM_ID: 45NQQK3G3S
+          HNS_ASC_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          HNS_ASC_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+        run: ./scripts/upload-ios-testflight.sh
+
+      - name: Remove the temporary API key
+        if: ${{ always() }}
+        run: |
+          if [[ -n "${HNS_ASC_API_KEY_PATH:-}" ]]; then
+            rm -f -- "$HNS_ASC_API_KEY_PATH"
+          fi

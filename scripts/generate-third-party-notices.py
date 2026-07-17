@@ -26,7 +26,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / "android/app/src/main/assets/third_party_notices.txt"
 OUTPUT_SHA256 = ROOT / "scripts/third-party-notices.sha256"
-SCHEMA = "1"
+SCHEMA = "2"
 LOCKED_INPUT_PATHS = (
     "scripts/generate-third-party-notices.py",
     "rust/Cargo.toml",
@@ -38,16 +38,16 @@ LOCKED_INPUT_PATHS = (
 RUST_MANIFEST_INPUTS = tuple(
     path.relative_to(ROOT).as_posix()
     for path in sorted((ROOT / "rust/crates").glob("*/Cargo.toml"))
-    # The notice ships only in Android; an iOS-adapter-only manifest change
-    # must not force a new Android asset or Android build.
-    if path.parent.name != "ios-ffi"
 )
 INPUT_PATHS = LOCKED_INPUT_PATHS + RUST_MANIFEST_INPUTS
 LICENSE_FILE_PREFIXES = ("LICENSE", "LICENCE", "COPYING", "NOTICE", "COPYRIGHT")
 MAX_NOTICE_FILE_SIZE = 512 * 1024
-RUST_ANDROID_TARGETS = (
-    "aarch64-linux-android",
-    "x86_64-linux-android",
+RUST_SHIPPING_TARGETS = (
+    ("aarch64-linux-android", "android-ffi"),
+    ("x86_64-linux-android", "android-ffi"),
+    ("aarch64-apple-ios", "ios-ffi"),
+    ("aarch64-apple-ios-sim", "ios-ffi"),
+    ("x86_64-apple-ios", "ios-ffi"),
 )
 
 # These registry packages are published without their workspace-level license
@@ -169,16 +169,18 @@ def cargo_metadata(target: str) -> dict:
     return json.loads(output)
 
 
-def shipping_rust_packages(metadata: dict) -> list[dict]:
+def shipping_rust_packages(metadata: dict, root_package: str) -> list[dict]:
     packages = {package["id"]: package for package in metadata["packages"]}
     nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
     roots = [
         package["id"]
         for package in metadata["packages"]
-        if package["name"] == "android-ffi" and package["source"] is None
+        if package["name"] == root_package and package["source"] is None
     ]
     if len(roots) != 1:
-        raise RuntimeError(f"Expected one workspace android-ffi package, found {len(roots)}.")
+        raise RuntimeError(
+            f"Expected one workspace {root_package} package, found {len(roots)}."
+        )
 
     reachable: set[str] = set()
     pending = roots[:]
@@ -199,7 +201,9 @@ def shipping_rust_packages(metadata: dict) -> list[dict]:
     ]
     third_party.sort(key=lambda package: (package["name"].casefold(), package["version"]))
     if not third_party:
-        raise RuntimeError("The Android Rust dependency closure unexpectedly contains no registry packages.")
+        raise RuntimeError(
+            f"The {root_package} Rust dependency closure unexpectedly contains no registry packages."
+        )
     for package in third_party:
         if not package.get("license"):
             raise RuntimeError(
@@ -208,11 +212,11 @@ def shipping_rust_packages(metadata: dict) -> list[dict]:
     return third_party
 
 
-def shipping_rust_packages_for_android_targets() -> tuple[list[dict], dict[str, int]]:
+def shipping_rust_packages_for_targets() -> tuple[list[dict], dict[str, int]]:
     packages_by_id: dict[str, dict] = {}
     target_counts: dict[str, int] = {}
-    for target in RUST_ANDROID_TARGETS:
-        target_packages = shipping_rust_packages(cargo_metadata(target))
+    for target, root_package in RUST_SHIPPING_TARGETS:
+        target_packages = shipping_rust_packages(cargo_metadata(target), root_package)
         target_counts[target] = len(target_packages)
         for package in target_packages:
             package_id = package["id"]
@@ -220,7 +224,7 @@ def shipping_rust_packages_for_android_targets() -> tuple[list[dict], dict[str, 
             if existing is not None and existing != package:
                 raise RuntimeError(
                     f"Cargo returned conflicting metadata for package {package_id} "
-                    f"across shipped Android targets."
+                    f"across shipped application targets."
                 )
             packages_by_id[package_id] = package
 
@@ -229,7 +233,7 @@ def shipping_rust_packages_for_android_targets() -> tuple[list[dict], dict[str, 
         key=lambda package: (package["name"].casefold(), package["version"], package["id"]),
     )
     if not packages:
-        raise RuntimeError("The shipped Android Rust target closures contain no registry packages.")
+        raise RuntimeError("The shipped Rust target closures contain no registry packages.")
     return packages, target_counts
 
 
@@ -413,7 +417,7 @@ def sqlite_public_domain_notice(rust_packages: list[dict]) -> tuple[str, str] | 
 def generate() -> str:
     android_coordinates = android_runtime_coordinates()
     require_apache_android_licenses(android_coordinates)
-    rust_packages, rust_target_counts = shipping_rust_packages_for_android_targets()
+    rust_packages, rust_target_counts = shipping_rust_packages_for_targets()
 
     notice_groups: dict[str, dict[str, object]] = {}
 
@@ -467,16 +471,16 @@ def generate() -> str:
         "HNS DANE BROWSER THIRD-PARTY SOFTWARE NOTICES",
         "",
         "This app includes open-source components. The inventories below are generated from the",
-        "locked Android release runtime classpath and the non-development Cargo dependency closure",
-        "reachable from the Android native library for each shipped Rust target. The Rust inventory",
-        "is the union of the aarch64-linux-android and x86_64-linux-android closures. Cargo build-time",
+        "locked Android release runtime classpath and the non-development Cargo dependency closures",
+        "reachable from the Android and iOS native libraries for each shipped Rust target. The Rust",
+        "inventory is the union of the Android and Apple device/simulator closures. Cargo build-time",
         "dependencies are retained conservatively. Workspace-owned HNS DANE Browser crates and",
-        "test-only, lint, Android build-tool, fuzz, and snapshot-exporter dependencies are excluded.",
+        "test-only, lint, platform build-tool, fuzz, and snapshot-exporter dependencies are excluded.",
         "",
         "Shipped Rust target closure counts:",
         *(
             f"  {target}: {rust_target_counts[target]} registry components"
-            for target in RUST_ANDROID_TARGETS
+            for target, _ in RUST_SHIPPING_TARGETS
         ),
         "",
         "License expressions are the declarations in the verified package metadata. The reproduced",

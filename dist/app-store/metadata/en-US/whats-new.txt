@@ -1,0 +1,1 @@
+Initial iOS release using the shared Rust HNS resolver and fail-closed loopback proxy, with local proof verification, DNSSEC and DANE security status, strict mode, downloads, sharing, and resolver diagnostics.

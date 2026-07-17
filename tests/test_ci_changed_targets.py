@@ -79,20 +79,33 @@ class CiChangedTargetsTests(unittest.TestCase):
             android=True,
             ios=False,
         )
-        self.assert_targets(
-            ("scripts/generate-third-party-notices.py",),
-            rust=False,
-            android=True,
-            ios=False,
-        )
+
+    def test_shared_notice_builds_both_application_shells(self) -> None:
+        for path in (
+            "android/app/src/main/assets/third_party_notices.txt",
+            "scripts/generate-third-party-notices.py",
+            "scripts/third-party-notices.sha256",
+        ):
+            with self.subTest(path=path):
+                self.assert_targets(
+                    (path,),
+                    rust=False,
+                    android=True,
+                    ios=True,
+                )
 
     def test_ios_only_change_skips_android(self) -> None:
-        self.assert_targets(
-            ("ios/HnsDaneBrowser/App/AppDelegate.swift",),
-            rust=False,
-            android=False,
-            ios=True,
-        )
+        for path in (
+            "ios/HnsDaneBrowser/App/AppDelegate.swift",
+            "scripts/upload-ios-testflight.sh",
+        ):
+            with self.subTest(path=path):
+                self.assert_targets(
+                    (path,),
+                    rust=False,
+                    android=False,
+                    ios=True,
+                )
 
     def test_rust_tooling_does_not_build_apps(self) -> None:
         for path in (

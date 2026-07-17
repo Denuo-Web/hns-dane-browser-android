@@ -1,6 +1,6 @@
 # HNS DANE Browser
 
-Cross-platform Handshake-first browser core with local HNS proofs, authoritative DNS, an experimental HNS P2P DNS relay, RFC 8484 DoH transport, DNSSEC, and DANE diagnostics. Android is the validated shipping baseline; the repository also contains the native iOS 17.0-or-later shell and Apple ABI/build integration. The Apple build and simulator gate uses the stable iOS 26.5 SDK with Xcode 26.5 or 26.6; signed-device WebKit validation is optional additional release confidence and has not been completed.
+Cross-platform Handshake-first browser core with local HNS proofs, authoritative DNS, an experimental HNS P2P DNS relay, RFC 8484 DoH transport, DNSSEC, and DANE diagnostics. Android is the validated shipping baseline; the repository also contains the native iOS 17.0-or-later shell and Apple ABI/build integration. The Apple build and simulator gate uses the stable iOS 26.5 SDK with Xcode 26.5 or 26.6; a signed external-TestFlight device pass is the recommended final iOS release gate and has not been completed.
 
 ## Layout
 
@@ -44,7 +44,7 @@ Cross-platform Handshake-first browser core with local HNS proofs, authoritative
 
 ## Platform Migration Status
 
-Android has completed its Rust-only proxy cutover: `MainActivity` uses the shared Rust runtime and proxy, while Kotlin owns only platform UI, WebView admission, lifecycle, and JNI conversion. The Apple C ABI, XCFramework build, and native iOS shell are implemented against the same runtime and proxy. Linux validates the Rust, ABI, header, and architecture boundaries; macOS compilation and simulator tests against the iOS 26.5 SDK form the Apple build gate. The optional signed physical-device matrix in `docs/ios-device-validation.md` provides additional evidence that simulator success cannot provide.
+Android has completed its Rust-only proxy cutover: `MainActivity` uses the shared Rust runtime and proxy, while Kotlin owns only platform UI, WebView admission, lifecycle, and JNI conversion. The Apple C ABI, XCFramework build, and native iOS shell are implemented against the same runtime and proxy. Linux validates the Rust, ABI, header, and architecture boundaries; macOS compilation and simulator tests against the iOS 26.5 SDK form the Apple build gate. The signed physical-device matrix in `docs/ios-device-validation.md` is a recommended final release gate for WebKit behavior that simulator success cannot establish.
 
 ## Validate
 
@@ -76,7 +76,7 @@ On macOS with Xcode 26.5 or 26.6, the stable iOS 26.5 SDK, and the configured Ap
 ./scripts/run-ios-gate.sh
 ```
 
-The gate verifies the selected Xcode and exact SDK, installs the pinned Rust toolchain and Apple targets, checks the ABI and platform boundaries, creates `build/apple/HnsBrowserRuntime.xcframework`, selects an iOS 26.5 iPhone simulator, executes the test target, and links an unsigned Release build against the arm64 device slice. This validates the Apple build, linkage, and simulator tests only; see `docs/ios-device-validation.md` for the optional signed physical-device matrix.
+The gate verifies the selected Xcode and exact SDK, installs the pinned Rust toolchain and Apple targets, checks the ABI and platform boundaries, creates `build/apple/HnsBrowserRuntime.xcframework`, selects an iOS 26.5 iPhone simulator, executes the test target, and links an unsigned Release build against the arm64 device slice. This validates the Apple build, linkage, and simulator tests only; see `docs/ios-device-validation.md` for the recommended signed physical-device matrix before final App Review.
 
 Debug/demo builds are unsigned beyond the default Android debug key and are intended for testing only. The diagnostics screen identifies Denuo Web, LLC as publisher, shows the build channel and license, and states that donations are optional and unlock no app features.
 
