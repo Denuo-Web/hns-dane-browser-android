@@ -50,7 +50,7 @@ hns-urkel = { path = "crates/hns-urkel" }
 http = "1"
 httparse = "1.10"
 idna = "1.1"
-jni = "0.21"
+jni = "0.22"
 num-bigint = "0.4"
 num-traits = "0.2"
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
