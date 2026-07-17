@@ -1,38 +1,25 @@
-name: iOS App Store Screenshots
+name: Live iOS App Store Screenshots
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/ios-screenshots.yml"
-      - "ios/**"
-      - "rust/Cargo.lock"
-      - "rust/Cargo.toml"
-      - "rust/rust-toolchain.toml"
-      - "rust/crates/hns-*/**"
-      - "rust/crates/ios-ffi/**"
-      - "scripts/build-ios.sh"
-      - "scripts/build-rust-ios.sh"
-      - "scripts/check-ios-abi.sh"
-      - "scripts/generate-ios-app-store-screenshots.sh"
-      - "scripts/ios_screenshot_tools.py"
-      - "scripts/run-ios-gate.sh"
-      - "scripts/select_ios_simulator.py"
-      - "scripts/test_select_ios_simulator.py"
-      - "tests/test_ios_screenshot_tools.py"
   workflow_dispatch:
+    inputs:
+      reason:
+        description: Why a fresh live submission set is needed
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ios-screenshots-${{ github.event.pull_request.number || github.ref }}
+  group: ios-live-app-store-screenshots-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   capture:
-    name: Build and capture 6.5-inch screenshots
+    name: Capture live Release runtime on a 6.5-inch simulator
     runs-on: macos-26
-    timeout-minutes: 150
+    timeout-minutes: 180
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -42,16 +29,16 @@ jobs:
       - name: Run the complete unsigned iOS gate
         run: ./scripts/run-ios-gate.sh
 
-      - name: Generate deterministic App Store screenshots
+      - name: Capture live Release App Store screenshots
         run: ./scripts/generate-ios-app-store-screenshots.sh
 
-      - name: Upload screenshots for human review
+      - name: Upload live screenshots and provenance for human review
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ios-app-store-screenshots-${{ github.sha }}
+          name: ios-app-store-live-screenshots-${{ github.sha }}
           path: |
-            build/app-store-screenshots/*.jpg
-            build/app-store-screenshots/manifest.json
+            build/app-store-live-screenshots/*.jpg
+            build/app-store-live-screenshots/manifest.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
           compression-level: 0

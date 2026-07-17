@@ -6,7 +6,7 @@ IOS_SDK_VERSION="26.5"
 EXPECTED_WIDTH=1284
 EXPECTED_HEIGHT=2778
 SCENE_KEY="HNS_APP_STORE_SCREENSHOT_SCENE"
-OUTPUT_REQUESTED="${1:-$ROOT_DIR/build/app-store-screenshots}"
+OUTPUT_REQUESTED="${1:-$ROOT_DIR/build/app-store-live-screenshots}"
 
 fail() {
   echo "ERROR: $*" >&2
@@ -14,6 +14,8 @@ fail() {
 }
 
 [[ "$(uname -s)" == "Darwin" ]] || fail "screenshot generation requires macOS and Xcode."
+[[ -z "${HNS_APP_STORE_SCREENSHOT_SCENE+x}" ]] ||
+  fail "$SCENE_KEY must be unset for a live App Store capture."
 for command in git grep python3 sips strings xcode-select xcodebuild xcrun; do
   command -v "$command" >/dev/null 2>&1 || fail "required command is unavailable: $command"
 done
@@ -115,14 +117,13 @@ DERIVED_DATA="$WORK_DIR/DerivedData"
 xcodebuild \
   -project "$ROOT_DIR/ios/HnsDaneBrowser.xcodeproj" \
   -scheme HnsDaneBrowserScreenshots \
-  -configuration Debug \
+  -configuration Release \
   -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
   -derivedDataPath "$DERIVED_DATA" \
   -resultBundlePath "$RESULT_BUNDLE" \
   -parallel-testing-enabled NO \
   -maximum-parallel-testing-workers 1 \
-  -test-iterations 2 \
-  -retry-tests-on-failure \
+  -only-testing:HnsDaneBrowserScreenshotTests/LiveAppStoreScreenshotTests/testLiveSubmissionScreenshots \
   CODE_SIGNING_ALLOWED=NO \
   test
 
@@ -133,10 +134,13 @@ xcrun xcresulttool export attachments \
 [[ -s "$ATTACHMENTS_DIR/manifest.json" ]] || fail "xcresult attachment manifest is missing."
 
 RAW_DIR="$WORK_DIR/raw"
+RUNTIME_PROVENANCE="$WORK_DIR/live-runtime-provenance.json"
 python3 "$ROOT_DIR/scripts/ios_screenshot_tools.py" collect \
   --manifest "$ATTACHMENTS_DIR/manifest.json" \
   --attachments-dir "$ATTACHMENTS_DIR" \
-  --output-dir "$RAW_DIR"
+  --output-dir "$RAW_DIR" \
+  --profile live \
+  --provenance-output "$RUNTIME_PROVENANCE"
 
 for source in "$RAW_DIR"/*.png; do
   basename="$(basename "$source" .png)"
@@ -146,16 +150,7 @@ for source in "$RAW_DIR"/*.png; do
   [[ "$has_alpha" == "no" ]] || fail "$destination unexpectedly contains an alpha channel."
 done
 
-RELEASE_DERIVED_DATA="$WORK_DIR/ReleaseDerivedData"
-xcodebuild \
-  -project "$ROOT_DIR/ios/HnsDaneBrowser.xcodeproj" \
-  -scheme HnsDaneBrowser \
-  -configuration Release \
-  -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
-  -derivedDataPath "$RELEASE_DERIVED_DATA" \
-  CODE_SIGNING_ALLOWED=NO \
-  build
-RELEASE_BINARY="$RELEASE_DERIVED_DATA/Build/Products/Release-iphonesimulator/HnsDaneBrowser.app/HnsDaneBrowser"
+RELEASE_BINARY="$DERIVED_DATA/Build/Products/Release-iphonesimulator/HnsDaneBrowser.app/HnsDaneBrowser"
 [[ -x "$RELEASE_BINARY" ]] || fail "Release simulator binary was not produced."
 strings "$RELEASE_BINARY" >"$WORK_DIR/release-strings.txt"
 if grep -Fq "$SCENE_KEY" "$WORK_DIR/release-strings.txt"; then
@@ -171,6 +166,11 @@ python3 "$ROOT_DIR/scripts/ios_screenshot_tools.py" manifest \
   --commit "$COMMIT" \
   --xcode "$XCODE_VERSION" \
   --sdk "$IOS_SDK_VERSION" \
-  --device "$DEVICE_NAME"
+  --device "$DEVICE_NAME" \
+  --configuration Release \
+  --runtime-provenance "$RUNTIME_PROVENANCE"
 
-printf 'Created four App Store screenshots and manifest in %s\n' "$OUTPUT_DIR"
+python3 "$ROOT_DIR/scripts/ios_screenshot_tools.py" verify-live \
+  --directory "$OUTPUT_DIR"
+
+printf 'Created four live Release App Store screenshots and provenance in %s\n' "$OUTPUT_DIR"

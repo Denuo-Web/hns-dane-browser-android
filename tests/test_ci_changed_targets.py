@@ -98,6 +98,12 @@ class CiChangedTargetsTests(unittest.TestCase):
         for path in (
             "ios/HnsDaneBrowser/App/AppDelegate.swift",
             "scripts/upload-ios-testflight.sh",
+            "scripts/generate-ios-app-store-screenshots.sh",
+            "scripts/ios_screenshot_tools.py",
+            "scripts/stage-ios-app-store-screenshots.sh",
+            "tests/test_ios_screenshot_tools.py",
+            ".github/workflows/ios-screenshots.yml",
+            ".github/workflows/ios-testflight.yml",
         ):
             with self.subTest(path=path):
                 self.assert_targets(
@@ -131,6 +137,7 @@ class CiChangedTargetsTests(unittest.TestCase):
     def test_workflow_and_shared_policy_changes_run_every_target(self) -> None:
         for path in (
             ".github/workflows/ci.yml",
+            ".github/workflows/future-shared.yml",
             "scripts/ci-changed-targets.sh",
             "scripts/check-runtime-boundaries.sh",
             "scripts/verify-supply-chain.sh",

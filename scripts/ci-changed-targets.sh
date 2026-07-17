@@ -26,13 +26,28 @@ classify_path() {
   case "$path" in
     # CI policy and cross-platform boundary logic can change which checks are
     # trusted, so validate every target when any of these files changes.
-    .github/workflows/* | \
+    .github/workflows/ci.yml | \
       scripts/ci-changed-targets.sh | \
       tests/test_ci_changed_targets.py | \
       scripts/check.sh | \
       scripts/check-runtime-boundaries.sh | \
       scripts/check-version-consistency.sh | \
       scripts/verify-supply-chain.sh)
+      set_all_targets
+      ;;
+
+    # Apple release/capture workflows and their helpers cannot affect the
+    # Android package or shared Rust behavior.
+    .github/workflows/ios-*.yml | \
+      scripts/generate-ios-app-store-screenshots.sh | \
+      scripts/ios_screenshot_tools.py | \
+      scripts/stage-ios-app-store-screenshots.sh | \
+      tests/test_ios_screenshot_tools.py)
+      ios=true
+      ;;
+
+    # Any other workflow remains conservative until it has an explicit owner.
+    .github/workflows/*)
       set_all_targets
       ;;
 

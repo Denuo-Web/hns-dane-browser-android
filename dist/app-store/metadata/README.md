@@ -12,7 +12,7 @@ This directory is the reviewed source for the first iOS App Store record. It is 
 - Apple Team ID: `45NQQK3G3S`
 - User access: Full Access
 - Version: `0.5.0`
-- Build: `41`
+- Build: `42`
 - Primary category: Utilities
 - Price: Free
 
@@ -55,6 +55,6 @@ python3 dist/app-store/validate.py
 3. Generate current iPhone simulator screenshots from the iOS shell. Do not reuse Android screenshots.
 4. If an iPhone tester becomes available, run an optional external-TestFlight pass. An owned or borrowed iPhone is not an App Store submission requirement; record the simulator-only limitation when no tester is available.
 5. Supply App Review with the notes in `en-US/review-notes.txt`; no login is required.
-6. Complete every item in `../submission-checklist.md`, select build `41`, and choose manual release before adding the version for review.
+6. Complete every item in `../submission-checklist.md`, select build `42`, and choose manual release before adding the version for review.
 
 The API private key used by CI must exist only in the protected GitHub `app-store` environment and must never be committed or uploaded as a workflow artifact.

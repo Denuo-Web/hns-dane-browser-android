@@ -2,6 +2,7 @@
 """Validate the canonical iOS App Store metadata and screenshot package."""
 
 import argparse
+import json
 import re
 import struct
 import sys
@@ -12,9 +13,11 @@ from urllib.parse import urlsplit
 STORE_ROOT = Path(__file__).resolve().parent
 METADATA_ROOT = STORE_ROOT / "metadata" / "en-US"
 SCREENSHOT_ROOT = STORE_ROOT / "screenshots" / "en-US"
+SCREENSHOT_MANIFEST = STORE_ROOT / "screenshots" / "manifest.json"
+REPOSITORY_ROOT = STORE_ROOT.parent.parent
 
 EXPECTED_VERSION = "0.5.0"
-EXPECTED_BUILD = "41"
+EXPECTED_BUILD = "42"
 
 # Apple counts keywords and review notes in UTF-8 bytes; the other text limits
 # below are characters.
@@ -306,7 +309,29 @@ def image_info(path):
     return jpeg_info(path)
 
 
+def validate_live_screenshot_provenance(validation):
+    if not SCREENSHOT_MANIFEST.is_file():
+        validation.error(
+            "{}: verified live Release provenance is required; the existing "
+            "screenshots are not submission-ready".format(SCREENSHOT_MANIFEST)
+        )
+        return
+    try:
+        document = json.loads(SCREENSHOT_MANIFEST.read_text(encoding="utf-8"))
+        repository = str(REPOSITORY_ROOT)
+        if repository not in sys.path:
+            sys.path.insert(0, repository)
+        from scripts.ios_screenshot_tools import (  # pylint: disable=import-outside-toplevel
+            verify_live_set,
+        )
+
+        verify_live_set(SCREENSHOT_ROOT, document)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        validation.error("{}: cannot verify: {}".format(SCREENSHOT_MANIFEST, error))
+
+
 def validate_screenshots(validation):
+    validate_live_screenshot_provenance(validation)
     if not SCREENSHOT_ROOT.is_dir():
         validation.error(
             "{}: screenshot directory is missing; add the final en-US screenshots".format(
