@@ -17,7 +17,7 @@ The committed application identity is:
 2. In App Store Connect, create the iOS app record using the fixed values in `dist/app-store/metadata/README.md`.
 3. In App Store Connect **Users and Access → Integrations → App Store Connect API**, enable API access if needed and create a **team** API key for CI.
 4. Download the `.p8` private key once. Record its 10-character Key ID and issuer UUID. Never commit the key, attach it to an issue, paste it into chat, or publish it as a workflow artifact.
-5. Create an Apple Distribution certificate and an App Store provisioning profile for the explicit App ID. Export the certificate and private key as a password-protected `.p12`. App Store profiles contain no registered devices, so this setup does not require an iPhone.
+5. Create an Apple Distribution certificate and an App Store provisioning profile for the explicit App ID. Export the certificate and private key as a password-protected `.p12` that macOS Keychain can import. Use Keychain Access, or OpenSSL 3's legacy-compatible PKCS#12 export mode instead of its default PBES2/AES encoding. App Store profiles contain no registered devices, so this setup does not require an iPhone.
 
 Apple's export-compliance questionnaire must be completed deliberately. The app embeds Rust implementations of industry-standard TLS, DNSSEC, and DANE cryptography rather than limiting encryption to Apple's operating-system APIs, so the answer and any required documentation must come from App Store Connect's current questionnaire.
 
@@ -28,7 +28,7 @@ Create an environment named exactly `app-store`, restrict deployment branches to
 - `APP_STORE_CONNECT_API_KEY_ID`
 - `APP_STORE_CONNECT_API_ISSUER_ID`
 - `APP_STORE_CONNECT_API_PRIVATE_KEY` — the complete downloaded `.p8` file
-- `IOS_DISTRIBUTION_P12_BASE64` — the password-protected Apple Distribution `.p12`, base64 encoded on one line
+- `IOS_DISTRIBUTION_P12_BASE64` — the macOS-compatible, password-protected Apple Distribution `.p12`, base64 encoded on one line
 - `IOS_DISTRIBUTION_P12_PASSWORD` — the `.p12` password, with no trailing newline
 - `IOS_APP_STORE_PROFILE_BASE64` — the App Store `.mobileprovision` file, base64 encoded on one line
 

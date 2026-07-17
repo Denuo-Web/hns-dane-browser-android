@@ -150,7 +150,7 @@ if profile_all_devices="$(
     fail "the provisioning profile is an enterprise profile, not App Store distribution."
 fi
 
-python3 - "$profile_plist" <<'PY' || fail "the provisioning profile has expired."
+if ! python3 -c '
 from datetime import datetime, timezone
 import plistlib
 import sys
@@ -163,7 +163,9 @@ if expiration.tzinfo is None:
     expiration = expiration.replace(tzinfo=timezone.utc)
 if expiration <= datetime.now(timezone.utc):
     raise SystemExit(1)
-PY
+' "$profile_plist"; then
+  fail "the provisioning profile has expired."
+fi
 
 if ! openssl pkcs12 \
   -in "$DISTRIBUTION_P12_PATH" \
@@ -178,8 +180,7 @@ p12_subject="$(openssl x509 -inform DER -in "$p12_leaf_cert" -noout -subject)"
   fail "the .p12 does not contain this team's Apple Distribution certificate."
 openssl x509 -inform DER -in "$p12_leaf_cert" -checkend 0 -noout >/dev/null ||
   fail "the Apple Distribution certificate has expired."
-python3 - "$profile_plist" "$p12_leaf_cert" <<'PY' ||
-  fail "the App Store profile does not include the .p12 signing certificate."
+if ! python3 -c '
 import plistlib
 import sys
 
@@ -189,7 +190,9 @@ with open(sys.argv[2], "rb") as certificate_file:
     distribution_certificate = certificate_file.read()
 if distribution_certificate not in profile_certificates:
     raise SystemExit(1)
-PY
+' "$profile_plist" "$p12_leaf_cert"; then
+  fail "the App Store profile does not include the .p12 signing certificate."
+fi
 
 profiles_dir="${HOME}/Library/Developer/Xcode/UserData/Provisioning Profiles"
 mkdir -p "$profiles_dir"
