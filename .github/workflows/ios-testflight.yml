@@ -32,29 +32,51 @@ jobs:
       - name: Run the complete unsigned iOS gate
         run: ./scripts/run-ios-gate.sh
 
-      - name: Materialize the App Store Connect API key
+      - name: Materialize temporary signing credentials
         env:
           API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+          DISTRIBUTION_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}
+          APP_STORE_PROFILE_BASE64: ${{ secrets.IOS_APP_STORE_PROFILE_BASE64 }}
         run: |
           set -euo pipefail
           [[ "$API_KEY_ID" =~ ^[A-Z0-9]{10}$ ]]
           [[ -n "$API_PRIVATE_KEY" ]]
+          [[ -n "$DISTRIBUTION_P12_BASE64" ]]
+          [[ -n "$APP_STORE_PROFILE_BASE64" ]]
           key_path="$RUNNER_TEMP/AuthKey_${API_KEY_ID}.p8"
+          p12_path="$RUNNER_TEMP/hns-dane-browser-apple-distribution.p12"
+          profile_path="$RUNNER_TEMP/hns-dane-browser-app-store.mobileprovision"
+          cleanup_materialization() {
+            rm -f -- "$key_path" "$p12_path" "$profile_path"
+          }
+          trap cleanup_materialization ERR
           umask 077
           printf '%s' "$API_PRIVATE_KEY" >"$key_path"
+          printf '%s' "$DISTRIBUTION_P12_BASE64" | base64 -D >"$p12_path"
+          printf '%s' "$APP_STORE_PROFILE_BASE64" | base64 -D >"$profile_path"
+          [[ -s "$key_path" && -s "$p12_path" && -s "$profile_path" ]]
+          trap - ERR
           printf 'HNS_ASC_API_KEY_PATH=%s\n' "$key_path" >>"$GITHUB_ENV"
+          printf 'HNS_IOS_DISTRIBUTION_P12_PATH=%s\n' "$p12_path" >>"$GITHUB_ENV"
+          printf 'HNS_IOS_APP_STORE_PROFILE_PATH=%s\n' "$profile_path" >>"$GITHUB_ENV"
 
       - name: Create the signed archive and upload it
         env:
           HNS_IOS_TEAM_ID: 45NQQK3G3S
           HNS_ASC_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           HNS_ASC_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          HNS_IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_P12_PASSWORD }}
         run: ./scripts/upload-ios-testflight.sh
 
-      - name: Remove the temporary API key
+      - name: Remove the temporary signing credentials
         if: ${{ always() }}
         run: |
-          if [[ -n "${HNS_ASC_API_KEY_PATH:-}" ]]; then
-            rm -f -- "$HNS_ASC_API_KEY_PATH"
-          fi
+          for credential_path in \
+            "${HNS_ASC_API_KEY_PATH:-}" \
+            "${HNS_IOS_DISTRIBUTION_P12_PATH:-}" \
+            "${HNS_IOS_APP_STORE_PROFILE_PATH:-}"; do
+            if [[ -n "$credential_path" ]]; then
+              rm -f -- "$credential_path"
+            fi
+          done
