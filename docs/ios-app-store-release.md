@@ -64,11 +64,11 @@ The workflow then:
 
 Apple associates the uploaded build with the app record using its bundle ID, version, and build number. A rerun after Apple accepts build `41` requires a higher build number.
 
-Build `41` declares `ITSAppUsesNonExemptEncryption = true`. For worldwide
-distribution, complete the French encryption declaration before submitting the
-build for App Review or TestFlight App Review. After Apple approves the
-documentation, add the export-compliance code that App Store Connect provides
-to the app's Info.plist for the next build.
+Build `41` declares `ITSAppUsesNonExemptEncryption = false` because the first
+release uses only industry-standard cryptography and excludes France from App
+Store availability. Do not add an export-compliance code to this build. Before
+enabling France, complete the French encryption declaration; after Apple
+approves it, add the supplied export-compliance code to the next build.
 
 ## Release gate after upload
 
