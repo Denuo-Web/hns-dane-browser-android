@@ -1,10 +1,10 @@
 # Build and Supply-Chain Audit
 
-Last audited: 2026-07-15
+Last audited: 2026-07-16
 
 ## Configured and Local Gates
 
-- The checked-in GitHub Actions workflow always runs a lightweight repository-policy and path-classification job, then selects the Rust, Android, and Apple gates affected by the complete change set. Shared Rust changes run all three gates; platform-only changes skip the opposing application shell; unknown paths and manual dispatches fail safe by selecting everything. Its permissions are read-only, release secrets are not provided, every non-local `uses:` reference is pinned to a full commit SHA, checkout credentials are not persisted, and concurrent runs on the same ref are cancelled. The `0.4.1` code and build-policy tree passed every selected job in [run 29477163745](https://github.com/Denuo-Web/hns-dane-browser/actions/runs/29477163745); only this evidence-only documentation update followed. Actions was then restored to the repository's prior disabled state, so CI is validated but not an enforced merge gate.
+- The checked-in GitHub Actions workflow always runs a lightweight repository-policy and path-classification job, then selects the Rust, Android, and Apple gates affected by the complete change set. Shared Rust changes run all three gates; platform-only changes skip the opposing application shell; unknown paths and manual dispatches fail safe by selecting everything. Its permissions are read-only, release secrets are not provided, every non-local `uses:` reference is pinned to a full commit SHA, checkout credentials are not persisted, and concurrent runs on the same ref are cancelled. Historical evidence: the `0.4.1` code and build-policy tree passed every selected job in [run 29477163745](https://github.com/Denuo-Web/hns-dane-browser/actions/runs/29477163745). Actions was then restored to the repository's prior disabled state, so that pass does not validate `0.5.0` and CI is not an enforced merge gate.
 - Dependabot watches GitHub Actions, Gradle, and all three Cargo lockfile roots weekly.
 - Rust uses toolchain `1.92.0`; build, clippy, test, metadata, Android cross-compile, and cargo-deny commands use committed lockfiles with `--locked`. No Cargo lockfile contains a Git dependency, and registry packages carry Cargo checksums.
 - cargo-deny covers all three manifests. The fuzz and exporter packages now declare the repository license. `NCSA` is allowed specifically because `libfuzzer-sys` combines its MIT/Apache-2.0 code with LLVM libFuzzer code under the University of Illinois/NCSA license.
@@ -18,16 +18,30 @@ Last audited: 2026-07-15
 
 ## Audit Results
 
-- The Android `0.4.1` / code 39 maintenance release changes application and release metadata while retaining the reviewed Rust engine at `0.4.0`.
-- `scripts/check.sh` passed locally on 2026-07-15 for the Android `0.4.1` candidate with shared Rust engine `0.4.0`, including supply-chain/version checks, formatting, clippy with warnings denied, all three cargo-deny scopes, the complete Rust test matrix, fuzz-target compilation, and the header-snapshot exporter.
-- The final `0.4.1` Android build passed 187 unit tests, debug and release lint with zero errors, R8/resource shrinking, upload signing, APK signature and 16 KiB ZIP-alignment verification, and both release-bundle gates. It used Gradle 9.6.1 / AGP 9.2.1, compile/target SDK 37, NDK `28.2.13676358`, and build-tools AAPT2 36.1.0. The signed AAB SHA-256 is `4b2cc8b1da7700675eedb1ed2319ccafd9541acc7114abff9bd60eb6399b4267`; the signed APK SHA-256 is `a5a9d50d5b19302af488f7f5e6c68281364070edc7edcb14e16dbb1e1a5d61a2`.
-- Independent artifact inspection confirmed both installed JNI libraries were NDK r28c API 34 ET_DYN files, stripped, 16 KiB-aligned, RELRO, non-executable-stack, immediate-binding, text-relocation-free, and paired with unstripped `.dbg` files carrying the same Build IDs. No checkout/home/NDK path was found; the signed release APK passed 16 KiB zip alignment.
-- The shared-runtime tree passed 5/5 connected Pixel instrumentation tests plus live `https://denuoweb/` and `https://aboutlife/` DNSSEC/DANE acceptance. The exact signed `0.4.1` APK subsequently upgraded the Pixel 9 from code 38 to code 39 and cold-launched its main activity successfully.
-- cargo-deny reports no known advisory, source, or license-policy failures for the shipping workspace, fuzz workspace, or exporter. Duplicate transitive versions and unused allow-list entries remain warnings.
-- No high-confidence secret or secret-bearing filename was found among tracked files.
-- The locally configured upload certificate SHA-256 matches the retained and published `0.4.0` APK signer and the new `0.4.1` APK. It still needs an out-of-band comparison with the upload certificate shown by Play Console.
-- GitHub Actions [run 29477163745](https://github.com/Denuo-Web/hns-dane-browser/actions/runs/29477163745) passed the `0.4.1` code and build-policy tree before the evidence-only documentation update. Actions is disabled and `main` has neither branch protection nor a ruleset, so the hosted pass is execution evidence rather than a continuously enforced control.
+### Current `0.5.0` Candidate
+
+- Android declares `0.5.0` / code 40 and the shared Rust workspace declares `0.5.0`. This is not a metadata-only release: it changes the shared resolver/P2P runtime and Android behavior.
+- The complete local `scripts/check.sh` gate passed on 2026-07-16, including supply-chain and version checks, warning-denied Clippy, all three cargo-deny scopes, the full Rust workspace tests, fuzz smoke, iOS C ABI tests, and the header-snapshot exporter. The final requester review and focused P2P suite also passed after closing query-profile, handshake-bound, forward-status, and peer-height issues.
+- Android passed 192 unit tests plus debug and release lint with no errors. A clean committed-tree build using Gradle 9.6.1, AGP 9.2.1, compile/target SDK 37, build-tools AAPT2 36.1.0, and NDK `28.2.13676358` passed R8/resource shrinking and the unsigned and upload-signed bundle gates.
+- The scripted isolated topology and bounded load tier passed, followed by the real four-`hsd` regtest tier at height 91 with a registered `relaytest` name, four matching chain/tree states, verified Urkel inclusion, local DNSSEC and DANE, HTTPS 200, bad-to-good relay failover, and no legacy DoH sentinel contact. The focused `hsd` responder suite passed 47 tests with ESLint clean.
+- Hosted path-policy, Rust, cold-cache Android, Apple, and required-result jobs are pending for the exact candidate commit.
+- The final upload-signed code 40 APK verifies with APK Signature Scheme v2 and the established single RSA-4096 certificate SHA-256 `D2:2F:F3:25:17:53:11:EB:E6:D6:E9:3D:A3:FD:F5:1D:84:89:22:A1:B8:1A:CB:B3:2F:22:39:CC:F9:4A:51:14`; it passes 16 KiB ZIP alignment. Its SHA-256 is `bff5ba468b0c5ad2d134603127f089ad6fdc9e9b5ceab921825e570cfefd60fb`.
+- The final upload-signed AAB passed content-signature, exact ABI inventory, 16 KiB ELF alignment, hardening, stripping, matching Build ID/debug-symbol, local-path, mapping, and notices gates. Its SHA-256 is `96c5926c559881ba74e380eea062dce3de6cefaf91d3753882e528cccc96e1d0`.
+- The separate debug test APK uses package `com.denuoweb.hnsdane.relaytest`, version `0.5.0-relay-test` / code 40, and SHA-256 `019aeb82b84de878716637fd053321a4590e0c384de3010e885af7e154803990`.
+- The exact signed release could not be installed because the previously attached Pixel 9 physically disconnected from USB before the install step. Device acceptance remains pending and is not inferred from build or host-side tests.
+- Third-party notices and their committed fingerprint were regenerated for the `0.5.0` Rust/dependency graph and passed the checked-in integrity gate.
 - Release signing and Play upload remain intentional secret-dependent gates. CI should build and structurally verify the release variant without signing credentials and must not publish.
+
+### Historical `0.4.1` Evidence
+
+- `scripts/check.sh` passed locally on 2026-07-15 for Android `0.4.1` with shared Rust engine `0.4.0`, including supply-chain/version checks, formatting, clippy with warnings denied, all three cargo-deny scopes, the complete Rust test matrix, fuzz-target compilation, and the header-snapshot exporter.
+- The final `0.4.1` Android build passed 187 unit tests, debug and release lint with zero errors, R8/resource shrinking, upload signing, APK signature and 16 KiB ZIP-alignment verification, and both release-bundle gates. It used Gradle 9.6.1 / AGP 9.2.1, compile/target SDK 37, NDK `28.2.13676358`, and build-tools AAPT2 36.1.0. The signed AAB SHA-256 was `4b2cc8b1da7700675eedb1ed2319ccafd9541acc7114abff9bd60eb6399b4267`; the signed APK SHA-256 was `a5a9d50d5b19302af488f7f5e6c68281364070edc7edcb14e16dbb1e1a5d61a2`.
+- Independent artifact inspection confirmed both installed JNI libraries were NDK r28c API 34 ET_DYN files, stripped, 16 KiB-aligned, RELRO, non-executable-stack, immediate-binding, text-relocation-free, and paired with unstripped `.dbg` files carrying the same Build IDs. No checkout/home/NDK path was found; the signed release APK passed 16 KiB ZIP alignment.
+- The shared-runtime tree passed 5/5 connected Pixel instrumentation tests plus live `https://denuoweb/` and `https://aboutlife/` DNSSEC/DANE acceptance. The exact signed `0.4.1` APK subsequently upgraded the Pixel 9 from code 38 to code 39 and cold-launched its main activity successfully.
+- cargo-deny reported no known advisory, source, or license-policy failures for the shipping workspace, fuzz workspace, or exporter. Duplicate transitive versions and unused allow-list entries remained warnings.
+- No high-confidence secret or secret-bearing filename was found among tracked files.
+- The locally configured upload certificate SHA-256 matched the retained and published `0.4.0` APK signer and the `0.4.1` APK. It still needs an out-of-band comparison with the upload certificate shown by Play Console for the next release.
+- GitHub Actions [run 29477163745](https://github.com/Denuo-Web/hns-dane-browser/actions/runs/29477163745) passed the `0.4.1` code and build-policy tree before the evidence-only documentation update. Actions is disabled and `main` has neither branch protection nor a ruleset, so this is historical execution evidence rather than a continuously enforced control.
 
 ## Residual Risks
 

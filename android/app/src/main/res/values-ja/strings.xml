@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="action_analyze">分析する</string>
+    <string name="action_add">追加</string>
     <string name="action_cancel">キャンセル</string>
     <string name="action_change">変化</string>
     <string name="action_clear">クリア</string>
@@ -300,7 +301,6 @@
     <string name="gateway_clip_label">HNS DANE ブラウザ ゲートウェイ イベント</string>
     <string name="gateway_copied">ゲートウェイ イベントがコピーされました</string>
     <string name="legal_license_summary">HNS DANE ブラウザは、PolyForm Noncommercial License 1.0.0 に基づいてソースから入手できます。非営利的な使用、研究、改変、再配布はライセンスに基づいて許可されています。商用利用には、Denuo Web, LLC からの書面による許可が別途必要です。</string>
-    <string name="legal_user_agreement">これは、ローカル HNS 証明、RFC 8484 DoH トランスポート、および DNSSEC/DANE 診断を備えた実験的なHandshake ファースト ブラウザーです。 HNS 解決、DNSSEC 検証、DANE チェック、互換性フォールバック、および同期が失敗して終了するか、不完全になる可能性があります。このアプリは保証なしで提供され、金融サービスではなく、寄付はオプションであり、ロックを解除できる機能はありません。</string>
     <string name="legal_copy_privacy_policy_url">プライバシーポリシーのURL</string>
     <string name="legal_copy_source_code_url">ソースコードのURL</string>
     <string name="legal_copy_hns_donation_address">HNS寄付先住所</string>

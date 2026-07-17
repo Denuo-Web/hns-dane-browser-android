@@ -2,6 +2,7 @@
     <string name="app_name" translatable="false">HNS DANE</string>
 
     <string name="action_analyze">Analyze</string>
+    <string name="action_add">Add</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_change">Change</string>
     <string name="action_clear">Clear</string>
@@ -39,11 +40,13 @@
     <string name="security_hns_compat">HNS via DoH</string>
     <string name="security_hns_via_authoritative_doh" translatable="false">HNS via ADoH</string>
     <string name="security_hns_via_authoritative_dns53" translatable="false">HNS via DNS53</string>
+    <string name="security_hns_via_p2p_dns_relay" translatable="false">HNS via P2P DNS relay</string>
     <string name="security_hns_via_third_party_doh" translatable="false">HNS via 3rd DoH</string>
     <string name="security_dane_verified">DANE verified</string>
     <string name="security_dane_compat">DANE via DoH</string>
     <string name="security_dane_via_authoritative_doh" translatable="false">DANE via ADoH</string>
     <string name="security_dane_via_authoritative_dns53" translatable="false">DANE via DNS53</string>
+    <string name="security_dane_via_p2p_dns_relay" translatable="false">DANE via P2P DNS relay</string>
     <string name="security_dane_via_third_party_doh" translatable="false">DANE via 3rd DoH</string>
     <string name="security_stateless_dane" translatable="false">Stateless DANE</string>
     <string name="security_dane_via_icann_doh" translatable="false">DANE via ICANN DoH</string>
@@ -161,6 +164,7 @@
     <string name="row_gateway">Gateway</string>
     <string name="row_gateway_summary">Inspect recent native gateway events.</string>
     <string name="row_handshake_network">Handshake network</string>
+    <string name="row_add_hns_relay_peer" translatable="false">Add HNS relay peer</string>
     <string name="row_history">History</string>
     <string name="row_hns_domain_setup">HNS domain setup</string>
     <string name="row_hns_domain_setup_summary">Check records and delegation for an HNS domain.</string>
@@ -298,6 +302,22 @@
     <string name="settings_stateless_dane_off">Off. HNS proof and TLSA evidence use the live resolver path.</string>
     <string name="settings_strict_hns_mode">Strict HNS mode</string>
     <string name="settings_stateless_dane_certificates">Experimental stateless DANE certificates</string>
+    <string name="settings_experimental_p2p_dns_relay" translatable="false">Experimental P2P DNS relay</string>
+    <string name="settings_experimental_p2p_dns_relay_on" translatable="false">On by default. Delegated DNS may use relay-capable Handshake peers; DNSSEC validation remains local.</string>
+    <string name="settings_experimental_p2p_dns_relay_off" translatable="false">Off. Peer DNS relay messages are not used.</string>
+    <string name="settings_static_relay_peer_summary" translatable="false">Add a known relay-capable peer when discovery has not found one. Existing peers remain available.</string>
+    <string name="settings_static_relay_peer_title" translatable="false">Add HNS relay peer</string>
+    <string name="settings_static_relay_peer_message" translatable="false">Enter a %1$s Handshake peer as IPv4:port or [IPv6]:port. The app will verify its network handshake and live DNS-relay capability before saving it. Hostnames are not accepted or resolved.</string>
+    <string name="settings_static_relay_peer_hint" translatable="false">IPv4:%1$d or [IPv6]:%2$d</string>
+    <string name="settings_static_relay_peer_error" translatable="false">Enter a valid IPv4:port or [IPv6]:port endpoint</string>
+    <string name="settings_static_relay_peer_verifying" translatable="false">Verifying a relay-capable %1$s peer…</string>
+    <string name="settings_static_relay_peer_verify_failed" translatable="false">No allowed, reachable relay-capable peer was found at this endpoint</string>
+    <string name="settings_static_relay_peer_saved" translatable="false">%1$s relay peer added</string>
+    <string name="settings_static_relay_peer_saved_status" translatable="false">Verified relay-capable %1$s peer saved. Add another if needed.</string>
+    <string name="settings_static_relay_peer_in_progress" translatable="false">A relay peer is already being verified</string>
+    <string name="settings_legacy_hns_doh_compatibility" translatable="false">Legacy HNS DoH compatibility</string>
+    <string name="settings_legacy_hns_doh_compatibility_on" translatable="false">On by default. The configured third-party HNS DoH path remains available as a compatibility fallback.</string>
+    <string name="settings_legacy_hns_doh_compatibility_off" translatable="false">Off. The legacy third-party HNS DoH compatibility path is disabled independently of P2P relay.</string>
     <string name="settings_theme_dialog_title">Theme</string>
     <string name="settings_theme_set">Theme set to %1$s.</string>
     <string name="theme_choice_dark">Dark</string>
@@ -335,8 +355,8 @@
     <string name="gateway_cleared" translatable="false">Gateway events cleared</string>
 
     <string name="legal_license_summary">HNS DANE Browser is source-available under the PolyForm Noncommercial License 1.0.0. Noncommercial use, study, modification, and redistribution are allowed under the license. Commercial use requires separate written permission from Denuo Web, LLC.</string>
-    <string name="legal_user_agreement">This is an experimental Handshake-first browser with local HNS proofs, RFC 8484 DoH transport, and DNSSEC/DANE diagnostics. HNS resolution, DNSSEC validation, DANE checks, compatibility fallback, and sync may fail closed or be incomplete. The app is provided without warranty, is not a financial service, and donations are optional and unlock no features.</string>
-    <string name="legal_privacy_summary" translatable="false">HNS DANE Browser does not include ads, analytics SDKs, or developer-operated accounts. It stores browsing history, cookies, website data, download records, settings, diagnostics, and HNS sync/cache data locally on the device. It sends network requests needed for browser functionality to websites you visit, HNS peers, DNS seeds, authoritative nameservers, proof-bootstrapped or RFC 9461-discovered authoritative DoH endpoints, WebView Safe Browsing services when supported by the installed WebView provider, and the non-routable 192.0.2.1 TEST-NET DNS sentinel after delegated DNS failure. In compatibility mode only, it may also use the configured HNS DoH resolver after local/direct resolution fails. Strict HNS mode disables that third-party fallback. Local browsing data can be cleared from Settings.</string>
+    <string name="legal_user_agreement" translatable="false">This is an experimental Handshake-first browser with local HNS proofs, authoritative DNS, a P2P DNS relay, RFC 8484 DoH transport, and DNSSEC/DANE diagnostics. HNS resolution, DNSSEC validation, DANE checks, relay and compatibility fallback, and sync may fail closed or be incomplete. The app is provided without warranty, is not a financial service, and donations are optional and unlock no features.</string>
+    <string name="legal_privacy_summary" translatable="false">HNS DANE Browser does not include ads, analytics SDKs, or developer-operated accounts. It stores browsing history, cookies, website data, download records, settings, diagnostics, HNS sync/cache data, and manually added relay-peer IP endpoints locally on the device. It sends network requests needed for browser functionality to websites you visit, HNS peers, DNS seeds, authoritative nameservers, proof-bootstrapped or RFC 9461-discovered authoritative DoH endpoints, WebView Safe Browsing services when supported by the installed WebView provider, and the non-routable 192.0.2.1 TEST-NET DNS sentinel after delegated DNS failure. New installs enable the HNS P2P DNS relay and independent legacy HNS DoH fallback by default. A selected relay peer can observe each relayed qname, qtype, timing, and the source network address of the P2P connection; relayed answers still undergo local DNSSEC and DANE validation. Strict HNS mode disables the legacy third-party fallback, and each relay control can be changed in Settings. Local browsing data can be cleared from Settings.</string>
     <string name="legal_license_name" translatable="false">PolyForm Noncommercial 1.0.0</string>
     <string name="legal_copy_privacy_policy_url">privacy policy URL</string>
     <string name="legal_copy_source_code_url">source code URL</string>

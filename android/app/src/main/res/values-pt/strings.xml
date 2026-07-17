@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="action_analyze">Analisar</string>
+    <string name="action_add">Adicionar</string>
     <string name="action_cancel">Cancelar</string>
     <string name="action_change">Mudar</string>
     <string name="action_clear">Claro</string>
@@ -300,7 +301,6 @@
     <string name="gateway_clip_label">Eventos de gateway do navegador HNS DANE</string>
     <string name="gateway_copied">Eventos de gateway copiados</string>
     <string name="legal_license_summary">O navegador HNS DANE está disponível sob a licença não comercial PolyForm 1.0.0. O uso não comercial, estudo, modificação e redistribuição são permitidos sob a licença. O uso comercial requer permissão por escrito separada da Denuo Web, LLC.</string>
-    <string name="legal_user_agreement">Este é um navegador experimental Handshake-first com provas HNS locais, transporte RFC 8484 DoH e diagnóstico DNSSEC/DANE. A resolução HNS, a validação DNSSEC, as verificações DANE, o fallback de compatibilidade e a sincronização podem falhar ao fechar ou estar incompletas. O aplicativo é fornecido sem garantia, não é um serviço financeiro e as doações são opcionais e não desbloqueiam nenhum recurso.</string>
     <string name="legal_copy_privacy_policy_url">URL da política de privacidade</string>
     <string name="legal_copy_source_code_url">URL do código-fonte</string>
     <string name="legal_copy_hns_donation_address">Endereço de doação HNS</string>

@@ -10,9 +10,9 @@ fi
 package_name="${PLAY_PACKAGE:-com.denuoweb.hnsdane}"
 track_name="${PLAY_TRACK:-alpha}"
 release_status="${PLAY_RELEASE_STATUS:-completed}"
-aab_path="${1:-dist/play-store/hns-dane-browser-v0.4.1-play-upload-signed.aab}"
-release_name="${PLAY_RELEASE_NAME:-HNS DANE Browser 0.4.1}"
-release_notes="${PLAY_RELEASE_NOTES:-0.4.1 updates the in-app source code link to the renamed cross-platform GitHub repository. Browser behavior and networking are unchanged.}"
+aab_path="${1:-dist/play-store/hns-dane-browser-v0.5.0-play-upload-signed.aab}"
+release_name="${PLAY_RELEASE_NAME:-HNS DANE Browser 0.5.0}"
+release_notes="${PLAY_RELEASE_NOTES:-0.5.0 adds a proof-gated Handshake P2P DNS relay, enabled by default with legacy DoH fallback, plus manual relay peer configuration. DNSSEC and DANE validation remain local.}"
 
 if [[ ! "$package_name" =~ ^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)+$ ]]; then
   echo "Invalid Play package name: $package_name" >&2

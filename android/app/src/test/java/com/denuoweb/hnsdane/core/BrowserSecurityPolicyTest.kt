@@ -161,6 +161,8 @@ class BrowserSecurityPolicyTest {
             HnsPageSecurityPath.HnsAuthoritativeDoh to SecurityState.HnsViaAuthoritativeDoh,
             HnsPageSecurityPath.HnsAuthoritativeDns53 to SecurityState.HnsViaAuthoritativeDns53,
             HnsPageSecurityPath.HnsThirdPartyDoh to SecurityState.HnsViaThirdPartyDoh,
+            HnsPageSecurityPath.DaneP2pDnsRelay to SecurityState.DaneViaP2pDnsRelay,
+            HnsPageSecurityPath.HnsP2pDnsRelay to SecurityState.HnsViaP2pDnsRelay,
         )
 
         expectations.forEach { (path, expectedState) ->

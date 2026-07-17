@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="action_analyze">Analysieren</string>
+    <string name="action_add">Hinzufügen</string>
     <string name="action_cancel">Stornieren</string>
     <string name="action_change">Ändern</string>
     <string name="action_clear">Klar</string>
@@ -300,7 +301,6 @@
     <string name="gateway_clip_label">HNS DANE Browser-Gateway-Ereignisse</string>
     <string name="gateway_copied">Gateway-Ereignisse kopiert</string>
     <string name="legal_license_summary">Der HNS DANE Browser ist im Quellcode unter der PolyForm Noncommercial License 1.0.0 verfügbar. Die nichtkommerzielle Nutzung, das Studium, die Änderung und die Weiterverbreitung sind im Rahmen der Lizenz gestattet. Für die kommerzielle Nutzung ist eine gesonderte schriftliche Genehmigung von Denuo Web, LLC erforderlich.</string>
-    <string name="legal_user_agreement">Dies ist ein experimenteller Handshake-First-Browser mit lokalen HNS-Proofs, RFC 8484 DoH-Transport und DNSSEC/DANE-Diagnose. HNS-Auflösung, DNSSEC-Validierung, DANE-Prüfungen, Kompatibilitäts-Fallback und Synchronisierung schlagen möglicherweise fehl oder sind unvollständig. Die App wird ohne Gewährleistung bereitgestellt, ist keine Finanzdienstleistung und Spenden sind optional und schalten keine Funktionen frei.</string>
     <string name="legal_copy_privacy_policy_url">URL der Datenschutzrichtlinie</string>
     <string name="legal_copy_source_code_url">Quellcode-URL</string>
     <string name="legal_copy_hns_donation_address">HNS-Spendenadresse</string>

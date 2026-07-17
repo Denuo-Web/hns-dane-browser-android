@@ -1,6 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
 <string name="action_analyze">分析</string>
+<string name="action_add">新增</string>
 <string name="action_cancel">取消</string>
 <string name="action_change">改變</string>
 <string name="action_clear">清除</string>
@@ -300,7 +301,6 @@
 <string name="gateway_clip_label">HNS DANE Browser網關事件</string>
 <string name="gateway_copied">已複製網關事件</string>
 <string name="legal_license_summary">HNS DANE Browser 可根據 PolyForm 非商業授權 1.0.0 取得原始碼。許可證允許非商業使用、研究、修改和重新分發。商業用途需要獲得 Denuo Web, LLC 的單獨書面許可。</string>
-<string name="legal_user_agreement">這是一個實驗性的 Handshake 優先瀏覽器，具有本地 HNS 證明、RFC 8484 DoH 傳輸和 DNSSEC/DANE 診斷。 HNS 解析度、DNSSEC 驗證、DANE 檢查、相容性回退和同步可能會失敗或不完整。該應用程式不提供保修，不是金融服務，捐贈是可選的，並且不解鎖任何功能。</string>
 <string name="legal_copy_privacy_policy_url">隱私權政策 URL</string>
 <string name="legal_copy_source_code_url">原始碼URL</string>
 <string name="legal_copy_hns_donation_address">HNS捐款地址</string>

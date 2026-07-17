@@ -61,6 +61,8 @@ internal class RustBrowserProxyConfig(
     val strictHnsMode: Boolean,
     val dohResolverUrl: String,
     val statelessDaneCertificates: Boolean,
+    val experimentalP2pDnsRelay: Boolean = false,
+    val legacyHnsDohCompatibility: Boolean = true,
 )
 
 internal class LocalBrowserProxyStatus(
@@ -272,6 +274,8 @@ internal fun parseRustProxyStatusBundle(
         6 -> HnsPageSecurityPath.HnsAuthoritativeDoh
         7 -> HnsPageSecurityPath.HnsAuthoritativeDns53
         8 -> HnsPageSecurityPath.HnsThirdPartyDoh
+        9 -> HnsPageSecurityPath.DaneP2pDnsRelay
+        10 -> HnsPageSecurityPath.HnsP2pDnsRelay
         else -> return null
     }
     val host = cursor.readAscii(MAX_PROXY_STATUS_HOST_BYTES) ?: return null

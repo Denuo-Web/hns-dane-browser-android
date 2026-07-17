@@ -1,19 +1,19 @@
 # Google Play Readiness Checklist
 
-Last audited: 2026-07-15
+Last audited: 2026-07-16
 
-This checklist maps HNS DANE Browser to current Google Play update requirements and identifies the Play Console fields that must be reconciled outside the repository. The app is already public: the live production listing observed during this audit serves `0.3.1` (`versionCode 22`). The repository release candidate declares Android `0.4.1` (`versionCode 39`) with the unchanged shared Rust engine at `0.4.0`.
+This checklist maps HNS DANE Browser to current Google Play update requirements and identifies the Play Console fields that must be reconciled outside the repository. The app is already public: the live production listing observed during the prior audit served `0.3.1` (`versionCode 22`). The current repository release candidate declares Android `0.5.0` (`versionCode 40`) with shared Rust engine `0.5.0`. Local and signed-artifact gates pass; hosted CI and release-device gates remain pending. The retained `0.4.1` results below are historical evidence only.
 
 ## Current Repo Status
 
 | Area | Status | Evidence / Action |
 | --- | --- | --- |
 | Target API level | Ready | `targetSdk = 37`, above the current Google Play requirement of Android 15 / API 35 for new apps and updates. |
-| Android App Bundle | Ready locally | Package identity remains `com.denuoweb.hnsdane`. The final `0.4.1` / code 39 upload-signed AAB passed the structural, native-hardening, and entry-by-entry signer gates; its SHA-256 is `4b2cc8b1da7700675eedb1ed2319ccafd9541acc7114abff9bd60eb6399b4267`. |
-| 64-bit / 16 KiB native code | Ready locally | The audit bundle contains exactly `arm64-v8a` and `x86_64`; both stripped NDK r28c libraries and their matching FULL debug metadata passed 16 KiB alignment, ELF hardening, Build ID, symbol, and path-sanitization checks. |
+| Android App Bundle | Locally verified for `0.5.0` | Package identity remains `com.denuoweb.hnsdane`. The code 40 upload-signed AAB passed signature and structural verification with SHA-256 `96c5926c559881ba74e380eea062dce3de6cefaf91d3753882e528cccc96e1d0`. |
+| 64-bit / 16 KiB native code | Ready locally for `0.5.0` | The `arm64-v8a` and `x86_64` libraries pass 16 KiB alignment, ELF hardening, Build ID, matching symbol, stripping, and path-sanitization gates; the signed APK passes 16 KiB ZIP alignment. |
 | Restricted permissions | Ready | Manifest does not request location, contacts, SMS, call logs, camera, microphone, all-files, package visibility, or account permissions. |
 | Foreground service | Not used | Sync is owned by the application while at least one app screen is started and stops when the whole app backgrounds. The manifest declares no service and requests none of `POST_NOTIFICATIONS`, `FOREGROUND_SERVICE`, or `FOREGROUND_SERVICE_DATA_SYNC`; mark foreground-service use as not applicable and remove stale `dataSync` drafts. |
-| Privacy policy | Ready | Keep `https://denuoweb.com/work/hns-dane-browser/privacy` as the canonical URL. It renders the supplied HNS DANE Browser policy through the Denuo Web site application and is accepted unchanged for this release audit. |
+| Privacy policy | Repository updated; hosted reconciliation required | Keep `https://denuoweb.com/work/hns-dane-browser/privacy` as the canonical URL, but publish the revised policy that discloses the default P2P DNS relay, its observable query/network metadata, manual peer endpoints, and independent legacy DoH fallback before submitting `0.5.0`. |
 | Data safety form | Live reconciliation required | The current `No data collected / No data shared` posture is consistent with Google's open-web, on-device, and user-initiated-transfer exclusions. Confirm current WebView-provider Safe Browsing guidance before resubmission. |
 | Ads declaration | Ready | Declare “No ads.” Donations do not unlock features. |
 | Account deletion | Not applicable | The app does not create developer-operated accounts. |
@@ -93,7 +93,7 @@ Use the Play Console definitions and answer conservatively. These are repository
 
 - Data collected: `No` under the current Play definitions. There are no developer-operated accounts, analytics/ads/crash-upload SDKs, or backend telemetry endpoints. Google explicitly excludes on-device-only processing and data from a WebView in which users navigate the open web.
 - Data shared: `No` under the current Play definitions. Google explicitly excludes open-web WebView navigation and transfers based on a specific user-initiated action where sharing is reasonably expected. User-entered website/HNS navigation and its necessary resolution requests fit those exclusions; protocol-only background header sync does not transmit a listed user data type.
-- Web browsing: do not declare URLs or browsing history solely because the browser contacts a user-selected site. Continue to disclose those network effects in the privacy policy even though Play excludes them from the Data safety form.
+- Web browsing: do not declare URLs or browsing history solely because the browser contacts a user-selected site or sends the necessary HNS DNS query to a relay peer. Continue to disclose those network effects, including the relay peer's visibility into queried names/types and the client's network address, in the privacy policy even though Play excludes them from the Data safety form.
 - Default start page: the app loads a bundled `appassets.androidplatform.net` asset with a restrictive Content Security Policy and no network resources; it does not contact a developer server. A remote homepage is loaded only after the user configures one.
 - Safe Browsing: the installed Android WebView provider may check URLs through its Safe Browsing service. Confirm the provider's current Data safety guidance before submission. If it requires declaring a listed data type for this integration, update the form for that flow; do not imply that Denuo Web operates the service.
 - App activity: browsing history, diagnostics, download records, settings, resolver cache, HNS sync/cache state, and cookies-adjacent WebView state are stored locally on device.
@@ -108,7 +108,7 @@ Use an active, publicly accessible, non-PDF URL. Current hosted URL:
 
 <https://denuoweb.com/work/hns-dane-browser/privacy>
 
-On 2026-07-14 the route rendered the supplied HNS DANE Browser Privacy Policy after the site application loaded. Leave that hosted page unchanged for this release. Change the existing Play listing from its older `/hns-dane-browser/privacy/` URL to this canonical route, and keep the live Data safety answers consistent with the accepted policy and actual app behavior.
+On 2026-07-14 the route rendered the policy accepted for the historical `0.4.1` audit after the site application loaded. That copy predates the `0.5.0` default P2P DNS relay behavior and must be replaced with the revised 2026-07-16 repository policy before submission. Change the existing Play listing from its older `/hns-dane-browser/privacy/` URL to this canonical route, and keep the live Data safety answers consistent with the updated policy and actual app behavior.
 
 ### Content Rating
 
@@ -127,14 +127,14 @@ Use a conservative general-purpose browser posture:
 The app is already public at `0.3.1` (`versionCode 22`), so closed-testing eligibility is not a first-launch gate. Use an internal or closed track when useful to validate the candidate, then promote or submit the verified update:
 
 1. Regenerate the third-party notices and release notes after any version or dependency change.
-2. Build and verify `dist/play-store/hns-dane-browser-v0.4.1-play-upload-signed.aab` with the exact release toolchain; the automated gate covers 16 KiB alignment, required ABIs, native hardening/symbols, R8 mapping, notices, and upload signing.
-3. Compare the configured upload-certificate fingerprint with Play Console. The final-version APK upgraded and cold-launched successfully on the connected Pixel 9; complete any broader manual acceptance matrix desired before production rollout.
+2. Retain the verified `dist/play-store/hns-dane-browser-v0.5.0-play-upload-signed.aab` with the exact release toolchain evidence; the automated gate covers 16 KiB alignment, required ABIs, native hardening/symbols, R8 mapping, notices, and upload signing.
+3. Compare the configured upload-certificate fingerprint with Play Console. Install the exact signed `0.5.0` APK on the connected device, verify the code 40 upgrade and cold launch, and exercise default relay, manual-peer validation, and legacy fallback behavior. The corresponding signed update smoke for `0.4.1` is historical evidence only.
 4. Upload to an internal/closed track for validation if desired. For API upload, use the Console's actual track ID; `alpha` is the standard closed-testing API track.
 5. Reconcile the live privacy policy, Data safety answers, listing copy, screenshots, and release notes, then submit the update to production.
 
 ## Store Listing Draft
 
-The repository draft copy lives under `dist/play-store/metadata/en-US/`. Compare it field-by-field with the existing public listing before treating it as Console-ready, and regenerate release notes after the deferred version increment.
+The repository draft copy lives under `dist/play-store/metadata/en-US/`. Compare it field-by-field with the existing public listing before treating it as Console-ready, and regenerate release notes after the `0.5.0` candidate is verified.
 
 Short description, 80 characters max:
 
@@ -142,12 +142,15 @@ Short description, 80 characters max:
 
 Full description draft:
 
-> HNS DANE Browser is a Handshake-first browser with local HNS proofs, delegated authoritative DoH, and DNSSEC/DANE diagnostics for selected ICANN domains. It syncs Handshake headers, verifies HNS proofs, resolves delegated names, and shows clear security labels for local HNS, DANE, WebPKI, and compatibility fallback paths.
+> HNS DANE Browser is a Handshake-first browser with local HNS proofs, authoritative DNS, an HNS P2P DNS relay, delegated authoritative DoH, and DNSSEC/DANE diagnostics. It syncs Handshake headers, verifies HNS proofs, resolves delegated names, and shows clear security labels for local HNS, DANE, WebPKI, and compatibility fallback paths.
 >
 > Features:
 > - HNS-aware omnibar for names such as `example/` and `name.tld/`
 > - Local Handshake proof verification and resolver cache
 > - DNSSEC and TLSA/DANE diagnostics for HTTPS HNS sites
+> - P2P DNS relay enabled on new Android installs, with all answers validated locally
+> - Optional manual relay peers accepted only as verified IP-literal endpoints
+> - Independent legacy HNS DoH compatibility fallback, also enabled on new installs
 > - Strict HNS mode to disable third-party HNS DoH fallback
 > - Resolver trace, HNS proof viewer, and TLSA inspector
 > - Local controls for cookies, history, downloads, and resolver cache
@@ -160,7 +163,7 @@ Full description draft:
 - Feature graphic: 1024×500 PNG24, no alpha: `dist/play-store/hns-dane-browser-feature-graphic-1024x500.png`.
 - Phone screenshots: compare the local set with the live listing and recapture first-run sync, a successful HNS page, resolver trace, privacy/deletion controls, and diagnostics after the final version increment. The current diagnostics screenshot visibly reports an older app version and must not ship unchanged.
 - Tablet screenshots: recommended if tablet distribution remains enabled.
-- Privacy policy URL: ready; point the existing Play listing to the accepted canonical route without changing the hosted page.
+- Privacy policy URL: canonical route selected; publish the revised relay-aware policy there, then point the existing Play listing to that updated route.
 - Content rating questionnaire: reconcile the saved live answers as a general-purpose browser that is not child-directed.
 
 ## References

@@ -153,7 +153,10 @@ impl DnsName {
                 .to_ascii_lowercase();
             labels.push(label);
 
-            if labels.iter().map(|label| label.len() + 1).sum::<usize>() > MAX_DNS_NAME_LEN {
+            // RFC 1035 permits a complete wire name of 255 octets, including
+            // the terminating root label. MAX_DNS_NAME_LEN is the 253-byte
+            // presentation form, so length octets may total one byte more.
+            if labels.iter().map(|label| label.len() + 1).sum::<usize>() > MAX_DNS_NAME_LEN + 1 {
                 return Err(ParseError::LengthLimit);
             }
 
@@ -183,7 +186,7 @@ impl DnsName {
         }
 
         let name = Self(labels);
-        if name.wire_len() > MAX_DNS_NAME_LEN + 1 {
+        if name.wire_len() > MAX_DNS_NAME_LEN + 2 {
             return Err(ParseError::LengthLimit);
         }
 
@@ -724,7 +727,7 @@ fn parse_uncompressed_dns_name(
         }
         if length == 0 {
             let name = DnsName(labels);
-            if name.wire_len() > MAX_DNS_NAME_LEN + 1 {
+            if name.wire_len() > MAX_DNS_NAME_LEN + 2 {
                 return Err(ParseError::LengthLimit);
             }
             return Ok((name, cursor));
@@ -806,6 +809,25 @@ mod tests {
 
         assert_eq!(name.to_string(), "*.example");
         assert_eq!(wire, b"\x01*\x07example\x00");
+    }
+
+    #[test]
+    fn accepts_maximum_255_octet_wire_name() {
+        let ascii = [
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(61),
+        ]
+        .join(".");
+        assert_eq!(ascii.len(), MAX_DNS_NAME_LEN);
+
+        let name = DnsName::from_ascii(&ascii).unwrap();
+        let mut wire = Vec::new();
+        name.encode_wire(&mut wire).unwrap();
+
+        assert_eq!(wire.len(), 255);
+        assert_eq!(DnsName::parse_wire(&wire, 0).unwrap().0, name);
     }
 
     #[test]

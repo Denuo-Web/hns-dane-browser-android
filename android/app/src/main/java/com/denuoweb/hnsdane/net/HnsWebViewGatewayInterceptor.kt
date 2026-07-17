@@ -23,6 +23,8 @@ class HnsWebViewGatewayInterceptor(
     private val strictHnsMode: () -> Boolean = { false },
     private val dohResolverUrl: () -> String = { "" },
     private val statelessDaneCertificates: () -> Boolean = { false },
+    private val experimentalP2pDnsRelay: () -> Boolean = { false },
+    private val legacyHnsDohCompatibility: () -> Boolean = { true },
     private val handshakeNetwork: () -> String = { DEFAULT_NETWORK },
     private val reportAllHnsStatuses: Boolean = false,
     private val onMainFrameHnsStatus: (Int, HnsPageTlsPolicy?, HnsPageResolverPolicy?, HnsPageSecurityPath?, String?) -> Unit = { _, _, _, _, _ -> },
@@ -190,6 +192,8 @@ class HnsWebViewGatewayInterceptor(
             strictHnsMode = strictHnsMode(),
             dohResolverUrl = dohResolverUrl(),
             statelessDaneCertificates = statelessDaneCertificates(),
+            experimentalP2pDnsRelay = experimentalP2pDnsRelay(),
+            legacyHnsDohCompatibility = legacyHnsDohCompatibility(),
         )
 
     private fun HnsInterceptedResponse.followHnsRedirects(

@@ -35,8 +35,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.denuoweb.hnsdane.ios
         PRODUCT_MODULE_NAME: HnsDaneBrowser
-        MARKETING_VERSION: 0.4.0
-        CURRENT_PROJECT_VERSION: 38
+        MARKETING_VERSION: 0.5.0
+        CURRENT_PROJECT_VERSION: 40
         SWIFT_OBJC_BRIDGING_HEADER: HnsDaneBrowser/Support/HnsDaneBrowser-Bridging-Header.h
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor

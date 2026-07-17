@@ -40,6 +40,8 @@ data class HnsGatewayRuntimeConfig(
     val strictHnsMode: Boolean,
     val dohResolverUrl: String,
     val statelessDaneCertificates: Boolean,
+    val experimentalP2pDnsRelay: Boolean = false,
+    val legacyHnsDohCompatibility: Boolean = true,
 )
 
 interface HnsSyncBridge {
@@ -122,6 +124,12 @@ object NativeBridge :
         block = ::nativeRuntimeSyncStatus,
     )
 
+    fun addStaticRelayPeer(dataDir: String, network: String, endpoint: String): String = withRuntime(
+        dataDir = dataDir,
+        network = network,
+        unavailable = unavailableSyncJson("rust-core-unavailable", network),
+    ) { handle -> nativeRuntimeAddStaticRelayPeer(handle, endpoint) }
+
     fun clearResolverCache(dataDir: String, network: String = DEFAULT_NETWORK): String = withRuntime(
         dataDir = dataDir,
         network = network,
@@ -179,6 +187,8 @@ object NativeBridge :
                 config.strictHnsMode,
                 config.dohResolverUrl,
                 config.statelessDaneCertificates,
+                config.experimentalP2pDnsRelay,
+                config.legacyHnsDohCompatibility,
                 method,
                 scheme,
                 host,
@@ -217,6 +227,8 @@ object NativeBridge :
                     config.strictHnsMode,
                     config.dohResolverUrl,
                     config.statelessDaneCertificates,
+                    config.experimentalP2pDnsRelay,
+                    config.legacyHnsDohCompatibility,
                     method,
                     scheme,
                     host,
@@ -245,6 +257,8 @@ object NativeBridge :
             config.strictHnsMode,
             config.dohResolverUrl,
             config.statelessDaneCertificates,
+            config.experimentalP2pDnsRelay,
+            config.legacyHnsDohCompatibility,
             config.scopeHost,
         ) ?: return@withRuntime null
         parseRustProxyEndpointBundle(bundle) ?: run {
@@ -362,6 +376,8 @@ object NativeBridge :
 
     private external fun nativeRuntimeSyncStatus(handle: Long): String
 
+    private external fun nativeRuntimeAddStaticRelayPeer(handle: Long, endpoint: String): String
+
     private external fun nativeRuntimeClearResolverCache(handle: Long): String
 
     private external fun nativeRuntimeInstallHeaderSnapshot(handle: Long, snapshotPath: String): String
@@ -375,6 +391,8 @@ object NativeBridge :
         strictHnsMode: Boolean,
         dohResolverUrl: String,
         statelessDaneCertificates: Boolean,
+        experimentalP2pDnsRelay: Boolean,
+        legacyHnsDohCompatibility: Boolean,
         scopeRoot: String,
     ): ByteArray?
 
@@ -383,6 +401,8 @@ object NativeBridge :
         strictHnsMode: Boolean,
         dohResolverUrl: String,
         statelessDaneCertificates: Boolean,
+        experimentalP2pDnsRelay: Boolean,
+        legacyHnsDohCompatibility: Boolean,
         method: String,
         scheme: String,
         host: String,
@@ -397,6 +417,8 @@ object NativeBridge :
         strictHnsMode: Boolean,
         dohResolverUrl: String,
         statelessDaneCertificates: Boolean,
+        experimentalP2pDnsRelay: Boolean,
+        legacyHnsDohCompatibility: Boolean,
         method: String,
         scheme: String,
         host: String,

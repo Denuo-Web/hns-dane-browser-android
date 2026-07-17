@@ -30,7 +30,7 @@ class GatewayEventLogTest {
     fun eventLogSanitizesHostStageAndReason() {
         GatewayEventLog.record(
             "Native Response: /private?q=secret",
-            "Welcome./private?q=secret",
+            "Private.Welcome./private?q=secret",
             503,
             "HNS Resolution Unavailable /private?q=secret",
         )
@@ -45,7 +45,19 @@ class GatewayEventLogTest {
         assertFalse(text.contains("?"))
         assertFalse(text.contains("="))
         assertFalse(text.contains("secret"))
+        assertFalse(text.contains("private"))
         assertTrue(text.contains("welcome"))
+    }
+
+    @Test
+    fun eventLogRedactsIpv4AndIpv6Literals() {
+        GatewayEventLog.record("native_response", "192.0.2.44", 502, "failure")
+        GatewayEventLog.record("native_response", "[2001:db8::44]", 502, "failure")
+
+        val events = GatewayEventLog.snapshot()
+        assertEquals(listOf("ip-literal", "ip-literal"), events.map { it.host })
+        assertFalse(GatewayEventLog.snapshotText().contains("192.0.2.44"))
+        assertFalse(GatewayEventLog.snapshotText().contains("2001:db8"))
     }
 
     @Test

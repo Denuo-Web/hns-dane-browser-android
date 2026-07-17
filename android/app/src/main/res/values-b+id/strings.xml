@@ -1,6 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
   <string name="action_analyze">Analisis</string>
+  <string name="action_add">Tambahkan</string>
   <string name="action_cancel">Batalkan</string>
   <string name="action_change">Perubahan</string>
   <string name="action_clear">Jelas</string>
@@ -300,7 +301,6 @@
   <string name="gateway_clip_label">HNS DANE Browser acara gerbang</string>
   <string name="gateway_copied">Peristiwa gateway disalin</string>
   <string name="legal_license_summary">HNS DANE Browser tersedia dari sumber di bawah Lisensi Nonkomersial PolyForm 1.0.0. Penggunaan non-komersial, studi, modifikasi, dan redistribusi diperbolehkan berdasarkan lisensi. Penggunaan komersial memerlukan izin tertulis terpisah dari Denuo Web, LLC.</string>
-  <string name="legal_user_agreement">Ini adalah browser eksperimental Handshake-pertama dengan bukti HNS lokal, transportasi RFC 8484 DoH, dan diagnostik DNSSEC/DANE. HNS resolusi, DNSSEC validasi, DANE pemeriksaan, fallback kompatibilitas, dan sinkronisasi mungkin gagal ditutup atau tidak lengkap. Aplikasi ini disediakan tanpa jaminan, bukan layanan keuangan, dan donasi bersifat opsional dan tidak membuka fitur apa pun.</string>
   <string name="legal_copy_privacy_policy_url">kebijakan privasi URL</string>
   <string name="legal_copy_source_code_url">kode sumber URL</string>
   <string name="legal_copy_hns_donation_address">HNS alamat donasi</string>

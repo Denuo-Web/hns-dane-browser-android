@@ -9,16 +9,22 @@ struct BrowserRuntimePolicy: Equatable, Sendable {
     let resolutionMode: BrowserResolutionMode
     let hnsDohResolver: String?
     let statelessDANECertificates: Bool
+    let experimentalP2PDNSRelay: Bool
+    let legacyHNSDoHCompatibility: Bool
 
     init(
         resolutionMode: BrowserResolutionMode = .compatibility,
         hnsDohResolver: String? = nil,
-        statelessDANECertificates: Bool = false
+        statelessDANECertificates: Bool = false,
+        experimentalP2PDNSRelay: Bool = false,
+        legacyHNSDoHCompatibility: Bool = true
     ) {
         self.resolutionMode = resolutionMode
         let endpoint = hnsDohResolver?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.hnsDohResolver = endpoint?.isEmpty == false ? endpoint : nil
         self.statelessDANECertificates = statelessDANECertificates
+        self.experimentalP2PDNSRelay = experimentalP2PDNSRelay
+        self.legacyHNSDoHCompatibility = legacyHNSDoHCompatibility
     }
 
     static let `default` = BrowserRuntimePolicy()
@@ -29,6 +35,8 @@ final class BrowserRuntimePolicyStore {
         static let resolutionMode = "hnsBrowser.runtimePolicy.resolutionMode"
         static let hnsDohResolver = "hnsBrowser.runtimePolicy.hnsDohResolver"
         static let statelessDANE = "hnsBrowser.runtimePolicy.statelessDANE"
+        static let experimentalP2PDNSRelay = "hnsBrowser.runtimePolicy.experimentalP2PDNSRelay"
+        static let legacyHNSDoHCompatibility = "hnsBrowser.runtimePolicy.legacyHNSDoHCompatibility"
     }
 
     private let defaults: UserDefaults
@@ -43,7 +51,10 @@ final class BrowserRuntimePolicyStore {
         return BrowserRuntimePolicy(
             resolutionMode: mode,
             hnsDohResolver: defaults.string(forKey: Key.hnsDohResolver),
-            statelessDANECertificates: defaults.bool(forKey: Key.statelessDANE)
+            statelessDANECertificates: defaults.bool(forKey: Key.statelessDANE),
+            experimentalP2PDNSRelay: defaults.bool(forKey: Key.experimentalP2PDNSRelay),
+            legacyHNSDoHCompatibility:
+                defaults.object(forKey: Key.legacyHNSDoHCompatibility) as? Bool ?? true
         )
     }
 
@@ -55,6 +66,8 @@ final class BrowserRuntimePolicyStore {
             defaults.removeObject(forKey: Key.hnsDohResolver)
         }
         defaults.set(policy.statelessDANECertificates, forKey: Key.statelessDANE)
+        defaults.set(policy.experimentalP2PDNSRelay, forKey: Key.experimentalP2PDNSRelay)
+        defaults.set(policy.legacyHNSDoHCompatibility, forKey: Key.legacyHNSDoHCompatibility)
     }
 }
 

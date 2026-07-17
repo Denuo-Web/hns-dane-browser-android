@@ -28,7 +28,8 @@ use hns_loopback_proxy::{
     SessionIdGenerationError,
 };
 use hns_p2p::{
-    DnsSeedPeerSource, HeaderSyncSession, PeerConnection, PeerSource, SqlitePeerStore,
+    DnsRelayClient, DnsRelayClientError, DnsSeedPeerSource, EXPERIMENTAL_DNS_RELAY_SERVICE,
+    HeaderSyncSession, PeerConnection, PeerSource, SERVICE_NETWORK, SqlitePeerStore,
     StaticPeerSource, VersionPacket, is_allowed_peer_endpoint,
 };
 use hns_resolver::{
@@ -57,7 +58,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard, TryLockError, Weak};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock, RwLockReadGuard, TryLockError, Weak};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -65,6 +66,7 @@ use thiserror::Error;
 pub const DEFAULT_RESOURCE_CACHE_LIMIT_BYTES: usize = 50 * 1024 * 1024;
 pub const MAX_GATEWAY_HEADER_TEXT_BYTES: usize = 64 * 1024;
 pub const MAX_BROWSER_PROXY_RESOLUTION_TRACE_JSON_BYTES: usize = 64 * 1024;
+const MAX_STATIC_RELAY_PEER_ENDPOINT_BYTES: usize = 320;
 
 /// Shared browser-facing classification; native shells must not duplicate
 /// the resolver's generated ICANN and special-use namespace policy.
@@ -296,6 +298,8 @@ const WHOLE_BROWSER_DOH_MAX_RESPONSE_BODY_BYTES: usize = u16::MAX as usize;
 const MAX_WHOLE_BROWSER_CNAME_CHAIN: usize = 8;
 const HNS_GATEWAY_STRICT_MODE_HEADER: &str = "X-HNS-Browser-Strict-Mode";
 const HNS_GATEWAY_DOH_RESOLVER_HEADER: &str = "X-HNS-Browser-DoH-Resolver";
+const HNS_GATEWAY_P2P_DNS_RELAY_HEADER: &str = "X-HNS-Browser-P2P-DNS-Relay";
+const HNS_GATEWAY_LEGACY_DOH_HEADER: &str = "X-HNS-Browser-Legacy-HNS-DoH";
 const HNS_GATEWAY_STATELESS_DANE_HEADER: &str = "X-HNS-Browser-Stateless-DANE";
 const HNS_GATEWAY_NETWORK_HEADER: &str = "X-HNS-Browser-Network";
 const HNS_RESOLUTION_TRACE_HEADER: &str = "X-HNS-Resolution-Trace";
@@ -404,6 +408,10 @@ impl Default for SyncOptions {
 pub struct RuntimePolicy {
     pub resolution_mode: ResolutionMode,
     pub hns_doh_resolver: Option<String>,
+    /// Enables the private, proof-backed HNS peer DNS-relay transport.
+    pub experimental_p2p_dns_relay: bool,
+    /// Keeps the existing third-party HNS recursive DoH compatibility paths available.
+    pub legacy_hns_doh_compatibility: bool,
     pub stateless_dane_certificates: bool,
 }
 
@@ -418,6 +426,8 @@ impl RuntimePolicy {
         Self {
             resolution_mode: ResolutionMode::Compatibility,
             hns_doh_resolver: None,
+            experimental_p2p_dns_relay: false,
+            legacy_hns_doh_compatibility: true,
             stateless_dane_certificates: false,
         }
     }
@@ -493,11 +503,13 @@ pub enum BrowserProxyResolverPolicy {
 pub enum BrowserProxySecurityPath {
     DaneAuthoritativeDoh,
     DaneAuthoritativeDns53,
+    DaneP2pDnsRelay,
     DaneThirdPartyDoh,
     StatelessDane,
     DaneIcannDoh,
     HnsAuthoritativeDoh,
     HnsAuthoritativeDns53,
+    HnsP2pDnsRelay,
     HnsThirdPartyDoh,
 }
 
@@ -624,6 +636,8 @@ fn parse_browser_proxy_security_path(value: Option<&str>) -> Option<BrowserProxy
         Some(BrowserProxySecurityPath::DaneAuthoritativeDoh)
     } else if value.eq_ignore_ascii_case("dane-authoritative-dns53") {
         Some(BrowserProxySecurityPath::DaneAuthoritativeDns53)
+    } else if value.eq_ignore_ascii_case("dane-p2p-dns-relay") {
+        Some(BrowserProxySecurityPath::DaneP2pDnsRelay)
     } else if value.eq_ignore_ascii_case("dane-third-party-doh") {
         Some(BrowserProxySecurityPath::DaneThirdPartyDoh)
     } else if value.eq_ignore_ascii_case("stateless-dane") {
@@ -634,6 +648,8 @@ fn parse_browser_proxy_security_path(value: Option<&str>) -> Option<BrowserProxy
         Some(BrowserProxySecurityPath::HnsAuthoritativeDoh)
     } else if value.eq_ignore_ascii_case("hns-authoritative-dns53") {
         Some(BrowserProxySecurityPath::HnsAuthoritativeDns53)
+    } else if value.eq_ignore_ascii_case("hns-p2p-dns-relay") {
+        Some(BrowserProxySecurityPath::HnsP2pDnsRelay)
     } else if value.eq_ignore_ascii_case("hns-third-party-doh") {
         Some(BrowserProxySecurityPath::HnsThirdPartyDoh)
     } else {
@@ -1067,6 +1083,15 @@ struct RuntimeCoordination {
     sync_lock: Mutex<()>,
     maintenance: RwLock<()>,
     peer_state: Arc<Mutex<()>>,
+    relay: SharedDnsRelayState,
+}
+
+type SharedDnsRelayFlights = Arc<Mutex<HashMap<Vec<u8>, Arc<DnsRelayFlight>>>>;
+
+#[derive(Clone)]
+struct SharedDnsRelayState {
+    client: Arc<Mutex<Option<DnsRelayClient>>>,
+    queries: SharedDnsRelayFlights,
 }
 
 static RUNTIME_COORDINATION: OnceLock<Mutex<HashMap<PathBuf, Weak<RuntimeCoordination>>>> =
@@ -1088,6 +1113,10 @@ fn runtime_coordination(base: &Path) -> Result<Arc<RuntimeCoordination>, Runtime
         sync_lock: Mutex::new(()),
         maintenance: RwLock::new(()),
         peer_state: Arc::new(Mutex::new(())),
+        relay: SharedDnsRelayState {
+            client: Arc::new(Mutex::new(None)),
+            queries: Arc::new(Mutex::new(HashMap::new())),
+        },
     });
     registry.insert(identity, Arc::downgrade(&coordination));
     Ok(coordination)
@@ -1372,6 +1401,83 @@ impl BrowserRuntime {
             .map_err(RuntimeError::Operation)
     }
 
+    /// Verifies and persists one explicitly configured relay-capable Handshake peer.
+    ///
+    /// The live version handshake happens before the shared peer-store lock is acquired. The
+    /// selected network's endpoint policy is applied to the numeric address, so mainnet/testnet
+    /// configuration cannot be used to reach a private address or non-P2P port.
+    pub fn add_static_relay_peer(&self, endpoint: &str) -> Result<SyncStatus, RuntimeError> {
+        let network_kind = self.inner.configuration.network;
+        let network = network_kind.network();
+        let addresses = resolve_static_relay_peer_endpoint(endpoint, &network)
+            .map_err(RuntimeError::InvalidConfiguration)?;
+        let mut verified = None;
+
+        for address in addresses {
+            let Ok(version) = hns_p2p::probe_dns_relay_peer(
+                address,
+                &network,
+                self.inner.configuration.sync.timeout,
+            ) else {
+                continue;
+            };
+            if version.services & SERVICE_NETWORK == 0
+                || version.services & EXPERIMENTAL_DNS_RELAY_SERVICE == 0
+            {
+                continue;
+            }
+            verified = Some(address);
+            break;
+        }
+
+        let Some(address) = verified else {
+            return Err(RuntimeError::Operation(
+                "no reachable relay-capable Handshake peer was found at that endpoint".to_owned(),
+            ));
+        };
+
+        let _sync = self
+            .inner
+            .coordination
+            .sync_lock
+            .lock()
+            .map_err(|_| RuntimeError::Synchronization("sync lock"))?;
+        let _maintenance = self
+            .inner
+            .coordination
+            .maintenance
+            .read()
+            .map_err(|_| RuntimeError::Synchronization("maintenance lock"))?;
+        let _peer_state = self
+            .inner
+            .coordination
+            .peer_state
+            .lock()
+            .map_err(|_| RuntimeError::Synchronization("peer state lock"))?;
+
+        let base = network_base_path(&self.inner.data_dir, network_kind);
+        let peer_store = SqlitePeerStore::open(base.join("peers.sqlite"))
+            .map_err(|error| RuntimeError::Operation(format!("open peer store: {error}")))?;
+        let mut peers = peer_store
+            .load_manager()
+            .map_err(|error| RuntimeError::Operation(format!("load peer store: {error}")))?;
+        retain_allowed_peer_endpoints(&mut peers, &network);
+        // A relay capability handshake authenticates neither the remote chain
+        // height nor a sync target. Persist membership and liveness only.
+        peers.record_connection(address, now_unix_seconds());
+        peer_store
+            .save_manager(&peers)
+            .map_err(|error| RuntimeError::Operation(format!("save peer store: {error}")))?;
+
+        let mut status = read_sync_status(&self.inner.data_dir, network_kind)
+            .map_err(RuntimeError::Operation)?;
+        status.status = "peer_added";
+        status.peer_count = peers.len();
+        status.peer_groups = peers.address_group_count(now_unix_seconds());
+        status.best_peer_height = best_peer_height(&peers);
+        Ok(status)
+    }
+
     pub fn clear_resolver_cache(&self) -> Result<SyncStatus, RuntimeError> {
         let _sync = self
             .inner
@@ -1621,6 +1727,18 @@ impl BrowserRuntime {
             header_text.push_str(value);
             header_text.push_str("\r\n");
         }
+        header_text.push_str(HNS_GATEWAY_P2P_DNS_RELAY_HEADER);
+        header_text.push_str(if policy.experimental_p2p_dns_relay {
+            ": 1\r\n"
+        } else {
+            ": 0\r\n"
+        });
+        header_text.push_str(HNS_GATEWAY_LEGACY_DOH_HEADER);
+        header_text.push_str(if policy.legacy_hns_doh_compatibility {
+            ": 1\r\n"
+        } else {
+            ": 0\r\n"
+        });
         if policy.resolution_mode == ResolutionMode::Strict {
             header_text.push_str(HNS_GATEWAY_STRICT_MODE_HEADER);
             header_text.push_str(": 1\r\n");
@@ -1789,7 +1907,10 @@ impl BrowserRuntime {
                 network,
                 mode,
                 doh_endpoint: parsed_headers.doh_endpoint,
+                experimental_p2p_dns_relay: parsed_headers.experimental_p2p_dns_relay,
+                legacy_hns_doh_compatibility: parsed_headers.legacy_hns_doh_compatibility,
                 peer_state: Some(Arc::clone(&self.inner.coordination.peer_state)),
+                relay: Some(self.inner.coordination.relay.clone()),
                 http: self.inner.transport.clone(),
             },
             fallback_marker.clone(),
@@ -2283,6 +2404,8 @@ struct ParsedGatewayHeaders {
     headers: Vec<(String, String)>,
     strict_hns_mode: bool,
     doh_endpoint: HnsDohEndpoint,
+    experimental_p2p_dns_relay: bool,
+    legacy_hns_doh_compatibility: bool,
     stateless_dane_certificates: bool,
     network: NetworkKind,
 }
@@ -2365,6 +2488,66 @@ fn seed_peers_for_network(
     }
 
     Ok(0)
+}
+
+fn resolve_static_relay_peer_endpoint(
+    endpoint: &str,
+    network: &hns_core::network::Network,
+) -> Result<Vec<SocketAddr>, String> {
+    let normalized = normalize_static_relay_peer_endpoint(endpoint)?;
+    let address = normalized
+        .parse::<SocketAddr>()
+        .map_err(|_| "enter one relay peer as an IP address and port".to_owned())?;
+    if !is_allowed_peer_endpoint(network, address) {
+        return Err("the relay peer endpoint is not allowed for this Handshake network".to_owned());
+    }
+    Ok(vec![address])
+}
+
+fn normalize_static_relay_peer_endpoint(endpoint: &str) -> Result<String, String> {
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty()
+        || endpoint.len() > MAX_STATIC_RELAY_PEER_ENDPOINT_BYTES
+        || endpoint
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+    {
+        return Err("enter one relay peer as an IP address and port".to_owned());
+    }
+
+    let (host, port_text, bracketed_ipv6) = if let Some(rest) = endpoint.strip_prefix('[') {
+        let (host, port_text) = rest
+            .split_once("]:")
+            .filter(|(_, port)| !port.contains(':') && !port.contains(']'))
+            .ok_or_else(|| "enter an IPv6 relay peer as [address]:port".to_owned())?;
+        (host, port_text, true)
+    } else {
+        let (host, port_text) = endpoint
+            .rsplit_once(':')
+            .filter(|(host, _)| !host.contains(':'))
+            .ok_or_else(|| "enter one relay peer as an IP address and port".to_owned())?;
+        (host, port_text, false)
+    };
+    let port = port_text
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or_else(|| "the relay peer port must be between 1 and 65535".to_owned())?;
+
+    if bracketed_ipv6 {
+        if host.contains('%') {
+            return Err("scoped IPv6 relay peer addresses are not supported".to_owned());
+        }
+        let address = host
+            .parse::<Ipv6Addr>()
+            .map_err(|_| "enter a valid bracketed IPv6 relay peer address".to_owned())?;
+        return Ok(format!("[{address}]:{port}"));
+    }
+
+    if let Ok(address) = host.parse::<Ipv4Addr>() {
+        return Ok(format!("{address}:{port}"));
+    }
+    Err("enter a valid IPv4 relay peer address".to_owned())
 }
 
 fn retain_allowed_peer_endpoints(
@@ -2495,6 +2678,7 @@ struct GatewayProofProvider {
     timeout: Duration,
     seed_on_empty: bool,
     peer_state: Option<Arc<Mutex<()>>>,
+    proof_peer: Option<Arc<Mutex<Option<SocketAddr>>>>,
 }
 
 impl GatewayProofProvider {
@@ -2507,11 +2691,17 @@ impl GatewayProofProvider {
             timeout: DEFAULT_GATEWAY_PROOF_TIMEOUT,
             seed_on_empty: true,
             peer_state: None,
+            proof_peer: None,
         }
     }
 
     fn with_peer_state(mut self, peer_state: Option<Arc<Mutex<()>>>) -> Self {
         self.peer_state = peer_state;
+        self
+    }
+
+    fn with_proof_peer(mut self, proof_peer: Arc<Mutex<Option<SocketAddr>>>) -> Self {
+        self.proof_peer = Some(proof_peer);
         self
     }
 
@@ -2524,13 +2714,10 @@ impl GatewayProofProvider {
         if verified.root_name != root_name || verified.name_hash != name_hash || !verified.secure {
             return Err(ResolverError::ProofNameMismatch);
         }
-        let is_non_inclusion = verified.value.is_none();
         if !self.anchor_is_current_tip_canonical(verified.anchor)? {
             return Err(ResolverError::ProofUnavailable);
         }
-        if is_non_inclusion
-            && local_chain_is_stale_for_current_resolution(&self.base, self.network)?
-        {
+        if local_chain_is_stale_for_current_resolution(&self.base, self.network)? {
             return Err(ResolverError::LocalChainNotCurrent);
         }
         ProvenNameRecords::from_verified_resource_value(verified)
@@ -2600,6 +2787,11 @@ impl GatewayProofProvider {
             ) {
                 Ok(remote_height) => {
                     peers.record_success(address, remote_height, now);
+                    if let Some(proof_peer) = self.proof_peer.as_ref()
+                        && let Ok(mut selected) = proof_peer.lock()
+                    {
+                        *selected = Some(address);
+                    }
                     peer_store.save_manager(&peers).map_err(|error| {
                         ResolverError::Storage(format!("save peer store: {error}"))
                     })?;
@@ -2662,32 +2854,44 @@ impl HnsProofProvider for GatewayProofProvider {
     }
 }
 
-type AndroidPrimaryResolver = DelegatingResolver<
-    GatewayProofProvider,
-    AuthoritativeDnssecResolver<AndroidAuthoritativeDnsTransport, SystemDnssecVerifier>,
->;
-type AndroidDirectDelegatedResolver =
-    AuthoritativeDnssecResolver<AndroidAuthoritativeDnsTransport, SystemDnssecVerifier>;
-type AndroidDohDelegatedResolver =
-    AuthoritativeDnssecResolver<HnsDohDnsTransport, SystemDnssecVerifier>;
-type AndroidCompatibilityPrimaryResolver = DelegatingResolver<
-    GatewayProofProvider,
-    FallbackDelegatedResolver<AndroidDirectDelegatedResolver, AndroidDohDelegatedResolver>,
->;
-type AndroidStrictGatewayResolver = CompositeResolver<AndroidPrimaryResolver, IcannDohResolver>;
-type AndroidCompatibilityGatewayResolver = CompositeResolver<
-    FallbackResolver<AndroidCompatibilityPrimaryResolver, HnsDohResolver>,
-    IcannDohResolver,
->;
+struct AndroidGatewayResolver {
+    inner: Box<dyn Resolver>,
+}
 
-enum AndroidGatewayResolver {
-    Strict(Box<AndroidStrictGatewayResolver>),
-    Compatibility(Box<AndroidCompatibilityGatewayResolver>),
+impl AndroidGatewayResolver {
+    fn new(inner: impl Resolver + 'static) -> Self {
+        Self {
+            inner: Box::new(inner),
+        }
+    }
+}
+
+struct BoxedDelegatedResolver {
+    inner: Box<dyn DelegatedResolver>,
+}
+
+impl BoxedDelegatedResolver {
+    fn new(inner: impl DelegatedResolver + 'static) -> Self {
+        Self {
+            inner: Box::new(inner),
+        }
+    }
+}
+
+impl DelegatedResolver for BoxedDelegatedResolver {
+    fn resolve_delegated(
+        &self,
+        request: &ResolutionRequest,
+        delegation: &HnsDelegation,
+    ) -> Result<ResolutionAnswer, ResolverError> {
+        self.inner.resolve_delegated(request, delegation)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 struct DnsTraceRecorder {
     events: Arc<Mutex<Vec<DnsTraceEvent>>>,
+    relay: Arc<Mutex<Option<DnsRelayTraceMetadata>>>,
 }
 
 impl DnsTraceRecorder {
@@ -2702,6 +2906,86 @@ impl DnsTraceRecorder {
             .lock()
             .map(|events| events.clone())
             .unwrap_or_default()
+    }
+
+    fn record_relay(&self, metadata: DnsRelayTraceMetadata) {
+        if let Ok(mut relay) = self.relay.lock() {
+            *relay = Some(metadata);
+        }
+    }
+
+    fn relay_snapshot(&self) -> Option<DnsRelayTraceMetadata> {
+        self.relay.lock().ok().and_then(|relay| relay.clone())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DnsRelayTraceMetadata {
+    peer: Option<SocketAddr>,
+    retries: usize,
+    service_advertised: Option<bool>,
+    error: Option<String>,
+}
+
+#[derive(Default)]
+struct DnsRelayAttemptTracker {
+    attempts: Mutex<HashMap<thread::ThreadId, Vec<DnsRelayAttempt>>>,
+}
+
+#[derive(Default)]
+struct DnsRelayAttempt {
+    peers: HashSet<SocketAddr>,
+    retry_offset: usize,
+}
+
+impl DnsRelayAttemptTracker {
+    fn begin(&self, retry_offset: usize) {
+        if let Ok(mut attempts) = self.attempts.lock() {
+            attempts
+                .entry(thread::current().id())
+                .or_default()
+                .push(DnsRelayAttempt {
+                    peers: HashSet::new(),
+                    retry_offset,
+                });
+        }
+    }
+
+    fn observe(&self, metadata: &DnsRelayTraceMetadata) -> DnsRelayTraceMetadata {
+        let mut observed = metadata.clone();
+        if let Ok(mut attempts) = self.attempts.lock()
+            && let Some(attempt) = attempts
+                .get_mut(&thread::current().id())
+                .and_then(|attempts| attempts.last_mut())
+        {
+            if let Some(peer) = metadata.peer {
+                attempt.peers.insert(peer);
+            }
+            observed.retries = observed.retries.saturating_add(attempt.retry_offset);
+        }
+        observed
+    }
+
+    fn finish(&self) -> Vec<SocketAddr> {
+        let thread_id = thread::current().id();
+        let Ok(mut attempts) = self.attempts.lock() else {
+            return Vec::new();
+        };
+        let (mut peers, remove_thread) = match attempts.get_mut(&thread_id) {
+            Some(thread_attempts) => {
+                let peers = thread_attempts
+                    .pop()
+                    .map(|attempt| attempt.peers.into_iter().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                (peers, thread_attempts.is_empty())
+            }
+            None => (Vec::new(), false),
+        };
+        if remove_thread {
+            attempts.remove(&thread_id);
+        }
+        peers.sort_unstable();
+        peers
     }
 }
 
@@ -2817,6 +3101,452 @@ impl DnsTransport for AndroidAuthoritativeDnsTransport {
             *probe = Some(status);
         }
         status
+    }
+}
+
+/// Recursive DNS transport carried over a capability-advertising HNS peer.
+/// It deliberately ignores the authoritative socket supplied by the delegated
+/// resolver; the raw answer is still consumed by that resolver's local DNSSEC
+/// verifier before it can influence an origin connection.
+struct HnsP2pDnsTransport {
+    client: Arc<Mutex<Option<DnsRelayClient>>>,
+    initialization_error: Option<String>,
+    peer_store_path: PathBuf,
+    network_kind: NetworkKind,
+    peer_state: Option<Arc<Mutex<()>>>,
+    proof_peer: Arc<Mutex<Option<SocketAddr>>>,
+    trace: DnsTraceRecorder,
+    endpoint_policy: DnsEndpointPolicy,
+    live_queries: SharedDnsRelayFlights,
+    attempts: Arc<DnsRelayAttemptTracker>,
+}
+
+#[derive(Clone)]
+struct HnsP2pDnssecFeedback {
+    client: Arc<Mutex<Option<DnsRelayClient>>>,
+    peer_store_path: PathBuf,
+    peer_state: Option<Arc<Mutex<()>>>,
+    attempts: Arc<DnsRelayAttemptTracker>,
+}
+
+struct DnsRelayFlight {
+    result: Mutex<Option<Result<DnsRelayFlightSuccess, DnsRelayFlightError>>>,
+    completed: Condvar,
+}
+
+#[derive(Clone)]
+struct DnsRelayFlightSuccess {
+    response: Vec<u8>,
+    metadata: DnsRelayTraceMetadata,
+}
+
+#[derive(Clone)]
+enum DnsRelayFlightError {
+    InvalidResponse,
+    Transport(String),
+    CachePoisoned,
+}
+
+impl DnsRelayFlightError {
+    fn from_resolver(error: &ResolverError) -> Self {
+        match error {
+            ResolverError::InvalidDnsResponse => Self::InvalidResponse,
+            ResolverError::CachePoisoned => Self::CachePoisoned,
+            error => Self::Transport(error.to_string()),
+        }
+    }
+
+    fn into_resolver(self) -> ResolverError {
+        match self {
+            Self::InvalidResponse => ResolverError::InvalidDnsResponse,
+            Self::Transport(error) => ResolverError::DnsTransport(error),
+            Self::CachePoisoned => ResolverError::CachePoisoned,
+        }
+    }
+}
+
+impl HnsP2pDnsTransport {
+    fn new(
+        base: &Path,
+        network_kind: NetworkKind,
+        peer_state: Option<Arc<Mutex<()>>>,
+        shared: Option<SharedDnsRelayState>,
+        proof_peer: Arc<Mutex<Option<SocketAddr>>>,
+        trace: DnsTraceRecorder,
+        endpoint_policy: DnsEndpointPolicy,
+    ) -> Self {
+        let peer_store_path = base.join("peers.sqlite");
+        let SharedDnsRelayState {
+            client,
+            queries: live_queries,
+        } = shared.unwrap_or_else(|| SharedDnsRelayState {
+            client: Arc::new(Mutex::new(None)),
+            queries: Arc::new(Mutex::new(HashMap::new())),
+        });
+        let initialization_error = match client.lock() {
+            Ok(mut slot) if slot.is_none() => match initialize_dns_relay_client(
+                &peer_store_path,
+                network_kind,
+                peer_state.as_ref(),
+            ) {
+                Ok(initialized) => {
+                    *slot = Some(initialized);
+                    None
+                }
+                Err(error) => Some(error),
+            },
+            Ok(_) => None,
+            Err(_) => Some("relay-client lock is poisoned".to_owned()),
+        };
+        Self {
+            client,
+            initialization_error,
+            peer_store_path,
+            network_kind,
+            peer_state,
+            proof_peer,
+            trace,
+            endpoint_policy,
+            live_queries,
+            attempts: Arc::new(DnsRelayAttemptTracker::default()),
+        }
+    }
+
+    fn dnssec_feedback(&self) -> HnsP2pDnssecFeedback {
+        HnsP2pDnssecFeedback {
+            client: Arc::clone(&self.client),
+            peer_store_path: self.peer_store_path.clone(),
+            peer_state: self.peer_state.clone(),
+            attempts: Arc::clone(&self.attempts),
+        }
+    }
+
+    fn exchange(&self, query: &[u8]) -> Result<DnsRelayFlightSuccess, ResolverError> {
+        if let Some(error) = self.initialization_error.as_ref() {
+            return Err(ResolverError::DnsTransport(format!(
+                "experimental HNS P2P DNS relay initialization failed: {error}"
+            )));
+        }
+
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|_| ResolverError::CachePoisoned)?;
+        let client = guard.as_mut().ok_or_else(|| {
+            ResolverError::DnsTransport(
+                "experimental HNS P2P DNS relay client is unavailable".to_owned(),
+            )
+        })?;
+        refresh_dns_relay_peers(
+            &self.peer_store_path,
+            self.network_kind,
+            client,
+            self.peer_state.as_ref(),
+            now_unix_seconds(),
+        )
+        .map_err(|error| {
+            ResolverError::DnsTransport(format!(
+                "experimental HNS P2P DNS relay peer refresh failed: {error}"
+            ))
+        })?;
+        let proof_peer = self.proof_peer.lock().ok().and_then(|peer| *peer);
+        client.set_proof_peer(proof_peer);
+        let result = client.resolve(query);
+
+        // Relay scoring is useful but never part of DNS correctness. A write
+        // failure therefore must not turn a locally valid response into a DNS
+        // failure; the next runtime construction can recover from the store.
+        let _ = persist_dns_relay_peers(&self.peer_store_path, client, self.peer_state.as_ref());
+
+        result
+            .map(|exchange| DnsRelayFlightSuccess {
+                response: exchange.response,
+                metadata: DnsRelayTraceMetadata {
+                    peer: Some(exchange.peer),
+                    retries: exchange.retries,
+                    service_advertised: Some(true),
+                    error: None,
+                },
+            })
+            .map_err(map_dns_relay_client_error)
+    }
+
+    fn coalesced_exchange(&self, query: &[u8]) -> Result<DnsRelayFlightSuccess, ResolverError> {
+        let (key, request_id) = dns_relay_coalescing_key(query)?;
+        let (flight, leader) = {
+            let mut live = self
+                .live_queries
+                .lock()
+                .map_err(|_| ResolverError::CachePoisoned)?;
+            match live.get(&key) {
+                Some(flight) => (Arc::clone(flight), false),
+                None => {
+                    let flight = Arc::new(DnsRelayFlight {
+                        result: Mutex::new(None),
+                        completed: Condvar::new(),
+                    });
+                    live.insert(key.clone(), Arc::clone(&flight));
+                    (flight, true)
+                }
+            }
+        };
+
+        if !leader {
+            let mut result = flight
+                .result
+                .lock()
+                .map_err(|_| ResolverError::CachePoisoned)?;
+            while result.is_none() {
+                result = flight
+                    .completed
+                    .wait(result)
+                    .map_err(|_| ResolverError::CachePoisoned)?;
+            }
+            return match result.as_ref() {
+                Some(Ok(exchange)) => Ok(DnsRelayFlightSuccess {
+                    response: restore_dns_relay_response_id(exchange.response.clone(), request_id)?,
+                    metadata: exchange.metadata.clone(),
+                }),
+                Some(Err(error)) => Err(error.clone().into_resolver()),
+                None => Err(ResolverError::CachePoisoned),
+            };
+        }
+
+        let result = self.exchange(query);
+        let mut completed = flight
+            .result
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *completed = Some(match &result {
+            Ok(response) => Ok(response.clone()),
+            Err(error) => Err(DnsRelayFlightError::from_resolver(error)),
+        });
+        flight.completed.notify_all();
+        drop(completed);
+        if let Ok(mut live) = self.live_queries.lock() {
+            live.remove(&key);
+        }
+        result.and_then(|exchange| {
+            Ok(DnsRelayFlightSuccess {
+                response: restore_dns_relay_response_id(exchange.response, request_id)?,
+                metadata: exchange.metadata,
+            })
+        })
+    }
+
+    fn traced_exchange(&self, query: &[u8]) -> Result<Vec<u8>, ResolverError> {
+        let started = Instant::now();
+        let exchange = self.coalesced_exchange(query);
+        let (server, result) = match exchange {
+            Ok(exchange) => {
+                let metadata = self.attempts.observe(&exchange.metadata);
+                let server = metadata
+                    .peer
+                    .map(|peer| peer.to_string())
+                    .unwrap_or_else(|| "dynamic-capable-hns-peer".to_owned());
+                self.trace.record_relay(metadata);
+                (server, Ok(exchange.response))
+            }
+            Err(error) => {
+                let metadata = self.attempts.observe(&DnsRelayTraceMetadata {
+                    peer: None,
+                    retries: 0,
+                    service_advertised: None,
+                    error: Some(error.to_string()),
+                });
+                self.trace.record_relay(metadata);
+                ("dynamic-capable-hns-peer".to_owned(), Err(error))
+            }
+        };
+        self.trace.push(dns_trace_event(
+            "p2p_dns_relay",
+            server,
+            query,
+            elapsed_millis(started),
+            &result,
+        ));
+        result
+    }
+}
+
+fn dns_relay_coalescing_key(query: &[u8]) -> Result<(Vec<u8>, u16), ResolverError> {
+    if query.len() < 2 {
+        return Err(ResolverError::InvalidDnsResponse);
+    }
+    let request_id = u16::from_be_bytes([query[0], query[1]]);
+    let mut key = query.to_vec();
+    key[..2].fill(0);
+    Ok((key, request_id))
+}
+
+fn restore_dns_relay_response_id(
+    mut response: Vec<u8>,
+    request_id: u16,
+) -> Result<Vec<u8>, ResolverError> {
+    if response.len() < 2 {
+        return Err(ResolverError::InvalidDnsResponse);
+    }
+    response[..2].copy_from_slice(&request_id.to_be_bytes());
+    Ok(response)
+}
+
+impl DnsTransport for HnsP2pDnsTransport {
+    fn endpoint_policy(&self) -> DnsEndpointPolicy {
+        self.endpoint_policy
+    }
+
+    fn exchange_udp(&self, _server: SocketAddr, query: &[u8]) -> Result<Vec<u8>, ResolverError> {
+        self.traced_exchange(query)
+    }
+
+    fn exchange_tcp(&self, _server: SocketAddr, query: &[u8]) -> Result<Vec<u8>, ResolverError> {
+        self.traced_exchange(query)
+    }
+
+    fn is_recursive_relay(&self) -> bool {
+        true
+    }
+}
+
+fn initialize_dns_relay_client(
+    peer_store_path: &Path,
+    network_kind: NetworkKind,
+    peer_state: Option<&Arc<Mutex<()>>>,
+) -> Result<DnsRelayClient, String> {
+    let _peer_guard = match peer_state {
+        Some(peer_state) => Some(
+            peer_state
+                .lock()
+                .map_err(|_| "peer-state lock is poisoned".to_owned())?,
+        ),
+        None => None,
+    };
+    let network = network_kind.network();
+    let store = SqlitePeerStore::open(peer_store_path)
+        .map_err(|error| format!("open peer store: {error}"))?;
+    let mut peers = store
+        .load_manager()
+        .map_err(|error| format!("load peer store: {error}"))?;
+    retain_allowed_peer_endpoints(&mut peers, &network);
+    if allowed_peer_count(&peers, &network) == 0 {
+        let _ = seed_peers_for_network(&mut peers, &network, network_kind);
+    }
+    store
+        .save_manager(&peers)
+        .map_err(|error| format!("save peer store: {error}"))?;
+    Ok(DnsRelayClient::new(network, peers))
+}
+
+fn refresh_dns_relay_peers(
+    peer_store_path: &Path,
+    network_kind: NetworkKind,
+    client: &mut DnsRelayClient,
+    peer_state: Option<&Arc<Mutex<()>>>,
+    now: u64,
+) -> Result<bool, String> {
+    let _peer_guard = match peer_state {
+        Some(peer_state) => Some(
+            peer_state
+                .lock()
+                .map_err(|_| "peer-state lock is poisoned".to_owned())?,
+        ),
+        None => None,
+    };
+    let store = SqlitePeerStore::open(peer_store_path)
+        .map_err(|error| format!("open peer store: {error}"))?;
+    let mut stored = store
+        .load_manager()
+        .map_err(|error| format!("load peer store: {error}"))?;
+    retain_allowed_peer_endpoints(&mut stored, &network_kind.network());
+
+    let refreshed = hns_p2p::PeerManager::from_states(stored.iter().map(|stored_peer| {
+        client
+            .peer_manager()
+            .get(stored_peer.address)
+            .map(|local_peer| merge_dns_relay_peer_state(stored_peer, local_peer))
+            .unwrap_or_else(|| stored_peer.clone())
+    }));
+    let invalidate_connections = client.peer_manager().iter().any(|local_peer| {
+        refreshed.get(local_peer.address).is_none()
+            || refreshed
+                .get(local_peer.address)
+                .is_some_and(|refreshed_peer| {
+                    refreshed_peer.is_banned(now) && !local_peer.is_banned(now)
+                })
+    });
+
+    // The store is authoritative for membership, while max-merging below keeps
+    // an in-memory relay penalty from being erased by a concurrent, older store
+    // snapshot. That conservative rule can delay a score reward, but it cannot
+    // make a newly discovered or newly banned peer invisible to relay selection.
+    *client.peer_manager_mut() = refreshed;
+    if invalidate_connections {
+        // DnsRelayClient intentionally keeps live connection internals private.
+        // Closing the small pool is the narrow way to guarantee that removed or
+        // newly banned peers cannot occupy or be selected from a stale session.
+        client.shutdown();
+    }
+    Ok(invalidate_connections)
+}
+
+fn persist_dns_relay_peers(
+    peer_store_path: &Path,
+    client: &DnsRelayClient,
+    peer_state: Option<&Arc<Mutex<()>>>,
+) -> Result<(), String> {
+    let _peer_guard = match peer_state {
+        Some(peer_state) => Some(
+            peer_state
+                .lock()
+                .map_err(|_| "peer-state lock is poisoned".to_owned())?,
+        ),
+        None => None,
+    };
+    let store = SqlitePeerStore::open(peer_store_path)
+        .map_err(|error| format!("open peer store: {error}"))?;
+    let current = store
+        .load_manager()
+        .map_err(|error| format!("reload peer store: {error}"))?;
+    for relay_peer in client.peer_manager().iter() {
+        let merged = current
+            .get(relay_peer.address)
+            .map(|stored| merge_dns_relay_peer_state(stored, relay_peer))
+            .unwrap_or_else(|| relay_peer.clone());
+        store
+            .save_peer(&merged)
+            .map_err(|error| format!("save peer store: {error}"))?;
+    }
+    Ok(())
+}
+
+fn merge_dns_relay_peer_state(
+    stored: &hns_p2p::PeerState,
+    relay: &hns_p2p::PeerState,
+) -> hns_p2p::PeerState {
+    hns_p2p::PeerState {
+        address: stored.address,
+        // Conservatively preserve either path's penalty. Successful relay
+        // counts still persist, but a stale relay snapshot cannot erase a
+        // concurrent proof/sync failure or ban.
+        score: stored.score.max(relay.score),
+        last_height: stored.last_height.max(relay.last_height),
+        last_connected_at: stored.last_connected_at.max(relay.last_connected_at),
+        banned_until: stored.banned_until.max(relay.banned_until),
+        successes: stored.successes.max(relay.successes),
+        failures: stored.failures.max(relay.failures),
+    }
+}
+
+fn map_dns_relay_client_error(error: DnsRelayClientError) -> ResolverError {
+    match error {
+        DnsRelayClientError::InvalidQuery(_)
+        | DnsRelayClientError::InvalidResponse(_)
+        | DnsRelayClientError::UnsolicitedResponse(_)
+        | DnsRelayClientError::UnexpectedPacket
+        | DnsRelayClientError::AdvisoryPacketLimit => ResolverError::InvalidDnsResponse,
+        error => {
+            ResolverError::DnsTransport(format!("experimental HNS P2P DNS relay failed: {error}"))
+        }
     }
 }
 
@@ -3023,17 +3753,14 @@ fn dns_trace_error_status(error: &ResolverError) -> &'static str {
         ResolverError::DnsTransport(_) => "transport_error",
         ResolverError::DnsResponseCode(_) => "response_code",
         ResolverError::InvalidDnsResponse => "invalid_response",
-        ResolverError::DnssecFailed => "dnssec_failed",
+        ResolverError::DnssecFailed | ResolverError::RelayDnssecFailed => "dnssec_failed",
         _ => "error",
     }
 }
 
 impl Resolver for AndroidGatewayResolver {
     fn resolve(&self, request: &ResolutionRequest) -> Result<ResolutionAnswer, ResolverError> {
-        match self {
-            Self::Strict(resolver) => resolver.resolve(request),
-            Self::Compatibility(resolver) => resolver.resolve(request),
-        }
+        self.inner.resolve(request)
     }
 }
 
@@ -3185,6 +3912,177 @@ where
             }
         }
     }
+}
+
+trait RelayDnssecAttemptFeedback {
+    fn begin_attempt(&self, retry_offset: usize);
+    fn finish_attempt(&self) -> Vec<SocketAddr>;
+    fn report_dnssec_failure(&self, peers: &[SocketAddr]);
+}
+
+impl RelayDnssecAttemptFeedback for HnsP2pDnssecFeedback {
+    fn begin_attempt(&self, retry_offset: usize) {
+        self.attempts.begin(retry_offset);
+    }
+
+    fn finish_attempt(&self) -> Vec<SocketAddr> {
+        self.attempts.finish()
+    }
+
+    fn report_dnssec_failure(&self, peers: &[SocketAddr]) {
+        let Ok(mut guard) = self.client.lock() else {
+            return;
+        };
+        let Some(client) = guard.as_mut() else {
+            return;
+        };
+        let now = now_unix_seconds();
+        for peer in peers.iter().copied() {
+            let _ = client.report_dnssec_failure(peer, now);
+        }
+        // As with ordinary relay scoring persistence, failure to write feedback
+        // must not change the fail-closed DNSSEC result or permit a DoH fallback.
+        let _ = persist_dns_relay_peers(&self.peer_store_path, client, self.peer_state.as_ref());
+    }
+}
+
+/// Repeats the complete delegated validation once after a relay response fails
+/// local DNSSEC verification. Feedback is scoped to the current synchronous
+/// resolver call, so another thread's coalesced or concurrent relay exchange
+/// cannot supply peers for this request's penalty.
+struct RelayDnssecRetryDelegatedResolver<R, F> {
+    inner: R,
+    feedback: F,
+}
+
+impl<R, F> RelayDnssecRetryDelegatedResolver<R, F> {
+    fn new(inner: R, feedback: F) -> Self {
+        Self { inner, feedback }
+    }
+}
+
+impl<R, F> RelayDnssecRetryDelegatedResolver<R, F>
+where
+    R: DelegatedResolver,
+    F: RelayDnssecAttemptFeedback,
+{
+    fn resolve_attempt(
+        &self,
+        request: &ResolutionRequest,
+        delegation: &HnsDelegation,
+        retry_offset: usize,
+    ) -> (Result<ResolutionAnswer, ResolverError>, Vec<SocketAddr>) {
+        self.feedback.begin_attempt(retry_offset);
+        let result = self.inner.resolve_delegated(request, delegation);
+        let peers = self.feedback.finish_attempt();
+        (result, peers)
+    }
+}
+
+impl<R, F> DelegatedResolver for RelayDnssecRetryDelegatedResolver<R, F>
+where
+    R: DelegatedResolver,
+    F: RelayDnssecAttemptFeedback,
+{
+    fn resolve_delegated(
+        &self,
+        request: &ResolutionRequest,
+        delegation: &HnsDelegation,
+    ) -> Result<ResolutionAnswer, ResolverError> {
+        let (first_result, first_peers) = self.resolve_attempt(request, delegation, 0);
+        match first_result {
+            Err(ResolverError::DnssecFailed) => {
+                if first_peers.is_empty() {
+                    return Err(ResolverError::RelayDnssecFailed);
+                }
+                self.feedback.report_dnssec_failure(&first_peers);
+
+                let (retry_result, retry_peers) = self.resolve_attempt(request, delegation, 1);
+                match retry_result {
+                    Ok(answer) => Ok(answer),
+                    Err(_) => {
+                        if !retry_peers.is_empty() {
+                            self.feedback.report_dnssec_failure(&retry_peers);
+                        }
+                        // Once relay-provided DNS has failed local validation,
+                        // every exhausted retry path remains a relay DNSSEC
+                        // failure. In particular, a transport error from the
+                        // alternate must not reopen the legacy DoH fallback.
+                        Err(ResolverError::RelayDnssecFailed)
+                    }
+                }
+            }
+            result => result,
+        }
+    }
+}
+
+/// Falls back from proof-declared/direct authoritative DNS to the experimental
+/// peer relay while keeping the relay inside the delegated DNSSEC validator.
+/// The per-root memory avoids repeating a known-unusable port-53 path for every
+/// A, AAAA, HTTPS, and TLSA lookup in one gateway request.
+struct P2pFallbackDelegatedResolver<P, F> {
+    primary: P,
+    fallback: F,
+    fallback_roots: Arc<Mutex<HashSet<String>>>,
+}
+
+impl<P, F> P2pFallbackDelegatedResolver<P, F> {
+    fn new(primary: P, fallback: F) -> Self {
+        Self {
+            primary,
+            fallback,
+            fallback_roots: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    fn uses_fallback(&self, request: &ResolutionRequest) -> bool {
+        let root = fallback_cache_root(request);
+        self.fallback_roots
+            .lock()
+            .is_ok_and(|roots| roots.contains(&root))
+    }
+
+    fn remember_fallback(&self, request: &ResolutionRequest) {
+        let root = fallback_cache_root(request);
+        if let Ok(mut roots) = self.fallback_roots.lock() {
+            roots.insert(root);
+        }
+    }
+}
+
+impl<P, F> DelegatedResolver for P2pFallbackDelegatedResolver<P, F>
+where
+    P: DelegatedResolver,
+    F: DelegatedResolver,
+{
+    fn resolve_delegated(
+        &self,
+        request: &ResolutionRequest,
+        delegation: &HnsDelegation,
+    ) -> Result<ResolutionAnswer, ResolverError> {
+        if self.uses_fallback(request) {
+            return relay_dnssec_result(self.fallback.resolve_delegated(request, delegation));
+        }
+
+        match self.primary.resolve_delegated(request, delegation) {
+            Ok(answer) => Ok(answer),
+            Err(error) if delegated_p2p_fallback_allowed(&error) => {
+                self.remember_fallback(request);
+                relay_dnssec_result(self.fallback.resolve_delegated(request, delegation))
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn relay_dnssec_result(
+    result: Result<ResolutionAnswer, ResolverError>,
+) -> Result<ResolutionAnswer, ResolverError> {
+    result.map_err(|error| match error {
+        ResolverError::DnssecFailed => ResolverError::RelayDnssecFailed,
+        error => error,
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -3386,6 +4284,16 @@ fn delegated_doh_transport_fallback_reason(error: &ResolverError) -> Option<&'st
         ResolverError::DnssecFailed => Some("delegated_dnssec_validation_failed"),
         _ => None,
     }
+}
+
+fn delegated_p2p_fallback_allowed(error: &ResolverError) -> bool {
+    matches!(
+        error,
+        ResolverError::DnsTransport(_)
+            | ResolverError::DnsResponseCode(_)
+            | ResolverError::InvalidDnsResponse
+            | ResolverError::DnssecFailed
+    )
 }
 
 fn fetch_doh_message(
@@ -3729,7 +4637,10 @@ fn gateway_http_response_with_transport(
             network,
             mode,
             doh_endpoint: parsed_headers.doh_endpoint,
+            experimental_p2p_dns_relay: parsed_headers.experimental_p2p_dns_relay,
+            legacy_hns_doh_compatibility: parsed_headers.legacy_hns_doh_compatibility,
             peer_state,
+            relay: None,
             http: transport.clone(),
         },
         fallback_marker.clone(),
@@ -3871,7 +4782,10 @@ fn gateway_http_response_body_to_file_with_transport(
             network,
             mode,
             doh_endpoint: parsed_headers.doh_endpoint,
+            experimental_p2p_dns_relay: parsed_headers.experimental_p2p_dns_relay,
+            legacy_hns_doh_compatibility: parsed_headers.legacy_hns_doh_compatibility,
             peer_state,
+            relay: None,
             http: transport.clone(),
         },
         fallback_marker.clone(),
@@ -4026,7 +4940,10 @@ fn gateway_http_upgrade_tunnel_with_transport(
             network,
             mode,
             doh_endpoint: parsed_headers.doh_endpoint,
+            experimental_p2p_dns_relay: parsed_headers.experimental_p2p_dns_relay,
+            legacy_hns_doh_compatibility: parsed_headers.legacy_hns_doh_compatibility,
             peer_state,
+            relay: None,
             http: transport.clone(),
         },
         fallback_marker.clone(),
@@ -4258,52 +5175,75 @@ fn android_gateway_resolver(
         network,
         mode,
         doh_endpoint,
+        experimental_p2p_dns_relay,
+        legacy_hns_doh_compatibility,
         peer_state,
+        relay,
         http,
     } = context;
     let endpoint_policy = DnsEndpointPolicy::for_network(network);
     let authoritative_dns_transport =
         android_authoritative_dns_transport(mode, dns_trace.clone(), endpoint_policy, http.clone());
-    match mode {
-        GatewayResolutionMode::Strict => {
-            let primary = DelegatingResolver::new(
-                GatewayProofProvider::new(base, values, network).with_peer_state(peer_state),
-                AuthoritativeDnssecResolver::new(authoritative_dns_transport, SystemDnssecVerifier)
-                    .with_authoritative_doh_preferred(),
-            );
-            AndroidGatewayResolver::Strict(Box::new(CompositeResolver::new(
-                primary,
-                IcannDohResolver::new(dns_trace, http),
-            )))
-        }
-        GatewayResolutionMode::Compatibility => {
-            let direct =
-                AuthoritativeDnssecResolver::new(authoritative_dns_transport, SystemDnssecVerifier)
-                    .with_authoritative_doh_preferred();
-            let doh = AuthoritativeDnssecResolver::new(
-                HnsDohDnsTransport::new(
-                    doh_endpoint.clone(),
-                    dns_trace.clone(),
-                    endpoint_policy,
-                    http.clone(),
-                ),
-                SystemDnssecVerifier,
-            );
-            let delegated = FallbackDelegatedResolver::new(direct, doh, fallback_marker.clone());
-            let primary = DelegatingResolver::new(
-                GatewayProofProvider::new(base, values, network).with_peer_state(peer_state),
-                delegated,
-            );
-            let hns = FallbackResolver::with_marker(
-                primary,
-                HnsDohResolver::new(doh_endpoint, dns_trace.clone(), http.clone()),
-                fallback_marker,
-            );
-            AndroidGatewayResolver::Compatibility(Box::new(CompositeResolver::new(
-                hns,
-                IcannDohResolver::new(dns_trace, http),
-            )))
-        }
+    let proof_peer = Arc::new(Mutex::new(None));
+    let direct =
+        AuthoritativeDnssecResolver::new(authoritative_dns_transport, SystemDnssecVerifier)
+            .with_authoritative_doh_preferred();
+    let mut delegated = BoxedDelegatedResolver::new(direct);
+
+    if experimental_p2p_dns_relay {
+        let relay_transport = HnsP2pDnsTransport::new(
+            &base,
+            network,
+            peer_state.clone(),
+            relay,
+            Arc::clone(&proof_peer),
+            dns_trace.clone(),
+            endpoint_policy,
+        );
+        let relay_feedback = relay_transport.dnssec_feedback();
+        let relay = RelayDnssecRetryDelegatedResolver::new(
+            AuthoritativeDnssecResolver::new(relay_transport, SystemDnssecVerifier)
+                .without_authoritative_doh(),
+            relay_feedback,
+        );
+        delegated =
+            BoxedDelegatedResolver::new(P2pFallbackDelegatedResolver::new(delegated, relay));
+    }
+
+    let use_legacy_doh =
+        mode == GatewayResolutionMode::Compatibility && legacy_hns_doh_compatibility;
+    if use_legacy_doh {
+        let doh = AuthoritativeDnssecResolver::new(
+            HnsDohDnsTransport::new(
+                doh_endpoint.clone(),
+                dns_trace.clone(),
+                endpoint_policy,
+                http.clone(),
+            ),
+            SystemDnssecVerifier,
+        );
+        delegated = BoxedDelegatedResolver::new(FallbackDelegatedResolver::new(
+            delegated,
+            doh,
+            fallback_marker.clone(),
+        ));
+    }
+
+    let proof_provider = GatewayProofProvider::new(base, values, network)
+        .with_peer_state(peer_state)
+        .with_proof_peer(proof_peer);
+    let primary = DelegatingResolver::new(proof_provider, delegated);
+    let icann = IcannDohResolver::new(dns_trace.clone(), http.clone());
+
+    if use_legacy_doh {
+        let hns = FallbackResolver::with_marker(
+            primary,
+            HnsDohResolver::new(doh_endpoint, dns_trace, http),
+            fallback_marker,
+        );
+        AndroidGatewayResolver::new(CompositeResolver::new(hns, icann))
+    } else {
+        AndroidGatewayResolver::new(CompositeResolver::new(primary, icann))
     }
 }
 
@@ -4311,7 +5251,10 @@ struct GatewayResolverContext {
     network: NetworkKind,
     mode: GatewayResolutionMode,
     doh_endpoint: HnsDohEndpoint,
+    experimental_p2p_dns_relay: bool,
+    legacy_hns_doh_compatibility: bool,
     peer_state: Option<Arc<Mutex<()>>>,
+    relay: Option<SharedDnsRelayState>,
     http: TcpHttpTransport,
 }
 
@@ -4339,6 +5282,8 @@ fn parse_gateway_headers(header_text: &str) -> Result<ParsedGatewayHeaders, &'st
     let mut headers = Vec::new();
     let mut strict_hns_mode = false;
     let mut doh_endpoint = HnsDohEndpoint::default();
+    let mut experimental_p2p_dns_relay = false;
+    let mut legacy_hns_doh_compatibility = true;
     let mut stateless_dane_certificates = false;
     let mut network = NetworkKind::Mainnet;
     for line in header_text.split("\r\n").filter(|line| !line.is_empty()) {
@@ -4358,6 +5303,14 @@ fn parse_gateway_headers(header_text: &str) -> Result<ParsedGatewayHeaders, &'st
         }
         if name.eq_ignore_ascii_case(HNS_GATEWAY_DOH_RESOLVER_HEADER) {
             doh_endpoint = HnsDohEndpoint::parse(value)?;
+            continue;
+        }
+        if name.eq_ignore_ascii_case(HNS_GATEWAY_P2P_DNS_RELAY_HEADER) {
+            experimental_p2p_dns_relay = value == "1" || value.eq_ignore_ascii_case("true");
+            continue;
+        }
+        if name.eq_ignore_ascii_case(HNS_GATEWAY_LEGACY_DOH_HEADER) {
+            legacy_hns_doh_compatibility = value == "1" || value.eq_ignore_ascii_case("true");
             continue;
         }
         if name.eq_ignore_ascii_case(HNS_GATEWAY_STATELESS_DANE_HEADER) {
@@ -4380,6 +5333,8 @@ fn parse_gateway_headers(header_text: &str) -> Result<ParsedGatewayHeaders, &'st
         headers,
         strict_hns_mode,
         doh_endpoint,
+        experimental_p2p_dns_relay,
+        legacy_hns_doh_compatibility,
         stateless_dane_certificates,
         network,
     })
@@ -4597,6 +5552,7 @@ fn resolution_trace_json(
         .map(|error| format!(r#""{}""#, json_escape(&error.to_string())))
         .unwrap_or_else(|| "null".to_owned());
     let authoritative_dns = authoritative_dns_trace_json(&dns_events);
+    let p2p_dns_relay = p2p_dns_relay_trace_json(dns_trace.relay_snapshot());
     let port53_interception = dns_protocol_status(&dns_events, "dns_interception_probe");
     let dns_attempts = dns_trace_attempts_json(&dns_events);
     let resolution_source = resolution_source_name(
@@ -4616,7 +5572,7 @@ fn resolution_trace_json(
     let local_chain_stale = optional_bool_json(local_currentness.and_then(|value| value.stale));
 
     format!(
-        r#"{{"host":"{}","url":"{}","nameClass":"{}","root":"{}","network":"{}","mode":"{}","hnsProof":"{}","localBestHeight":{},"targetHeight":{},"estimatedTargetHeight":{},"localChainStale":{},"delegation":{},"resolutionSource":"{}","resourceRecords":[{}],"nameserverCandidates":{},"authoritativeDns":{},"port53Interception":"{}","dnssec":"{}","originAddress":"{}","tls":{},"fallback":{{"used":{},"type":{},"reason":{}}},"dnsAttempts":[{}],"finalError":{}}}"#,
+        r#"{{"host":"{}","url":"{}","nameClass":"{}","root":"{}","network":"{}","mode":"{}","hnsProof":"{}","localBestHeight":{},"targetHeight":{},"estimatedTargetHeight":{},"localChainStale":{},"delegation":{},"resolutionSource":"{}","resourceRecords":[{}],"nameserverCandidates":{},"authoritativeDns":{},"p2pDnsRelay":{},"port53Interception":"{}","dnssec":"{}","originAddress":"{}","tls":{},"fallback":{{"used":{},"type":{},"reason":{}}},"dnsAttempts":[{}],"finalError":{}}}"#,
         json_escape(input.host),
         json_escape(&gateway_request_address(input)),
         name_class_trace_name(name_class),
@@ -4633,6 +5589,7 @@ fn resolution_trace_json(
         resource_types,
         nameserver_candidates_json(&dns_events),
         authoritative_dns,
+        p2p_dns_relay,
         port53_interception,
         dnssec_trace_status(resolution, error),
         if origin_address { "found" } else { "missing" },
@@ -4681,9 +5638,23 @@ fn resolution_source_name(
         match successful_dns_path_for_types(dns_events, host, &[RecordType::A, RecordType::Aaaa]) {
             Some("authoritative_doh") => return "authoritative_doh",
             Some("udp53" | "tcp53") => return "authoritative_dns",
+            Some("p2p_dns_relay") => return "p2p_dns_relay",
             Some("hns_doh") => return "hns_doh",
             _ => return "hns_resource",
         }
+    }
+    if let Some(last) = dns_events.iter().rev().find(|event| {
+        matches!(
+            event.protocol,
+            "authoritative_doh" | "udp53" | "tcp53" | "p2p_dns_relay" | "hns_doh"
+        )
+    }) {
+        return match last.protocol {
+            "p2p_dns_relay" => "p2p_dns_relay",
+            "hns_doh" => "hns_doh",
+            "authoritative_doh" => "authoritative_doh",
+            _ => "authoritative_dns",
+        };
     }
     if matches!(
         error,
@@ -4776,10 +5747,35 @@ fn optional_bool_json(value: Option<bool>) -> &'static str {
 
 fn authoritative_dns_trace_json(events: &[DnsTraceEvent]) -> String {
     format!(
-        r#"{{"udp53":"{}","tcp53":"{}","doh":"{}"}}"#,
+        r#"{{"udp53":"{}","tcp53":"{}","doh":"{}","p2pDnsRelay":"{}"}}"#,
         dns_protocol_status(events, "udp53"),
         dns_protocol_status(events, "tcp53"),
         dns_protocol_status(events, "authoritative_doh"),
+        dns_protocol_status(events, "p2p_dns_relay"),
+    )
+}
+
+fn p2p_dns_relay_trace_json(metadata: Option<DnsRelayTraceMetadata>) -> String {
+    let Some(metadata) = metadata else {
+        return r#"{"attempted":false,"peer":null,"serviceAdvertised":null,"retryCount":0,"error":null}"#
+            .to_owned();
+    };
+    let peer = metadata
+        .peer
+        .map(|peer| format!(r#""{}""#, json_escape(&peer.to_string())))
+        .unwrap_or_else(|| "null".to_owned());
+    let advertised = match metadata.service_advertised {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "null",
+    };
+    let error = metadata
+        .error
+        .map(|error| format!(r#""{}""#, json_escape(&error)))
+        .unwrap_or_else(|| "null".to_owned());
+    format!(
+        r#"{{"attempted":true,"peer":{},"serviceAdvertised":{},"retryCount":{},"error":{}}}"#,
+        peer, advertised, metadata.retries, error,
     )
 }
 
@@ -4960,6 +5956,9 @@ fn tlsa_blocked_by(error: Option<&GatewayError>) -> Option<&'static str> {
         }
         Some(GatewayError::Resolver(ResolverError::DnssecFailed)) => {
             Some("delegated_dnssec_validation_failed")
+        }
+        Some(GatewayError::Resolver(ResolverError::RelayDnssecFailed)) => {
+            Some("p2p_dns_relay_dnssec_validation_failed")
         }
         Some(GatewayError::Resolver(ResolverError::InvalidResource(_))) => {
             Some("hns_resource_invalid")
@@ -5227,6 +6226,7 @@ fn security_path_name(
             return match successful_dns_path(events, &owner, RecordType::Tlsa) {
                 Some("authoritative_doh") => Some("dane-authoritative-doh"),
                 Some("udp53" | "tcp53") => Some("dane-authoritative-dns53"),
+                Some("p2p_dns_relay") => Some("dane-p2p-dns-relay"),
                 Some("hns_doh") => Some("dane-third-party-doh"),
                 Some("icann_doh") => Some("dane-icann-doh"),
                 _ => None,
@@ -5242,6 +6242,7 @@ fn security_path_name(
     match successful_dns_path_for_types(events, input.host, &[RecordType::A, RecordType::Aaaa]) {
         Some("authoritative_doh") => Some("hns-authoritative-doh"),
         Some("udp53" | "tcp53") => Some("hns-authoritative-dns53"),
+        Some("p2p_dns_relay") => Some("hns-p2p-dns-relay"),
         Some("hns_doh") => Some("hns-third-party-doh"),
         _ => None,
     }
@@ -5269,7 +6270,9 @@ fn dnssec_trace_status(
 ) -> &'static str {
     if matches!(
         error,
-        Some(GatewayError::Resolver(ResolverError::DnssecFailed))
+        Some(GatewayError::Resolver(
+            ResolverError::DnssecFailed | ResolverError::RelayDnssecFailed
+        ))
     ) {
         "bogus"
     } else if resolution.map(|answer| answer.secure).unwrap_or(false) {
@@ -5702,7 +6705,9 @@ fn map_gateway_error_for_host(
                 "ICANN DNS Response Invalid",
                 "Trusted ICANN DNS resolver returned an invalid response.",
             ),
-            GatewayError::Resolver(ResolverError::DnssecFailed)
+            GatewayError::Resolver(
+                ResolverError::DnssecFailed | ResolverError::RelayDnssecFailed,
+            )
             | GatewayError::InsecureResolution => (
                 502,
                 "ICANN DNSSEC Validation Failed",
@@ -5863,7 +6868,7 @@ fn map_gateway_error(error: &GatewayError) -> (u16, &'static str, &'static str) 
             "HNS Nameserver Response Invalid",
             "Delegated HNS nameserver response was invalid or lacked required secure denial data.",
         ),
-        GatewayError::Resolver(ResolverError::DnssecFailed) => (
+        GatewayError::Resolver(ResolverError::DnssecFailed | ResolverError::RelayDnssecFailed) => (
             502,
             "HNS DNSSEC Validation Failed",
             "Delegated HNS DNSSEC validation failed closed.",
@@ -7430,6 +8435,10 @@ mod tests {
                 BrowserProxySecurityPath::DaneAuthoritativeDns53,
             ),
             (
+                "dane-p2p-dns-relay",
+                BrowserProxySecurityPath::DaneP2pDnsRelay,
+            ),
+            (
                 "dane-third-party-doh",
                 BrowserProxySecurityPath::DaneThirdPartyDoh,
             ),
@@ -7442,6 +8451,10 @@ mod tests {
             (
                 "hns-authoritative-dns53",
                 BrowserProxySecurityPath::HnsAuthoritativeDns53,
+            ),
+            (
+                "hns-p2p-dns-relay",
+                BrowserProxySecurityPath::HnsP2pDnsRelay,
             ),
             (
                 "hns-third-party-doh",
@@ -7646,6 +8659,8 @@ mod tests {
             .with_initial_policy(RuntimePolicy {
                 resolution_mode: ResolutionMode::Strict,
                 hns_doh_resolver: Some("https://resolver.example/dns-query".to_owned()),
+                experimental_p2p_dns_relay: true,
+                legacy_hns_doh_compatibility: false,
                 stateless_dane_certificates: true,
             });
         let runtime = BrowserRuntime::open(configuration).unwrap();
@@ -7667,6 +8682,8 @@ mod tests {
             vec![("Accept".to_owned(), "text/html".to_owned())]
         );
         assert!(parsed.strict_hns_mode);
+        assert!(parsed.experimental_p2p_dns_relay);
+        assert!(!parsed.legacy_hns_doh_compatibility);
         assert!(parsed.stateless_dane_certificates);
         assert_eq!(parsed.network, NetworkKind::Testnet);
         assert_eq!(
@@ -7706,6 +8723,8 @@ mod tests {
             .set_policy(RuntimePolicy {
                 resolution_mode: ResolutionMode::Strict,
                 hns_doh_resolver: Some("https://Resolver.Example:443/dns-query".to_owned()),
+                experimental_p2p_dns_relay: true,
+                legacy_hns_doh_compatibility: false,
                 stateless_dane_certificates: true,
             })
             .unwrap();
@@ -7714,6 +8733,8 @@ mod tests {
         assert_eq!(revision, 1);
         assert_eq!(snapshot_revision, revision);
         assert_eq!(policy.resolution_mode, ResolutionMode::Strict);
+        assert!(policy.experimental_p2p_dns_relay);
+        assert!(!policy.legacy_hns_doh_compatibility);
         assert_eq!(
             policy.hns_doh_resolver.as_deref(),
             Some("https://resolver.example/dns-query")
@@ -7789,6 +8810,8 @@ mod tests {
                 RuntimePolicy {
                     resolution_mode: ResolutionMode::Strict,
                     hns_doh_resolver: Some("not-a-doh-url".to_owned()),
+                    experimental_p2p_dns_relay: true,
+                    legacy_hns_doh_compatibility: false,
                     stateless_dane_certificates: true,
                 },
             )
@@ -7872,6 +8895,8 @@ mod tests {
                 RuntimePolicy {
                     resolution_mode: ResolutionMode::Strict,
                     hns_doh_resolver: None,
+                    experimental_p2p_dns_relay: false,
+                    legacy_hns_doh_compatibility: false,
                     stateless_dane_certificates: false,
                 },
             ),
@@ -8298,6 +9323,79 @@ mod tests {
         assert!(diagnostics_json().contains(r#""p2p-discovery-rotation""#));
         assert!(diagnostics_json().contains(r#""p2p-peer-diversity""#));
         assert!(diagnostics_json().contains(r#""p2p-sqlite-peer-store""#));
+    }
+
+    #[test]
+    fn static_relay_peer_endpoint_parser_is_bounded_and_canonical() {
+        assert!(normalize_static_relay_peer_endpoint("Relay.Example:12038").is_err());
+        assert_eq!(
+            normalize_static_relay_peer_endpoint("001.002.003.004:12038"),
+            Err("enter a valid IPv4 relay peer address".to_owned()),
+        );
+        assert_eq!(
+            normalize_static_relay_peer_endpoint("[2001:0db8::1]:12038"),
+            Ok("[2001:db8::1]:12038".to_owned()),
+        );
+        for invalid in [
+            "",
+            "relay.example",
+            "https://relay.example:12038",
+            "user@relay.example:12038",
+            "relay_example:12038",
+            "relay.example:0",
+            "2001:db8::1:12038",
+            "[fe80::1%2]:12038",
+        ] {
+            assert!(
+                normalize_static_relay_peer_endpoint(invalid).is_err(),
+                "{invalid}",
+            );
+        }
+
+        assert!(
+            resolve_static_relay_peer_endpoint("127.0.0.1:12038", &hns_core::network::mainnet(),)
+                .is_err(),
+        );
+        assert_eq!(
+            resolve_static_relay_peer_endpoint("1.1.1.1:12038", &hns_core::network::mainnet(),),
+            Ok(vec!["1.1.1.1:12038".parse().unwrap()]),
+        );
+    }
+
+    #[test]
+    fn runtime_adds_only_a_live_relay_capable_static_peer() {
+        let path = temp_dir_path("static-relay-peer");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let remote_height = Height(u32::MAX);
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut peer = PeerConnection::new(stream, hns_core::network::regtest());
+            assert!(matches!(peer.receive_packet().unwrap(), Packet::Version(_)));
+            peer.send_packet(&Packet::Version(VersionPacket {
+                services: SERVICE_NETWORK | EXPERIMENTAL_DNS_RELAY_SERVICE,
+                height: remote_height,
+                ..VersionPacket::default()
+            }))
+            .unwrap();
+            assert_eq!(peer.receive_packet().unwrap(), Packet::Verack);
+            peer.send_packet(&Packet::Verack).unwrap();
+        });
+
+        let runtime =
+            BrowserRuntime::open(RuntimeConfiguration::new(&path, NetworkKind::Regtest)).unwrap();
+        let status = runtime.add_static_relay_peer(&address.to_string()).unwrap();
+
+        assert_eq!(status.status, "peer_added");
+        assert_eq!(status.peer_count, 1);
+        assert_eq!(status.best_peer_height, None);
+        let store = SqlitePeerStore::open(path.join("hns-regtest/peers.sqlite")).unwrap();
+        assert_eq!(
+            store.load_peer(address).unwrap().unwrap().last_height,
+            Height(0),
+        );
+        server.join().unwrap();
+        cleanup_dir(&path);
     }
 
     #[test]
@@ -9113,7 +10211,7 @@ mod tests {
         );
 
         assert!(trace.contains(
-            r#""authoritativeDns":{"udp53":"timeout","tcp53":"transport_error","doh":"not_attempted"}"#
+            r#""authoritativeDns":{"udp53":"timeout","tcp53":"transport_error","doh":"not_attempted","p2pDnsRelay":"not_attempted"}"#
         ));
         assert!(trace.contains(r#""nameserverCandidates":["192.0.2.53:53"]"#));
         assert!(trace.contains(r#""port53Interception":"detected""#));
@@ -9286,7 +10384,7 @@ mod tests {
 
         assert!(trace.contains(r#""resolutionSource":"hns_resource""#));
         assert!(trace.contains(
-            r#""authoritativeDns":{"udp53":"not_attempted","tcp53":"not_attempted","doh":"not_attempted"}"#
+            r#""authoritativeDns":{"udp53":"not_attempted","tcp53":"not_attempted","doh":"not_attempted","p2pDnsRelay":"not_attempted"}"#
         ));
     }
 
@@ -9360,8 +10458,57 @@ mod tests {
 
         assert!(trace.contains(r#""resolutionSource":"authoritative_doh""#));
         assert!(trace.contains(
-            r#""authoritativeDns":{"udp53":"not_attempted","tcp53":"not_attempted","doh":"ok"}"#
+            r#""authoritativeDns":{"udp53":"not_attempted","tcp53":"not_attempted","doh":"ok","p2pDnsRelay":"not_attempted"}"#
         ));
+    }
+
+    #[test]
+    fn resolution_trace_keeps_p2p_relay_distinct_from_third_party_doh() {
+        let dns_trace = DnsTraceRecorder::default();
+        dns_trace.push(DnsTraceEvent {
+            protocol: "p2p_dns_relay",
+            server: "203.0.113.80:12038".to_owned(),
+            question_name: Some("legacy.relaytest".to_owned()),
+            question_type: Some(RecordType::A.code()),
+            status: "ok".to_owned(),
+            elapsed_ms: 31,
+            error: None,
+        });
+        dns_trace.record_relay(DnsRelayTraceMetadata {
+            peer: Some("203.0.113.80:12038".parse().unwrap()),
+            retries: 1,
+            service_advertised: Some(true),
+            error: None,
+        });
+        let trace = resolution_trace_json(
+            &GatewayHttpRequestInput {
+                data_dir: "/tmp",
+                method: "GET",
+                scheme: "http",
+                host: "legacy.relaytest",
+                port: 80,
+                path_and_query: "/",
+                header_text: "",
+                body: &[],
+            },
+            NetworkKind::Mainnet,
+            GatewayResolutionMode::Strict,
+            Some(&ResolutionAnswer {
+                name: DnsName::from_ascii("legacy.relaytest").unwrap(),
+                records: vec![address_record("legacy.relaytest", [203, 0, 113, 44])],
+                secure: true,
+            }),
+            TlsTraceInput::default(),
+            None,
+            &FallbackMarker::default(),
+            &dns_trace,
+        );
+
+        assert!(trace.contains(r#""resolutionSource":"p2p_dns_relay""#));
+        assert!(trace.contains(
+            r#""p2pDnsRelay":{"attempted":true,"peer":"203.0.113.80:12038","serviceAdvertised":true,"retryCount":1,"error":null}"#
+        ));
+        assert!(!trace.contains(r#""resolutionSource":"hns_doh""#));
     }
 
     #[test]
@@ -9781,6 +10928,321 @@ mod tests {
     }
 
     #[test]
+    fn p2p_fallback_is_used_only_for_delegated_transport_failures() {
+        let answer = ResolutionAnswer {
+            name: DnsName::from_ascii("legacy.relaytest").unwrap(),
+            records: vec![address_record("legacy.relaytest", [203, 0, 113, 44])],
+            secure: true,
+        };
+        let relay = P2pFallbackDelegatedResolver::new(
+            TestDelegatedResolver::error(|| {
+                ResolverError::DnsTransport("authoritative UDP timed out".to_owned())
+            }),
+            TestDelegatedResolver::answer(answer.clone()),
+        );
+        let request = ResolutionRequest {
+            qname: "legacy.relaytest".to_owned(),
+            qtype: RecordType::A.code(),
+        };
+
+        assert_eq!(
+            relay
+                .resolve_delegated(&request, &test_delegation("relaytest"))
+                .unwrap(),
+            answer,
+        );
+
+        let gated = P2pFallbackDelegatedResolver::new(
+            TestDelegatedResolver::error(|| ResolverError::ProofUnavailable),
+            TestDelegatedResolver::answer(ResolutionAnswer {
+                name: DnsName::from_ascii("legacy.relaytest").unwrap(),
+                records: Vec::new(),
+                secure: true,
+            }),
+        );
+        assert_eq!(
+            gated
+                .resolve_delegated(&request, &test_delegation("relaytest"))
+                .unwrap_err(),
+            ResolverError::ProofUnavailable,
+        );
+    }
+
+    #[test]
+    fn relay_live_query_key_ignores_dns_id_and_restores_each_callers_id() {
+        let first = vec![0x12, 0x34, 0x01, 0x10, 0, 1];
+        let second = vec![0xab, 0xcd, 0x01, 0x10, 0, 1];
+        let (first_key, first_id) = dns_relay_coalescing_key(&first).unwrap();
+        let (second_key, second_id) = dns_relay_coalescing_key(&second).unwrap();
+
+        assert_eq!(first_key, second_key);
+        assert_eq!(first_id, 0x1234);
+        assert_eq!(second_id, 0xabcd);
+
+        let relayed = vec![0x12, 0x34, 0x81, 0x80];
+        assert_eq!(
+            restore_dns_relay_response_id(relayed, second_id).unwrap(),
+            vec![0xab, 0xcd, 0x81, 0x80]
+        );
+        assert!(matches!(
+            dns_relay_coalescing_key(&[0]),
+            Err(ResolverError::InvalidDnsResponse)
+        ));
+    }
+
+    #[test]
+    fn coalesced_relay_follower_inherits_peer_and_retry_metadata() {
+        let peer: SocketAddr = "203.0.113.80:12038".parse().unwrap();
+        let query = vec![0xab, 0xcd, 0x01, 0x10, 0, 1];
+        let (key, _) = dns_relay_coalescing_key(&query).unwrap();
+        let flight = Arc::new(DnsRelayFlight {
+            result: Mutex::new(Some(Ok(DnsRelayFlightSuccess {
+                response: vec![0x12, 0x34, 0x81, 0x80],
+                metadata: DnsRelayTraceMetadata {
+                    peer: Some(peer),
+                    retries: 1,
+                    service_advertised: Some(true),
+                    error: None,
+                },
+            }))),
+            completed: Condvar::new(),
+        });
+        let live_queries = Arc::new(Mutex::new(HashMap::from([(key, flight)])));
+        let attempts = Arc::new(DnsRelayAttemptTracker::default());
+        let trace = DnsTraceRecorder::default();
+        let transport = HnsP2pDnsTransport {
+            client: Arc::new(Mutex::new(None)),
+            initialization_error: Some("leader-only client is unused by follower".to_owned()),
+            peer_store_path: PathBuf::new(),
+            network_kind: NetworkKind::Regtest,
+            peer_state: None,
+            proof_peer: Arc::new(Mutex::new(None)),
+            trace: trace.clone(),
+            endpoint_policy: DnsEndpointPolicy::for_network(NetworkKind::Regtest),
+            live_queries,
+            attempts: Arc::clone(&attempts),
+        };
+
+        attempts.begin(0);
+        assert_eq!(
+            transport.traced_exchange(&query).unwrap(),
+            vec![0xab, 0xcd, 0x81, 0x80]
+        );
+
+        assert_eq!(attempts.finish(), vec![peer]);
+        assert_eq!(
+            trace.relay_snapshot(),
+            Some(DnsRelayTraceMetadata {
+                peer: Some(peer),
+                retries: 1,
+                service_advertised: Some(true),
+                error: None,
+            })
+        );
+        assert_eq!(trace.snapshot()[0].server, peer.to_string());
+        assert!(p2p_dns_relay_trace_json(trace.relay_snapshot()).contains(
+            r#""attempted":true,"peer":"203.0.113.80:12038","serviceAdvertised":true,"retryCount":1"#,
+        ));
+    }
+
+    #[test]
+    fn relay_dnssec_failure_penalizes_bad_peer_and_retries_complete_resolution_once() {
+        let bad_peer: SocketAddr = "203.0.113.80:12038".parse().unwrap();
+        let good_peer: SocketAddr = "203.0.113.81:12038".parse().unwrap();
+        let answer = ResolutionAnswer {
+            name: DnsName::from_ascii("legacy.relaytest").unwrap(),
+            records: vec![address_record("legacy.relaytest", [203, 0, 113, 47])],
+            secure: true,
+        };
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let feedback =
+            TestRelayDnssecFeedback::with_attempt_peers([vec![bad_peer], vec![good_peer]]);
+        let resolver = RelayDnssecRetryDelegatedResolver::new(
+            DnssecFailureThenAnswerDelegatedResolver {
+                calls: Arc::clone(&calls),
+                answer: answer.clone(),
+            },
+            feedback.clone(),
+        );
+
+        assert_eq!(
+            resolver
+                .resolve_delegated(
+                    &ResolutionRequest {
+                        qname: "legacy.relaytest".to_owned(),
+                        qtype: RecordType::A.code(),
+                    },
+                    &test_delegation("relaytest"),
+                )
+                .unwrap(),
+            answer,
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        assert_eq!(feedback.retry_offsets(), vec![0, 1]);
+        assert_eq!(feedback.reported_peers(), vec![vec![bad_peer]]);
+    }
+
+    #[test]
+    fn legacy_doh_follows_p2p_unavailability_and_keeps_distinct_marker() {
+        let answer = ResolutionAnswer {
+            name: DnsName::from_ascii("legacy.relaytest").unwrap(),
+            records: vec![address_record("legacy.relaytest", [203, 0, 113, 45])],
+            secure: true,
+        };
+        let p2p = P2pFallbackDelegatedResolver::new(
+            TestDelegatedResolver::error(|| {
+                ResolverError::DnsTransport("direct port 53 blocked".to_owned())
+            }),
+            TestDelegatedResolver::error(|| {
+                ResolverError::DnsTransport("no capable relay peer".to_owned())
+            }),
+        );
+        let marker = FallbackMarker::default();
+        let resolver = FallbackDelegatedResolver::new(
+            p2p,
+            TestDelegatedResolver::answer(answer.clone()),
+            marker.clone(),
+        );
+
+        assert_eq!(
+            resolver
+                .resolve_delegated(
+                    &ResolutionRequest {
+                        qname: "legacy.relaytest".to_owned(),
+                        qtype: RecordType::A.code(),
+                    },
+                    &test_delegation("relaytest"),
+                )
+                .unwrap(),
+            answer,
+        );
+        assert_eq!(
+            marker.reason(),
+            Some("authoritative_nameserver_transport_failed")
+        );
+    }
+
+    #[test]
+    fn relay_dnssec_failure_is_distinct_and_does_not_fall_through_to_legacy_doh() {
+        let first_peer: SocketAddr = "203.0.113.80:12038".parse().unwrap();
+        let alternate_peer: SocketAddr = "203.0.113.81:12038".parse().unwrap();
+        let relay_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let feedback =
+            TestRelayDnssecFeedback::with_attempt_peers([vec![first_peer], vec![alternate_peer]]);
+        let p2p = P2pFallbackDelegatedResolver::new(
+            TestDelegatedResolver::error(|| {
+                ResolverError::DnsTransport("direct port 53 blocked".to_owned())
+            }),
+            RelayDnssecRetryDelegatedResolver::new(
+                CountingErrorDelegatedResolver {
+                    calls: Arc::clone(&relay_calls),
+                    error: || ResolverError::DnssecFailed,
+                },
+                feedback.clone(),
+            ),
+        );
+        let marker = FallbackMarker::default();
+        let resolver = FallbackDelegatedResolver::new(
+            p2p,
+            TestDelegatedResolver::answer(ResolutionAnswer {
+                name: DnsName::from_ascii("legacy.relaytest").unwrap(),
+                records: vec![address_record("legacy.relaytest", [203, 0, 113, 46])],
+                secure: true,
+            }),
+            marker.clone(),
+        );
+
+        assert_eq!(
+            resolver
+                .resolve_delegated(
+                    &ResolutionRequest {
+                        qname: "legacy.relaytest".to_owned(),
+                        qtype: RecordType::A.code(),
+                    },
+                    &test_delegation("relaytest"),
+                )
+                .unwrap_err(),
+            ResolverError::RelayDnssecFailed,
+        );
+        assert_eq!(relay_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            feedback.reported_peers(),
+            vec![vec![first_peer], vec![alternate_peer]]
+        );
+        assert!(!marker.used());
+    }
+
+    #[test]
+    fn relay_peer_persistence_merge_cannot_erase_newer_proof_state() {
+        let address: SocketAddr = "203.0.113.80:12038".parse().unwrap();
+        let mut stored = hns_p2p::PeerState::new(address);
+        stored.score = 25;
+        stored.last_height = Height(200);
+        stored.last_connected_at = Some(300);
+        stored.banned_until = Some(600);
+        stored.successes = 8;
+        stored.failures = 4;
+
+        let mut stale_relay = hns_p2p::PeerState::new(address);
+        stale_relay.score = 5;
+        stale_relay.last_height = Height(150);
+        stale_relay.last_connected_at = Some(250);
+        stale_relay.successes = 9;
+        stale_relay.failures = 3;
+
+        let merged = merge_dns_relay_peer_state(&stored, &stale_relay);
+        assert_eq!(merged.score, 25);
+        assert_eq!(merged.last_height, Height(200));
+        assert_eq!(merged.last_connected_at, Some(300));
+        assert_eq!(merged.banned_until, Some(600));
+        assert_eq!(merged.successes, 9);
+        assert_eq!(merged.failures, 4);
+    }
+
+    #[test]
+    fn relay_peer_refresh_merges_discovery_bans_and_local_penalties() {
+        let path = temp_dir_path("relay-peer-refresh");
+        std::fs::create_dir_all(&path).unwrap();
+        let peer_store_path = path.join("peers.sqlite");
+        let retained: SocketAddr = "1.1.1.1:12038".parse().unwrap();
+        let discovered: SocketAddr = "8.8.8.8:12038".parse().unwrap();
+        let removed: SocketAddr = "9.9.9.9:12038".parse().unwrap();
+        let now = 1_000;
+
+        let mut local = PeerManager::default();
+        local.upsert(retained).score = 25;
+        local.upsert(removed).score = 30;
+        let mut client = DnsRelayClient::new(hns_core::network::mainnet(), local);
+
+        let mut stored = PeerManager::default();
+        let retained_store = stored.upsert(retained);
+        retained_store.score = 5;
+        retained_store.banned_until = Some(now + 600);
+        stored.upsert(discovered).last_height = Height(300);
+        SqlitePeerStore::open(&peer_store_path)
+            .unwrap()
+            .save_manager(&stored)
+            .unwrap();
+
+        assert!(
+            refresh_dns_relay_peers(
+                &peer_store_path,
+                NetworkKind::Mainnet,
+                &mut client,
+                None,
+                now,
+            )
+            .unwrap()
+        );
+        let peers = client.peer_manager();
+        assert_eq!(peers.get(retained).unwrap().score, 25);
+        assert!(peers.get(retained).unwrap().is_banned(now));
+        assert_eq!(peers.get(discovered).unwrap().last_height, Height(300));
+        assert!(peers.get(removed).is_none());
+        cleanup_dir(&path);
+    }
+
+    #[test]
     fn fallback_resolver_uses_doh_on_proof_unavailable_in_compatibility_mode() {
         let marker = FallbackMarker::default();
         let answer = ResolutionAnswer {
@@ -9849,6 +11311,104 @@ mod tests {
 
         assert_eq!(resolved, fallback_answer);
         assert_eq!(marker.reason(), Some("local_chain_not_current"));
+        cleanup_dir(&path);
+    }
+
+    #[test]
+    fn stale_cached_inclusion_stops_before_delegated_resolution() {
+        let path = temp_dir_path("stale-inclusion-before-delegated-resolution");
+        let base = path.join("hns");
+        std::fs::create_dir_all(&base).unwrap();
+        let resources = SqliteResourceValueProvider::open(base.join("resources.sqlite")).unwrap();
+        let root_name = "stale-included".to_owned();
+        let request_name = format!("www.{root_name}");
+        let name_hash = NameHash::from_name(&root_name).unwrap();
+        let proof_root = Hash::new([12; 32]);
+        let proof_height = store_best_header_with_tree_root(&base, proof_root);
+        store_peer_height(
+            &base,
+            proof_height.0 + LOCAL_CHAIN_CURRENTNESS_ALLOWED_LAG + 1,
+        );
+        resources
+            .insert(
+                VerifiedResourceValue::inclusion(
+                    root_name.clone(),
+                    name_hash,
+                    owner_ds_glue4_resource(&root_name, [203, 0, 113, 53]),
+                )
+                .with_anchor(proof_root, proof_height),
+            )
+            .unwrap();
+        let delegated_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let resolver = DelegatingResolver::new(
+            GatewayProofProvider::new(base, resources, NetworkKind::Mainnet),
+            CountingAnswerDelegatedResolver {
+                calls: delegated_calls.clone(),
+                answer: ResolutionAnswer {
+                    name: DnsName::from_ascii(&request_name).unwrap(),
+                    records: vec![address_record(&request_name, [203, 0, 113, 80])],
+                    secure: true,
+                },
+            },
+        );
+
+        let error = resolver
+            .resolve(&ResolutionRequest {
+                qname: request_name,
+                qtype: RecordType::A.code(),
+            })
+            .unwrap_err();
+
+        assert_eq!(error, ResolverError::LocalChainNotCurrent);
+        assert_eq!(delegated_calls.load(Ordering::Relaxed), 0);
+        cleanup_dir(&path);
+    }
+
+    #[test]
+    fn current_cached_inclusion_continues_to_delegated_resolution() {
+        let path = temp_dir_path("current-inclusion-delegated-resolution");
+        let base = path.join("hns");
+        std::fs::create_dir_all(&base).unwrap();
+        let resources = SqliteResourceValueProvider::open(base.join("resources.sqlite")).unwrap();
+        let root_name = "current-included".to_owned();
+        let request_name = format!("www.{root_name}");
+        let name_hash = NameHash::from_name(&root_name).unwrap();
+        let proof_root = Hash::new([13; 32]);
+        let proof_height = store_best_header_with_tree_root(&base, proof_root);
+        store_peer_height(&base, proof_height.0 + LOCAL_CHAIN_CURRENTNESS_ALLOWED_LAG);
+        resources
+            .insert(
+                VerifiedResourceValue::inclusion(
+                    root_name.clone(),
+                    name_hash,
+                    owner_ds_glue4_resource(&root_name, [203, 0, 113, 53]),
+                )
+                .with_anchor(proof_root, proof_height),
+            )
+            .unwrap();
+        let delegated_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let expected = ResolutionAnswer {
+            name: DnsName::from_ascii(&request_name).unwrap(),
+            records: vec![address_record(&request_name, [203, 0, 113, 80])],
+            secure: true,
+        };
+        let resolver = DelegatingResolver::new(
+            GatewayProofProvider::new(base, resources, NetworkKind::Mainnet),
+            CountingAnswerDelegatedResolver {
+                calls: delegated_calls.clone(),
+                answer: expected.clone(),
+            },
+        );
+
+        let resolved = resolver
+            .resolve(&ResolutionRequest {
+                qname: request_name,
+                qtype: RecordType::A.code(),
+            })
+            .unwrap();
+
+        assert_eq!(resolved, expected);
+        assert_eq!(delegated_calls.load(Ordering::Relaxed), 1);
         cleanup_dir(&path);
     }
 
@@ -10415,6 +11975,7 @@ mod tests {
         let name_hash = NameHash::from_name(&root_name).unwrap();
         let anchor_root = Hash::new([5; 32]);
         let anchor_height = store_best_header_with_tree_root(&base, anchor_root);
+        store_peer_height(&base, anchor_height.0);
         resources
             .insert(
                 VerifiedResourceValue::inclusion(
@@ -10519,6 +12080,7 @@ mod tests {
         let name_hash = NameHash::from_name(&root_name).unwrap();
         let anchor_root = Hash::new([5; 32]);
         let anchor_height = store_best_header_with_tree_root(&base, anchor_root);
+        store_peer_height(&base, anchor_height.0);
         resources
             .insert(
                 VerifiedResourceValue::inclusion(
@@ -10691,6 +12253,23 @@ mod tests {
         error: fn() -> ResolverError,
     }
 
+    struct CountingAnswerDelegatedResolver {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        answer: ResolutionAnswer,
+    }
+
+    struct DnssecFailureThenAnswerDelegatedResolver {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        answer: ResolutionAnswer,
+    }
+
+    #[derive(Clone, Default)]
+    struct TestRelayDnssecFeedback {
+        attempt_peers: Arc<Mutex<std::collections::VecDeque<Vec<SocketAddr>>>>,
+        retry_offsets: Arc<Mutex<Vec<usize>>>,
+        reported_peers: Arc<Mutex<Vec<Vec<SocketAddr>>>>,
+    }
+
     enum TestResolverOutcome {
         Answer(ResolutionAnswer),
         Error(fn() -> ResolverError),
@@ -10724,6 +12303,41 @@ mod tests {
         }
     }
 
+    impl TestRelayDnssecFeedback {
+        fn with_attempt_peers(attempt_peers: impl IntoIterator<Item = Vec<SocketAddr>>) -> Self {
+            Self {
+                attempt_peers: Arc::new(Mutex::new(attempt_peers.into_iter().collect())),
+                ..Self::default()
+            }
+        }
+
+        fn retry_offsets(&self) -> Vec<usize> {
+            self.retry_offsets.lock().unwrap().clone()
+        }
+
+        fn reported_peers(&self) -> Vec<Vec<SocketAddr>> {
+            self.reported_peers.lock().unwrap().clone()
+        }
+    }
+
+    impl RelayDnssecAttemptFeedback for TestRelayDnssecFeedback {
+        fn begin_attempt(&self, retry_offset: usize) {
+            self.retry_offsets.lock().unwrap().push(retry_offset);
+        }
+
+        fn finish_attempt(&self) -> Vec<SocketAddr> {
+            self.attempt_peers
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_default()
+        }
+
+        fn report_dnssec_failure(&self, peers: &[SocketAddr]) {
+            self.reported_peers.lock().unwrap().push(peers.to_vec());
+        }
+    }
+
     impl Resolver for TestResolver {
         fn resolve(&self, _request: &ResolutionRequest) -> Result<ResolutionAnswer, ResolverError> {
             match &self.outcome {
@@ -10754,6 +12368,31 @@ mod tests {
         ) -> Result<ResolutionAnswer, ResolverError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Err((self.error)())
+        }
+    }
+
+    impl DelegatedResolver for CountingAnswerDelegatedResolver {
+        fn resolve_delegated(
+            &self,
+            _request: &ResolutionRequest,
+            _delegation: &HnsDelegation,
+        ) -> Result<ResolutionAnswer, ResolverError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self.answer.clone())
+        }
+    }
+
+    impl DelegatedResolver for DnssecFailureThenAnswerDelegatedResolver {
+        fn resolve_delegated(
+            &self,
+            _request: &ResolutionRequest,
+            _delegation: &HnsDelegation,
+        ) -> Result<ResolutionAnswer, ResolverError> {
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                Err(ResolverError::DnssecFailed)
+            } else {
+                Ok(self.answer.clone())
+            }
         }
     }
 
@@ -10865,6 +12504,22 @@ mod tests {
 
     fn owner_glue4_resource(owner: &str, address: [u8; 4]) -> Vec<u8> {
         let mut value = vec![0, 2];
+        DnsName::from_ascii(owner)
+            .unwrap()
+            .encode_wire(&mut value)
+            .unwrap();
+        value.extend(address);
+        value
+    }
+
+    fn owner_ds_glue4_resource(owner: &str, address: [u8; 4]) -> Vec<u8> {
+        let mut value = vec![0, 0];
+        value.extend(1_u16.to_be_bytes());
+        value.push(8);
+        value.push(2);
+        value.push(32);
+        value.extend([7; 32]);
+        value.push(2);
         DnsName::from_ascii(owner)
             .unwrap()
             .encode_wire(&mut value)

@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.5.0 - 2026-07-16
+
+### Added
+
+- Added an opt-in Handshake P2P DNS relay protocol, bounded `hsd` responder integration, Rust requester, Android and iOS runtime controls, deterministic cross-language fixtures, and fast and full four-node regtest acceptance tiers.
+- Added manual Android relay-peer configuration with live capability verification and persisted peer state.
+
+### Changed
+
+- Enabled the P2P DNS relay by default for new Android installs while retaining the independent legacy HNS DoH compatibility fallback for networks whose peers have not upgraded.
+- Bumped the Android app, shared Rust core, Apple shell, Play upload defaults, and store metadata package to 0.5.0 (build 40).
+
+### Security
+
+- Kept relay peers untrusted: validated headers and Urkel proofs, delegated DNSSEC, negative proofs, HTTPS/SVCB policy, TLSA, and DANE certificate matching remain local to the browser.
+- Added proof-gated admission, public-authority filtering, bounded rate and concurrency controls, strict response correlation, query-minimizing diagnostics, and failover away from unavailable or malformed relay peers.
+
 ## 0.4.1 - 2026-07-15
 
 ### Changed

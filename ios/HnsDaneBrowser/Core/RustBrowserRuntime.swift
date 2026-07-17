@@ -119,6 +119,8 @@ final class RustBrowserRuntime: BrowserRuntime {
             nativePolicy.resolution_mode = HNS_BROWSER_RESOLUTION_STRICT
         }
         nativePolicy.stateless_dane_certificates = policy.statelessDANECertificates ? 1 : 0
+        nativePolicy.experimental_p2p_dns_relay = policy.experimentalP2PDNSRelay ? 1 : 0
+        nativePolicy.legacy_hns_doh_compatibility = policy.legacyHNSDoHCompatibility ? 1 : 0
 
         var revision: UInt64 = 0
         let result: HnsBrowserResult
@@ -547,6 +549,10 @@ private final class RustBrowserProxySession: BrowserProxySession {
             return "HNS authoritative DNS"
         case HNS_BROWSER_SECURITY_PATH_HNS_THIRD_PARTY_DOH:
             return "HNS configured DoH"
+        case HNS_BROWSER_SECURITY_PATH_DANE_P2P_DNS_RELAY:
+            return "P2P DNS relay"
+        case HNS_BROWSER_SECURITY_PATH_HNS_P2P_DNS_RELAY:
+            return "HNS P2P DNS relay"
         default:
             return "verified Rust path"
         }

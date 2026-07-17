@@ -35,12 +35,16 @@ class SettingsActivity : ComponentActivity() {
     private lateinit var hnsNetworkStatus: TextView
     private lateinit var hnsModeStatus: TextView
     private lateinit var statelessDaneStatus: TextView
+    private lateinit var experimentalP2pRelayStatus: TextView
+    private lateinit var staticRelayPeerStatus: TextView
+    private lateinit var legacyHnsDohStatus: TextView
     private lateinit var dohResolverStatus: TextView
     private lateinit var resolverCacheStatus: TextView
     private lateinit var historyStatus: TextView
     private lateinit var downloadStatus: TextView
     private lateinit var themeStatus: TextView
     private var resolverCacheClearInProgress = false
+    private var staticRelayPeerAddInProgress = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,6 +55,9 @@ class SettingsActivity : ComponentActivity() {
         hnsNetworkStatus = preferenceSummary(hnsNetworkText())
         hnsModeStatus = preferenceSummary(hnsModeText())
         statelessDaneStatus = preferenceSummary(statelessDaneText())
+        experimentalP2pRelayStatus = preferenceSummary(experimentalP2pRelayText())
+        staticRelayPeerStatus = preferenceSummary(getString(R.string.settings_static_relay_peer_summary))
+        legacyHnsDohStatus = preferenceSummary(legacyHnsDohText())
         dohResolverStatus = preferenceSummary(HnsResolutionPreferences.dohResolverUrl(this))
         resolverCacheStatus = preferenceSummary(getString(R.string.settings_resolver_cache_ready))
         historyStatus = preferenceSummary(historySummary())
@@ -146,6 +153,15 @@ class SettingsActivity : ComponentActivity() {
                 })
                 addPreference(strictHnsModeOption())
                 addPreference(statelessDaneCertificateOption())
+                addPreference(experimentalP2pDnsRelayOption())
+                addPreference(preferenceRow(
+                    title = getString(R.string.row_add_hns_relay_peer),
+                    summaryView = staticRelayPeerStatus,
+                    actionLabel = getString(R.string.action_add),
+                ) {
+                    showAddStaticRelayPeerDialog()
+                })
+                addPreference(legacyHnsDohCompatibilityOption())
                 addPreference(preferenceRow(
                     title = getString(R.string.row_compatibility_doh_resolver),
                     summaryView = dohResolverStatus,
@@ -282,6 +298,8 @@ class SettingsActivity : ComponentActivity() {
             refreshHnsNetworkStatus()
             refreshHnsModeStatus()
             refreshStatelessDaneStatus()
+            refreshExperimentalP2pRelayStatus()
+            refreshLegacyHnsDohStatus()
             refreshHistoryStatus()
             refreshDownloadStatus()
             refreshThemeStatus()
@@ -456,6 +474,56 @@ class SettingsActivity : ComponentActivity() {
             })
         }
 
+    private fun experimentalP2pDnsRelayOption(): LinearLayout =
+        LinearLayout(this).apply {
+            val colors = themeColors()
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(colors.background)
+            setPadding(0, dp(8), 0, dp(10))
+            addView(CheckBox(this@SettingsActivity).apply {
+                text = getString(R.string.settings_experimental_p2p_dns_relay)
+                textSize = 16f
+                setTextColor(colors.primaryText)
+                setPadding(0, 0, 0, 0)
+                isChecked = HnsResolutionPreferences.experimentalP2pDnsRelay(this@SettingsActivity)
+                setOnCheckedChangeListener { _, checked ->
+                    HnsResolutionPreferences.setExperimentalP2pDnsRelay(this@SettingsActivity, checked)
+                    refreshExperimentalP2pRelayStatus()
+                }
+            })
+            addView(experimentalP2pRelayStatus, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                leftMargin = dp(36)
+            })
+        }
+
+    private fun legacyHnsDohCompatibilityOption(): LinearLayout =
+        LinearLayout(this).apply {
+            val colors = themeColors()
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(colors.background)
+            setPadding(0, dp(8), 0, dp(10))
+            addView(CheckBox(this@SettingsActivity).apply {
+                text = getString(R.string.settings_legacy_hns_doh_compatibility)
+                textSize = 16f
+                setTextColor(colors.primaryText)
+                setPadding(0, 0, 0, 0)
+                isChecked = HnsResolutionPreferences.legacyHnsDohCompatibility(this@SettingsActivity)
+                setOnCheckedChangeListener { _, checked ->
+                    HnsResolutionPreferences.setLegacyHnsDohCompatibility(this@SettingsActivity, checked)
+                    refreshLegacyHnsDohStatus()
+                }
+            })
+            addView(legacyHnsDohStatus, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                leftMargin = dp(36)
+            })
+        }
+
     private fun divider(): View =
         View(this).apply {
             setBackgroundColor(themeColors().divider)
@@ -568,6 +636,86 @@ class SettingsActivity : ComponentActivity() {
         dialog.show()
     }
 
+    private fun showAddStaticRelayPeerDialog() {
+        if (staticRelayPeerAddInProgress) {
+            Toast.makeText(this, getString(R.string.settings_static_relay_peer_in_progress), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val network = HnsResolutionPreferences.handshakeNetwork(this)
+        val networkName = network.displayName(this)
+        val input = EditText(this).apply {
+            hint = getString(
+                R.string.settings_static_relay_peer_hint,
+                defaultPeerPort(network),
+                defaultPeerPort(network),
+            )
+            setSingleLine(true)
+            imeOptions = EditorInfo.IME_ACTION_DONE
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.settings_static_relay_peer_title)
+            .setMessage(getString(R.string.settings_static_relay_peer_message, networkName))
+            .setView(input)
+            .setNegativeButton(R.string.action_cancel, null)
+            .setPositiveButton(R.string.action_add, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val endpoint = HnsResolutionPreferences.normalizeStaticRelayPeerEndpoint(
+                    input.text.toString(),
+                )
+                if (endpoint == null) {
+                    input.error = getString(R.string.settings_static_relay_peer_error)
+                    return@setOnClickListener
+                }
+                staticRelayPeerAddInProgress = true
+                input.isEnabled = false
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
+                staticRelayPeerStatus.text = getString(R.string.settings_static_relay_peer_verifying, networkName)
+                val dataDir = filesDir.absolutePath
+                thread(name = "hns-static-relay-peer-add") {
+                    val result = ProcessHnsSyncSingleFlight.tryRun {
+                        NativeBridge.addStaticRelayPeer(dataDir, network.id, endpoint)
+                    }
+                    val status = result?.let {
+                        runCatching { JSONObject(it).optString("status") }.getOrDefault("")
+                    }
+                    runOnUiThread {
+                        staticRelayPeerAddInProgress = false
+                        if (isDestroyed) {
+                            return@runOnUiThread
+                        }
+                        if (status == "peer_added") {
+                            staticRelayPeerStatus.text = getString(
+                                R.string.settings_static_relay_peer_saved_status,
+                                networkName,
+                            )
+                            Toast.makeText(
+                                this,
+                                getString(R.string.settings_static_relay_peer_saved, networkName),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                            dialog.dismiss()
+                            return@runOnUiThread
+                        }
+
+                        staticRelayPeerStatus.text = getString(R.string.settings_static_relay_peer_summary)
+                        input.isEnabled = true
+                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = true
+                        input.error = if (status == null) {
+                            getString(R.string.sync_already_running)
+                        } else {
+                            getString(R.string.settings_static_relay_peer_verify_failed)
+                        }
+                    }
+                }
+            }
+        }
+        dialog.show()
+    }
+
     private fun showNetworkDialog() {
         val networks = HandshakeNetwork.entries.toTypedArray()
         val labels = networks
@@ -584,6 +732,7 @@ class SettingsActivity : ComponentActivity() {
                     HnsResolutionPreferences.setHandshakeNetwork(this, selected)
                     (application as? HnsDaneApplication)?.onHandshakeNetworkChanged()
                     refreshHnsNetworkStatus()
+                    staticRelayPeerStatus.text = getString(R.string.settings_static_relay_peer_summary)
                     val selectedName = selected.displayName(this)
                     resolverCacheStatus.text = getString(R.string.settings_resolver_cache_ready_network, selectedName)
                     Toast.makeText(this, getString(R.string.settings_network_set, selectedName), Toast.LENGTH_SHORT).show()
@@ -719,6 +868,14 @@ class SettingsActivity : ComponentActivity() {
         statelessDaneStatus.text = statelessDaneText()
     }
 
+    private fun refreshExperimentalP2pRelayStatus() {
+        experimentalP2pRelayStatus.text = experimentalP2pRelayText()
+    }
+
+    private fun refreshLegacyHnsDohStatus() {
+        legacyHnsDohStatus.text = legacyHnsDohText()
+    }
+
     private fun refreshDohResolverStatus() {
         dohResolverStatus.text = HnsResolutionPreferences.dohResolverUrl(this)
     }
@@ -753,6 +910,26 @@ class SettingsActivity : ComponentActivity() {
         } else {
             getString(R.string.settings_stateless_dane_off)
         }
+
+    private fun experimentalP2pRelayText(): String =
+        if (HnsResolutionPreferences.experimentalP2pDnsRelay(this)) {
+            getString(R.string.settings_experimental_p2p_dns_relay_on)
+        } else {
+            getString(R.string.settings_experimental_p2p_dns_relay_off)
+        }
+
+    private fun legacyHnsDohText(): String =
+        if (HnsResolutionPreferences.legacyHnsDohCompatibility(this)) {
+            getString(R.string.settings_legacy_hns_doh_compatibility_on)
+        } else {
+            getString(R.string.settings_legacy_hns_doh_compatibility_off)
+        }
+
+    private fun defaultPeerPort(network: HandshakeNetwork): Int = when (network) {
+        HandshakeNetwork.Mainnet -> 12_038
+        HandshakeNetwork.Testnet -> 13_038
+        HandshakeNetwork.Regtest -> 14_038
+    }
 
     private fun cookieSummary(): String =
         if (BrowserCookiePreferences.blockThirdPartyCookies(this)) {

@@ -160,6 +160,8 @@ class MainActivity : ComponentActivity() {
             strictHnsMode = { HnsResolutionPreferences.strictHnsMode(this) },
             dohResolverUrl = { HnsResolutionPreferences.dohResolverUrl(this) },
             statelessDaneCertificates = { HnsResolutionPreferences.statelessDaneCertificates(this) },
+            experimentalP2pDnsRelay = { HnsResolutionPreferences.experimentalP2pDnsRelay(this) },
+            legacyHnsDohCompatibility = { HnsResolutionPreferences.legacyHnsDohCompatibility(this) },
             handshakeNetwork = { HnsResolutionPreferences.handshakeNetworkId(this) },
             onMainFrameHnsStatusForUrl = { url, statusCode, tlsPolicy, resolverPolicy, securityPath, traceJson ->
                 runOnUiThread {
@@ -861,11 +863,13 @@ class MainActivity : ComponentActivity() {
             SecurityState.HnsCompatibility -> getString(R.string.security_hns_compat)
             SecurityState.HnsViaAuthoritativeDoh -> getString(R.string.security_hns_via_authoritative_doh)
             SecurityState.HnsViaAuthoritativeDns53 -> getString(R.string.security_hns_via_authoritative_dns53)
+            SecurityState.HnsViaP2pDnsRelay -> getString(R.string.security_hns_via_p2p_dns_relay)
             SecurityState.HnsViaThirdPartyDoh -> getString(R.string.security_hns_via_third_party_doh)
             SecurityState.DaneVerified -> getString(R.string.security_dane_verified)
             SecurityState.DaneCompatibility -> getString(R.string.security_dane_compat)
             SecurityState.DaneViaAuthoritativeDoh -> getString(R.string.security_dane_via_authoritative_doh)
             SecurityState.DaneViaAuthoritativeDns53 -> getString(R.string.security_dane_via_authoritative_dns53)
+            SecurityState.DaneViaP2pDnsRelay -> getString(R.string.security_dane_via_p2p_dns_relay)
             SecurityState.DaneViaThirdPartyDoh -> getString(R.string.security_dane_via_third_party_doh)
             SecurityState.StatelessDane -> getString(R.string.security_stateless_dane)
             SecurityState.DaneViaIcannDoh -> getString(R.string.security_dane_via_icann_doh)
@@ -1159,6 +1163,8 @@ class MainActivity : ComponentActivity() {
         val strictMode = HnsResolutionPreferences.strictHnsMode(this)
         val dohResolver = HnsResolutionPreferences.dohResolverUrl(this)
         val statelessDane = HnsResolutionPreferences.statelessDaneCertificates(this)
+        val experimentalP2pDnsRelay = HnsResolutionPreferences.experimentalP2pDnsRelay(this)
+        val legacyHnsDohCompatibility = HnsResolutionPreferences.legacyHnsDohCompatibility(this)
         val handshakeNetwork = HnsResolutionPreferences.handshakeNetworkId(this)
         Toast.makeText(this, getString(R.string.toast_download_started), Toast.LENGTH_SHORT).show()
         downloadExecutor.execute {
@@ -1169,6 +1175,8 @@ class MainActivity : ComponentActivity() {
                     strictHnsMode = { strictMode },
                     dohResolverUrl = { dohResolver },
                     statelessDaneCertificates = { statelessDane },
+                    experimentalP2pDnsRelay = { experimentalP2pDnsRelay },
+                    legacyHnsDohCompatibility = { legacyHnsDohCompatibility },
                     handshakeNetwork = { handshakeNetwork },
                 )
                 val response = fetcher.fetch(downloadUrl, userAgent)
@@ -1310,6 +1318,8 @@ class MainActivity : ComponentActivity() {
             strictHnsMode = HnsResolutionPreferences.strictHnsMode(this),
             dohResolverUrl = HnsResolutionPreferences.dohResolverUrl(this),
             statelessDaneCertificates = HnsResolutionPreferences.statelessDaneCertificates(this),
+            experimentalP2pDnsRelay = HnsResolutionPreferences.experimentalP2pDnsRelay(this),
+            legacyHnsDohCompatibility = HnsResolutionPreferences.legacyHnsDohCompatibility(this),
         )
     }
 

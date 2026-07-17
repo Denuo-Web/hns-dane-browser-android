@@ -1,1 +1,1 @@
-0.4.1 updates the in-app source code link to the renamed cross-platform GitHub repository. Browser behavior and networking are unchanged.
+0.5.0 adds a proof-gated Handshake P2P DNS relay, enabled by default with legacy DoH fallback, plus manual relay peer configuration. DNSSEC and DANE validation remain local.

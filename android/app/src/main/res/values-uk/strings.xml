@@ -1,6 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
 <string name="action_analyze">Аналізуйте</string>
+<string name="action_add">Додати</string>
 <string name="action_cancel">Скасувати</string>
 <string name="action_change">Зміна</string>
 <string name="action_clear">ясно</string>
@@ -312,7 +313,6 @@
 <string name="gateway_clip_label">Події шлюзу HNS DANE Browser</string>
 <string name="gateway_copied">Події шлюзу скопійовано</string>
 <string name="legal_license_summary">HNS DANE Browser є вихідним кодом за ліцензією PolyForm Noncommercial License 1.0.0. Ліцензія дозволяє некомерційне використання, вивчення, модифікацію та повторне розповсюдження. Для комерційного використання потрібен окремий письмовий дозвіл від Denuo Web, LLC.</string>
-<string name="legal_user_agreement">Це перший експериментальний браузер Handshake з локальними перевірками HNS, транспортом RFC 8484 DoH і діагностикою DNSSEC/DANE. Роздільна здатність HNS, перевірка DNSSEC, перевірка DANE, резервна сумісність і синхронізація можуть не завершитися або бути неповними. Додаток надається без гарантії, не є фінансовою послугою, а пожертви необов’язкові та не розблоковують функції.</string>
 <string name="legal_copy_privacy_policy_url">політика конфіденційності URL</string>
 <string name="legal_copy_source_code_url">вихідний код URL</string>
 <string name="legal_copy_hns_donation_address">Адреса пожертви HNS</string>

@@ -26,6 +26,8 @@ class HnsNativeDownloadFetcherTest {
             strictHnsMode = { true },
             dohResolverUrl = { "https://resolver.example/dns-query" },
             statelessDaneCertificates = { true },
+            experimentalP2pDnsRelay = { true },
+            legacyHnsDohCompatibility = { false },
             handshakeNetwork = { "testnet" },
         )
 
@@ -55,6 +57,8 @@ class HnsNativeDownloadFetcherTest {
                 strictHnsMode = true,
                 dohResolverUrl = "https://resolver.example/dns-query",
                 statelessDaneCertificates = true,
+                experimentalP2pDnsRelay = true,
+                legacyHnsDohCompatibility = false,
             ),
             bridge.configs.single(),
         )

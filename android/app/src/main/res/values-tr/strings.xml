@@ -1,6 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
 <string name="action_analyze">Analiz et</string>
+<string name="action_add">Ekle</string>
 <string name="action_cancel">İptal</string>
 <string name="action_change">Değiştir</string>
 <string name="action_clear">Temizle</string>
@@ -300,7 +301,6 @@
 <string name="gateway_clip_label">HNS DANE Browser ağ geçidi etkinlikleri</string>
 <string name="gateway_copied">Ağ geçidi etkinlikleri kopyalandı</string>
 <string name="legal_license_summary">HNS DANE Browser, PolyForm Ticari Olmayan Lisans 1.0.0 kapsamında kaynak olarak mevcuttur. Lisans kapsamında ticari olmayan kullanım, çalışma, değişiklik ve yeniden dağıtıma izin verilmektedir. Ticari kullanım Denuo Web, LLC\'nin ayrı yazılı iznini gerektirir.</string>
-<string name="legal_user_agreement">Bu, yerel HNS kanıtlarına, RFC 8484 DoH aktarımına ve DNSSEC/DANE tanılamasına sahip deneysel bir Handshake öncelikli tarayıcıdır. HNS çözünürlüğü, DNSSEC doğrulaması, DANE kontrolleri, uyumluluk geri dönüşü ve senkronizasyon başarısız olarak kapatılabilir veya eksik olabilir. Uygulama garanti olmadan sağlanır, finansal bir hizmet değildir ve bağışlar isteğe bağlıdır ve hiçbir özelliğin kilidini açmaz.</string>
 <string name="legal_copy_privacy_policy_url">gizlilik politikası URL</string>
 <string name="legal_copy_source_code_url">kaynak kodu URL</string>
 <string name="legal_copy_hns_donation_address">HNS bağış adresi</string>

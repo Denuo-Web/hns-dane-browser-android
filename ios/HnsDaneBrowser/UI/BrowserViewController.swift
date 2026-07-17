@@ -305,7 +305,9 @@ final class BrowserViewController: UIViewController {
                 BrowserRuntimePolicy(
                     resolutionMode: .compatibility,
                     hnsDohResolver: policy.hnsDohResolver,
-                    statelessDANECertificates: policy.statelessDANECertificates
+                    statelessDANECertificates: policy.statelessDANECertificates,
+                    experimentalP2PDNSRelay: policy.experimentalP2PDNSRelay,
+                    legacyHNSDoHCompatibility: policy.legacyHNSDoHCompatibility
                 )
             )
         }
@@ -320,7 +322,9 @@ final class BrowserViewController: UIViewController {
                 BrowserRuntimePolicy(
                     resolutionMode: .strict,
                     hnsDohResolver: policy.hnsDohResolver,
-                    statelessDANECertificates: policy.statelessDANECertificates
+                    statelessDANECertificates: policy.statelessDANECertificates,
+                    experimentalP2PDNSRelay: policy.experimentalP2PDNSRelay,
+                    legacyHNSDoHCompatibility: policy.legacyHNSDoHCompatibility
                 )
             )
         }
@@ -341,10 +345,52 @@ final class BrowserViewController: UIViewController {
                 BrowserRuntimePolicy(
                     resolutionMode: policy.resolutionMode,
                     hnsDohResolver: policy.hnsDohResolver,
-                    statelessDANECertificates: !policy.statelessDANECertificates
+                    statelessDANECertificates: !policy.statelessDANECertificates,
+                    experimentalP2PDNSRelay: policy.experimentalP2PDNSRelay,
+                    legacyHNSDoHCompatibility: policy.legacyHNSDoHCompatibility
                 )
             )
         }
+
+        let experimentalP2PRelay = UIAction(
+            title: "Experimental P2P DNS Relay",
+            image: UIImage(systemName: "point.3.filled.connected.trianglepath.dotted"),
+            attributes: disabled,
+            state: policy.experimentalP2PDNSRelay ? .on : .off
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.applyRuntimePolicy(
+                BrowserRuntimePolicy(
+                    resolutionMode: policy.resolutionMode,
+                    hnsDohResolver: policy.hnsDohResolver,
+                    statelessDANECertificates: policy.statelessDANECertificates,
+                    experimentalP2PDNSRelay: !policy.experimentalP2PDNSRelay,
+                    legacyHNSDoHCompatibility: policy.legacyHNSDoHCompatibility
+                )
+            )
+        }
+        let legacyDoHCompatibility = UIAction(
+            title: "Legacy HNS DoH Compatibility",
+            image: UIImage(systemName: "network.badge.shield.half.filled"),
+            attributes: disabled,
+            state: policy.legacyHNSDoHCompatibility ? .on : .off
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.applyRuntimePolicy(
+                BrowserRuntimePolicy(
+                    resolutionMode: policy.resolutionMode,
+                    hnsDohResolver: policy.hnsDohResolver,
+                    statelessDANECertificates: policy.statelessDANECertificates,
+                    experimentalP2PDNSRelay: policy.experimentalP2PDNSRelay,
+                    legacyHNSDoHCompatibility: !policy.legacyHNSDoHCompatibility
+                )
+            )
+        }
+        let resolverPaths = UIMenu(
+            title: "Resolver Paths",
+            image: UIImage(systemName: "arrow.triangle.branch"),
+            children: [experimentalP2PRelay, legacyDoHCompatibility]
+        )
 
         let configureDoH = UIAction(
             title: "Configure DoH Resolver…",
@@ -365,7 +411,9 @@ final class BrowserViewController: UIViewController {
                 BrowserRuntimePolicy(
                     resolutionMode: policy.resolutionMode,
                     hnsDohResolver: nil,
-                    statelessDANECertificates: policy.statelessDANECertificates
+                    statelessDANECertificates: policy.statelessDANECertificates,
+                    experimentalP2PDNSRelay: policy.experimentalP2PDNSRelay,
+                    legacyHNSDoHCompatibility: policy.legacyHNSDoHCompatibility
                 )
             )
         }
@@ -403,7 +451,7 @@ final class BrowserViewController: UIViewController {
         )
         controlsButton.menu = UIMenu(
             title: "Handshake Runtime",
-            children: [modeMenu, statelessDANE, dohMenu, maintenance]
+            children: [modeMenu, statelessDANE, resolverPaths, dohMenu, maintenance]
         )
     }
 
@@ -430,7 +478,9 @@ final class BrowserViewController: UIViewController {
                 BrowserRuntimePolicy(
                     resolutionMode: policy.resolutionMode,
                     hnsDohResolver: nil,
-                    statelessDANECertificates: policy.statelessDANECertificates
+                    statelessDANECertificates: policy.statelessDANECertificates,
+                    experimentalP2PDNSRelay: policy.experimentalP2PDNSRelay,
+                    legacyHNSDoHCompatibility: policy.legacyHNSDoHCompatibility
                 )
             )
         })
@@ -440,7 +490,9 @@ final class BrowserViewController: UIViewController {
                 BrowserRuntimePolicy(
                     resolutionMode: policy.resolutionMode,
                     hnsDohResolver: alert?.textFields?.first?.text,
-                    statelessDANECertificates: policy.statelessDANECertificates
+                    statelessDANECertificates: policy.statelessDANECertificates,
+                    experimentalP2PDNSRelay: policy.experimentalP2PDNSRelay,
+                    legacyHNSDoHCompatibility: policy.legacyHNSDoHCompatibility
                 )
             )
         })

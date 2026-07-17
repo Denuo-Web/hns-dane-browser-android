@@ -129,7 +129,7 @@ internal object GatewayEventLog {
     }
 
     private fun String.sanitizeHost(): String {
-        return trim()
+        val sanitized = trim()
             .substringBefore('/')
             .substringBefore('?')
             .substringBefore('#')
@@ -139,6 +139,23 @@ internal object GatewayEventLog {
             .filter { it.isLetterOrDigit() || it == '-' || it == '.' || it == ':' || it == '[' || it == ']' }
             .take(253)
             .ifBlank { "unknown" }
+
+        // This log is persisted. Retain only the HNS root label needed to
+        // correlate aggregate gateway failures, never a queried subdomain.
+        if (sanitized.startsWith('[') || sanitized.contains(':') || sanitized.isIpv4Literal()) {
+            return "ip-literal"
+        }
+
+        return sanitized.substringAfterLast('.').ifBlank { "unknown" }
+    }
+
+    private fun String.isIpv4Literal(): Boolean {
+        val octets = split('.')
+        return octets.size == 4 && octets.all { octet ->
+            octet.isNotEmpty() &&
+                octet.all(Char::isDigit) &&
+                octet.toIntOrNull()?.let { value -> value in 0..255 } == true
+        }
     }
 
     private fun String.sanitizeToken(): String {

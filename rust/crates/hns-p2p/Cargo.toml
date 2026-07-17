@@ -6,7 +6,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+getrandom.workspace = true
 hns-core.workspace = true
 hns-urkel.workspace = true
 rusqlite.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+hex.workspace = true

@@ -82,6 +82,52 @@ The iOS shell uses one persistent identified `WKWebsiteDataStore` with one authe
 - Swift contains no independent HNS resolver, socket transport, HTTP proxy parser, DANE validator, certificate generator, or TLS terminator.
 - The committed privacy manifest declares the platform reason APIs used for preferences and file timestamps. Optional physical-device traffic/challenge testing remains unverified.
 
+## Experimental P2P DNS relay trust boundary
+
+The P2P DNS relay is an untrusted transport beneath the existing proof-backed
+delegated resolver. Android new installs enable it by default, while preserving
+an explicit preference already chosen by an existing installation. It is
+considered only after current locally validated headers and a matching Urkel
+proof have produced an acceptable HNS NS/DS delegation, proof-declared
+authoritative DoH has not succeeded, and direct authoritative UDP/TCP 53 has
+failed or has been classified as intercepted. The legacy third-party HNS DoH
+path remains a later, independently controlled compatibility mechanism and is
+also enabled by default for Android new installs. The `hsd` relay responder is
+never enabled implicitly; an operator must opt in to serving queries.
+
+The peer necessarily learns the qname, qtype, client P2P connection, and source
+network address. The ordinary Handshake TCP listener is plaintext; no query
+confidentiality is claimed. Relay requests contain no destination address or
+port, no ECS, and no stable client identifier. Normal logs and persisted
+diagnostics omit qnames and raw DNS messages.
+
+Manual relay configuration accepts only IP-literal `IPv4:port` or
+`[IPv6]:port` endpoints, so adding a peer cannot invoke hostname resolution.
+The runtime completes a live HSD handshake and verifies the capability in the
+peer's current version message before persisting the endpoint. Neither this
+probe nor an automatic relay-only handshake promotes the version message's
+advertised height into `bestPeerHeight` or any local-chain-currentness decision;
+only the header-sync path records peer-height observations.
+
+The relay requester advertises zero local services on its relay-only
+connections, including no `SERVICE_NETWORK`, because it does not offer headers,
+proofs, or relay service on those connections. Before transmission it enforces
+the HIP query profile: one allowlisted `IN` question under a syntactically valid
+HNS root, standard query flags and empty response sections, plus exactly one
+root-owner EDNS(0) OPT with zero extended RCODE/version, `DO`, a 512-through-4096
+payload size, clear reserved flags, and only optional Padding. ECS and all other
+EDNS options are rejected.
+
+The relay's response is accepted only as raw input to local DNS parsing and the
+existing DS/DNSKEY/RRSIG/NSEC/NSEC3, CNAME/referral, HTTPS/SVCB, TLSA, and DANE
+validators. Its AD bit is never authoritative. Unknown/late/duplicate request
+IDs, question or DNS-ID mismatches, malformed compression, non-canonical
+framing, trailing data, and oversized bodies fail closed and may penalize the
+peer. A future unknown transport-status value fails the current exchange,
+closes that relay connection, and may be retried through an alternate, but it
+does not by itself change peer score or start a cooldown. See
+`experimental-hns-p2p-dns-relay.md` for framing, limits, topology, and rollback.
+
 ## Review Checklist
 
 - Parsers are bounded and return structured errors.
@@ -95,6 +141,14 @@ The iOS shell uses one persistent identified `WKWebsiteDataStore` with one authe
 - Version packets use HSD's 88-byte network address format rather than Bitcoin's shorter address encoding.
 - Version/verack ordering is accepted in either HSD-observed order before the session enters ready state.
 - Advisory or unknown P2P packets are ignored while waiting for required sync packets; they do not advance header/proof state.
+- No experimental relay request is sent before a complete handshake or to a peer whose current version message lacks the temporary capability bit.
+- Relay-only connections advertise zero local services, including no `SERVICE_NETWORK`; consuming relay DNS does not claim that the requester serves headers, proofs, or relay requests.
+- No height advertised during an automatic relay handshake or manual static-relay capability probe is recorded as a peer sync target or used for local-chain currentness; only header-sync sessions may record an observed height.
+- No relayed answer can set secure state from AD; it must pass the same local delegated DNSSEC and DANE validation as direct authoritative DNS.
+- No relay request carries an arbitrary destination, non-IN/multi-question query, a type outside the HIP allowlist, ANY/AXFR/IXFR, ECS, or a non-HNS root. Query header flags, empty answer/authority sections, and the single EDNS(0) OPT's owner, version, extended RCODE, `DO`, payload size, reserved flags, and options are validated before transmission.
+- No relay timeout, disconnect, transport status, or malformed response is cached as NXDOMAIN/NODATA.
+- A future unknown relay transport status fails only that exchange and connection, with no automatic score change or cooldown solely because the status is unknown.
+- No P2P relay fallback is attempted when the local HNS proof is unavailable, mismatched, invalid, or stale.
 - Duplicate headers in peer batches are ignored as idempotent sync input; full duplicate-only pages stop the bounded multi-batch loop so a stale peer cannot spin the sync runner, while invalid difficulty bits, invalid proof-of-work, and unknown-parent headers still fail closed.
 - No panics on malformed network data.
 - No unbounded memory growth from attacker-controlled lengths.
@@ -104,7 +158,7 @@ The iOS shell uses one persistent identified `WKWebsiteDataStore` with one authe
 - No HSD Urkel inclusion value should be cached as resolver data until its serialized `NameState` name matches the requested root and only its bounded `data` field is extracted.
 - No TCP proof response should be stored for resolver use unless it matches a tracked getproof request and passes Urkel verification.
 - No cached verified resource value should be served unless its root label and name hash match the resolver request.
-- No chain-anchored cached verified resource value should be served unless its proof tree root and height match the current local best header; sync ticks prune values that are unanchored or not anchored to that current tip.
+- No chain-anchored cached verified resource value, whether an inclusion or non-inclusion, should be served unless its proof tree root and height match the current local best header and that local chain is current enough for resolution. Sync ticks prune values that are unanchored or not anchored to the current tip; a materially stale local chain fails before delegated DNS or relay transport.
 - No persisted verified resource value should be stored or returned unless its root label and name hash are normalized and matched.
 - No proven HNS answer should be returned if the proof name hash or root name mismatches the request.
 - No verified HNS non-inclusion should be treated as an existing name with an empty record set.

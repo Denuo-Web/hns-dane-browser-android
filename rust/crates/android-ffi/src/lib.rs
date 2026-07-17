@@ -407,6 +407,8 @@ fn proxy_security_path_code(path: Option<BrowserProxySecurityPath>) -> Option<u8
         Some(BrowserProxySecurityPath::HnsAuthoritativeDoh) => Some(6),
         Some(BrowserProxySecurityPath::HnsAuthoritativeDns53) => Some(7),
         Some(BrowserProxySecurityPath::HnsThirdPartyDoh) => Some(8),
+        Some(BrowserProxySecurityPath::DaneP2pDnsRelay) => Some(9),
+        Some(BrowserProxySecurityPath::HnsP2pDnsRelay) => Some(10),
         Some(_) => None,
     }
 }
@@ -470,6 +472,8 @@ struct RuntimeGatewayPolicyInput<'local> {
     strict_hns_mode: jboolean,
     doh_resolver_url: JString<'local>,
     stateless_dane_certificates: jboolean,
+    experimental_p2p_dns_relay: jboolean,
+    legacy_hns_doh_compatibility: jboolean,
 }
 
 #[unsafe(no_mangle)]
@@ -573,15 +577,33 @@ fn runtime_gateway_policy(
         .to_string_lossy()
         .trim()
         .to_owned();
-    Some(RuntimePolicy {
-        resolution_mode: if input.strict_hns_mode == 0 {
+    Some(runtime_gateway_policy_from_values(
+        input.strict_hns_mode,
+        doh_resolver_url,
+        input.stateless_dane_certificates,
+        input.experimental_p2p_dns_relay,
+        input.legacy_hns_doh_compatibility,
+    ))
+}
+
+fn runtime_gateway_policy_from_values(
+    strict_hns_mode: jboolean,
+    doh_resolver_url: String,
+    stateless_dane_certificates: jboolean,
+    experimental_p2p_dns_relay: jboolean,
+    legacy_hns_doh_compatibility: jboolean,
+) -> RuntimePolicy {
+    RuntimePolicy {
+        resolution_mode: if strict_hns_mode == 0 {
             ResolutionMode::Compatibility
         } else {
             ResolutionMode::Strict
         },
         hns_doh_resolver: (!doh_resolver_url.is_empty()).then_some(doh_resolver_url),
-        stateless_dane_certificates: input.stateless_dane_certificates != 0,
-    })
+        experimental_p2p_dns_relay: experimental_p2p_dns_relay != 0,
+        legacy_hns_doh_compatibility: legacy_hns_doh_compatibility != 0,
+        stateless_dane_certificates: stateless_dane_certificates != 0,
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -644,6 +666,25 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeS
     let status = runtime_from_handle(handle)
         .map(|runtime| runtime_status_json(runtime.network(), runtime.sync_status()))
         .unwrap_or_else(|| NativeSyncStatus::error("invalid runtime handle".to_owned()).to_json());
+    env.new_string(status)
+        .map(|value| value.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeAddStaticRelayPeer(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    endpoint: JString<'_>,
+) -> jstring {
+    let status = match (runtime_from_handle(handle), env.get_string(&endpoint)) {
+        (Some(runtime), Ok(endpoint)) => runtime_status_json(
+            runtime.network(),
+            runtime.add_static_relay_peer(endpoint.to_string_lossy().as_ref()),
+        ),
+        _ => NativeSyncStatus::error("invalid static relay peer input".to_owned()).to_json(),
+    };
     env.new_string(status)
         .map(|value| value.into_raw())
         .unwrap_or(std::ptr::null_mut())
@@ -726,6 +767,8 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeS
     strict_hns_mode: jboolean,
     doh_resolver_url: JString<'_>,
     stateless_dane_certificates: jboolean,
+    experimental_p2p_dns_relay: jboolean,
+    legacy_hns_doh_compatibility: jboolean,
     scope_root: JString<'_>,
 ) -> jbyteArray {
     catch_unwind(AssertUnwindSafe(|| {
@@ -736,6 +779,8 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeS
                     strict_hns_mode,
                     doh_resolver_url,
                     stateless_dane_certificates,
+                    experimental_p2p_dns_relay,
+                    legacy_hns_doh_compatibility,
                 },
             ))
             .zip(env.get_string(&scope_root).ok())
@@ -779,6 +824,8 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeG
     strict_hns_mode: jboolean,
     doh_resolver_url: JString<'_>,
     stateless_dane_certificates: jboolean,
+    experimental_p2p_dns_relay: jboolean,
+    legacy_hns_doh_compatibility: jboolean,
     method: JString<'_>,
     scheme: JString<'_>,
     host: JString<'_>,
@@ -795,6 +842,8 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeG
                     strict_hns_mode,
                     doh_resolver_url,
                     stateless_dane_certificates,
+                    experimental_p2p_dns_relay,
+                    legacy_hns_doh_compatibility,
                 },
             ))
             .zip(jni_runtime_gateway_request(
@@ -829,6 +878,8 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeG
     strict_hns_mode: jboolean,
     doh_resolver_url: JString<'_>,
     stateless_dane_certificates: jboolean,
+    experimental_p2p_dns_relay: jboolean,
+    legacy_hns_doh_compatibility: jboolean,
     method: JString<'_>,
     scheme: JString<'_>,
     host: JString<'_>,
@@ -850,6 +901,8 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeRuntimeG
                     strict_hns_mode,
                     doh_resolver_url,
                     stateless_dane_certificates,
+                    experimental_p2p_dns_relay,
+                    legacy_hns_doh_compatibility,
                 },
             ))
             .zip(jni_runtime_gateway_request(
@@ -1068,6 +1121,22 @@ pub extern "system" fn Java_com_denuoweb_hnsdane_net_NativeBridge_nativeDiagnost
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn gateway_policy_carries_independent_relay_controls() {
+        let policy = runtime_gateway_policy_from_values(
+            1,
+            "https://resolver.example/dns-query".to_owned(),
+            0,
+            1,
+            0,
+        );
+
+        assert_eq!(policy.resolution_mode, ResolutionMode::Strict);
+        assert!(policy.experimental_p2p_dns_relay);
+        assert!(!policy.legacy_hns_doh_compatibility);
+        assert!(!policy.stateless_dane_certificates);
+    }
 
     #[test]
     fn browser_namespace_jni_codes_follow_the_shared_rust_policy() {
@@ -1344,6 +1413,8 @@ mod tests {
             (BrowserProxySecurityPath::HnsAuthoritativeDoh, 6),
             (BrowserProxySecurityPath::HnsAuthoritativeDns53, 7),
             (BrowserProxySecurityPath::HnsThirdPartyDoh, 8),
+            (BrowserProxySecurityPath::DaneP2pDnsRelay, 9),
+            (BrowserProxySecurityPath::HnsP2pDnsRelay, 10),
         ] {
             let mapped = proxy_status_bundle(&PendingAndroidProxyStatus {
                 sequence: 12,

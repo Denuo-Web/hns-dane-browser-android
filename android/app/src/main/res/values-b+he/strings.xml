@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="action_analyze">לְנַתֵחַ</string>
+    <string name="action_add">הוספה</string>
     <string name="action_cancel">לְבַטֵל</string>
     <string name="action_change">לְשַׁנוֹת</string>
     <string name="action_clear">בָּרוּר</string>
@@ -306,7 +307,6 @@
     <string name="gateway_clip_label">HNS DANE אירועי שער דפדפן</string>
     <string name="gateway_copied">הועתקו אירועי שער</string>
     <string name="legal_license_summary">דפדפן HNS DANE זמין במקור תחת PolyForm Noncommercial License 1.0.0. שימוש לא מסחרי, מחקר, שינוי והפצה מחדש מותרים במסגרת הרישיון. שימוש מסחרי מחייב אישור נפרד בכתב מ-Denuo Web, LLC.</string>
-    <string name="legal_user_agreement">זהו דפדפן ניסיוני הראשון בHandshake עם הוכחות HNS מקומיות, תחבורה RFC 8484 DoH ואבחון DNSSEC/DANE. רזולוציית HNS, אימות DNSSEC, בדיקות DANE, חזרת תאימות וסנכרון עלולים להיכשל בסגירה או להיות חלקית. האפליקציה מסופקת ללא אחריות, אינה שירות פיננסי, והתרומות הן אופציונליות ואינן פותחות תכונות.</string>
     <string name="legal_copy_privacy_policy_url">כתובת האתר של מדיניות הפרטיות</string>
     <string name="legal_copy_source_code_url">כתובת האתר של קוד המקור</string>
     <string name="legal_copy_hns_donation_address">כתובת לתרומת HNS</string>

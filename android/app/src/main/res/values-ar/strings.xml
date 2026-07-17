@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="action_analyze">تحليل</string>
+    <string name="action_add">إضافة</string>
     <string name="action_cancel">يلغي</string>
     <string name="action_change">يتغير</string>
     <string name="action_clear">واضح</string>
@@ -324,7 +325,6 @@
     <string name="gateway_clip_label">أحداث بوابة متصفح HNS DANE</string>
     <string name="gateway_copied">تم نسخ أحداث البوابة</string>
     <string name="legal_license_summary">متصفح HNS DANE متاح المصدر بموجب ترخيص PolyForm Noncommercial 1.0.0. يُسمح بالاستخدام غير التجاري والدراسة والتعديل وإعادة التوزيع بموجب الترخيص. يتطلب الاستخدام التجاري الحصول على إذن كتابي منفصل من شركة Denuo Web, LLC.</string>
-    <string name="legal_user_agreement">هذا متصفح تجريبي للHandshake أولاً مع إثباتات HNS المحلية، ونقل RFC 8484 DoH، وتشخيصات DNSSEC/DANE. قد يفشل حل HNS، والتحقق من صحة DNSSEC، وفحوصات DANE، وتراجع التوافق، والمزامنة أو تكون غير مكتملة. يتم توفير التطبيق بدون ضمان، وهو ليس خدمة مالية، والتبرعات اختيارية ولا تفتح أي ميزات.</string>
     <string name="legal_copy_privacy_policy_url">عنوان URL لسياسة الخصوصية</string>
     <string name="legal_copy_source_code_url">عنوان URL لرمز المصدر</string>
     <string name="legal_copy_hns_donation_address">عنوان التبرع بـ HNS</string>

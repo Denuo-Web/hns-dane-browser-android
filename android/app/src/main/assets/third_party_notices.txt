@@ -18,10 +18,10 @@ artifacts. Inclusion here does not imply endorsement by the component authors.
 Generator schema: 1
 Generated input SHA-256:
   scripts/generate-third-party-notices.py = ded9126310be915cea33920fba85f226ff354616e0284aa358d98b0b9eb6c7ef
-  rust/Cargo.toml = 7d8e0e0c400ffc0a14abef7baab5935ae1809fd85dc0aab988b68f8a4806afea
-  rust/Cargo.lock = ce75c957e3e6512288e45c45737e7ab327febd32a1d1e7d12cf919f1dcf7d216
+  rust/Cargo.toml = 0efa18ff141f1947702bf29ad553227d2df353209aa9671903f393366c2b1014
+  rust/Cargo.lock = facb6cb495d9e9b23681408bfc193966db6a7896bee280320fd5fb680cfb05c8
   android/gradle/libs.versions.toml = e38501dbbb112b0fa54e67c21f5ecb7d31cd3dfd20e67082cb5be43114c37143
-  android/app/gradle.lockfile = 5578fb9e14cb0a44e8e35c6aa2d13026271a2491a47ad2f78681ad0c7adcac98
+  android/app/gradle.lockfile = 2e96f7d27ebd98115a1940aa4ae02d507da2fc496c74e8c002061731f885e2d9
   android/gradle/verification-metadata.xml = 0d2ebdb69e2c3e741a3ad13e877ebbc0f19700400499d754684b755669350a1d
   rust/crates/android-ffi/Cargo.toml = 4ed1a17c0da56ae9686f102b4bf76e32a647c2f3697c7ecc11b8b5f3fbb5553e
   rust/crates/hns-browser-runtime/Cargo.toml = 29007914b95be5f43894872ef02e1ca0e77dd87a7726a199a30b424646248bd6
@@ -32,7 +32,7 @@ Generated input SHA-256:
   rust/crates/hns-dnssec/Cargo.toml = 06c0ed11d5b80a3ff2f1780e9642e9986b13ecf1f34755cf1cd1d94b6a043cf0
   rust/crates/hns-gateway/Cargo.toml = 9a83a52cd9fe6b5c58546f2e14a7de725cda1d52fca19c208f74000c70d0f05d
   rust/crates/hns-loopback-proxy/Cargo.toml = da48eea5d1c1c56d5722974946017b5a06b6b5891358b1f8d6c8362e2dff2145
-  rust/crates/hns-p2p/Cargo.toml = 258102d8a57156c891835f9b18d2ec6d784ca78578392f4374d9f45c231458f0
+  rust/crates/hns-p2p/Cargo.toml = cdb80d118d0a68dba48c5bb71f9ce69e09e3807b904318693dab0096a8af04e9
   rust/crates/hns-resolver/Cargo.toml = 16aa3b64add8d2eae595d11f23d1c618ce8ea574d5695b35fd7d1c106fef8a1b
   rust/crates/hns-sync/Cargo.toml = e573dd5bb30b3a6f89a00cb01929b268849e5d54b7c4b9cebad6dc937d8fa2e3
   rust/crates/hns-transport/Cargo.toml = 6e0c5572ca4f792df332844e6a74577e558dae64eea88afa862fb3409f021f97

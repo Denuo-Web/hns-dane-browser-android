@@ -54,6 +54,8 @@ typedef uint32_t HnsBrowserSecurityPath;
 #define HNS_BROWSER_SECURITY_PATH_HNS_AUTHORITATIVE_DOH 6u
 #define HNS_BROWSER_SECURITY_PATH_HNS_AUTHORITATIVE_DNS53 7u
 #define HNS_BROWSER_SECURITY_PATH_HNS_THIRD_PARTY_DOH 8u
+#define HNS_BROWSER_SECURITY_PATH_DANE_P2P_DNS_RELAY 9u
+#define HNS_BROWSER_SECURITY_PATH_HNS_P2P_DNS_RELAY 10u
 
 typedef uint64_t HnsBrowserRuntimeHandle;
 typedef uint64_t HnsBrowserProxyHandle;
@@ -84,7 +86,10 @@ typedef struct HnsBrowserRuntimeOptions {
     HnsBrowserResolutionMode resolution_mode;
     uint8_t seed_peers;
     uint8_t stateless_dane_certificates;
-    uint8_t reserved0[2];
+    /* Non-standard DNS relay experiment; disabled by default. */
+    uint8_t experimental_p2p_dns_relay;
+    /* Existing third-party HNS DoH compatibility path; enabled by default. */
+    uint8_t legacy_hns_doh_compatibility;
     HnsBrowserSlice hns_doh_resolver;
     uint64_t reserved1[2];
 } HnsBrowserRuntimeOptions;
@@ -95,7 +100,11 @@ typedef struct HnsBrowserPolicy {
     HnsBrowserResolutionMode resolution_mode;
     HnsBrowserSlice hns_doh_resolver;
     uint8_t stateless_dane_certificates;
-    uint8_t reserved0[7];
+    /* Non-standard DNS relay experiment; disabled by default. */
+    uint8_t experimental_p2p_dns_relay;
+    /* Existing third-party HNS DoH compatibility path; enabled by default. */
+    uint8_t legacy_hns_doh_compatibility;
+    uint8_t reserved0[5];
     uint64_t reserved1;
 } HnsBrowserPolicy;
 

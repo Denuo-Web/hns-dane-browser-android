@@ -63,6 +63,8 @@ const HNS_BROWSER_SECURITY_PATH_DANE_ICANN_DOH: u32 = 5;
 const HNS_BROWSER_SECURITY_PATH_HNS_AUTHORITATIVE_DOH: u32 = 6;
 const HNS_BROWSER_SECURITY_PATH_HNS_AUTHORITATIVE_DNS53: u32 = 7;
 const HNS_BROWSER_SECURITY_PATH_HNS_THIRD_PARTY_DOH: u32 = 8;
+const HNS_BROWSER_SECURITY_PATH_DANE_P2P_DNS_RELAY: u32 = 9;
+const HNS_BROWSER_SECURITY_PATH_HNS_P2P_DNS_RELAY: u32 = 10;
 
 const DEFAULT_SYNC_TIMEOUT_MILLIS: u64 = 3_000;
 const MAX_SYNC_TIMEOUT_MILLIS: u64 = 10 * 60 * 1_000;
@@ -126,7 +128,8 @@ pub struct HnsBrowserRuntimeOptions {
     pub resolution_mode: u32,
     pub seed_peers: u8,
     pub stateless_dane_certificates: u8,
-    pub reserved0: [u8; 2],
+    pub experimental_p2p_dns_relay: u8,
+    pub legacy_hns_doh_compatibility: u8,
     pub hns_doh_resolver: HnsBrowserSlice,
     pub reserved1: [u64; 2],
 }
@@ -142,7 +145,8 @@ impl HnsBrowserRuntimeOptions {
             resolution_mode: HNS_BROWSER_RESOLUTION_COMPATIBILITY,
             seed_peers: 1,
             stateless_dane_certificates: 0,
-            reserved0: [0; 2],
+            experimental_p2p_dns_relay: 0,
+            legacy_hns_doh_compatibility: 1,
             hns_doh_resolver: HnsBrowserSlice::empty(),
             reserved1: [0; 2],
         }
@@ -156,7 +160,9 @@ pub struct HnsBrowserPolicy {
     pub resolution_mode: u32,
     pub hns_doh_resolver: HnsBrowserSlice,
     pub stateless_dane_certificates: u8,
-    pub reserved0: [u8; 7],
+    pub experimental_p2p_dns_relay: u8,
+    pub legacy_hns_doh_compatibility: u8,
+    pub reserved0: [u8; 5],
     pub reserved1: u64,
 }
 
@@ -167,7 +173,9 @@ impl HnsBrowserPolicy {
             resolution_mode: HNS_BROWSER_RESOLUTION_COMPATIBILITY,
             hns_doh_resolver: HnsBrowserSlice::empty(),
             stateless_dane_certificates: 0,
-            reserved0: [0; 7],
+            experimental_p2p_dns_relay: 0,
+            legacy_hns_doh_compatibility: 1,
+            reserved0: [0; 5],
             reserved1: 0,
         }
     }
@@ -747,11 +755,15 @@ unsafe fn policy_from_fields(
     mode: u32,
     endpoint: HnsBrowserSlice,
     stateless_dane_certificates: u8,
+    experimental_p2p_dns_relay: u8,
+    legacy_hns_doh_compatibility: u8,
 ) -> Result<RuntimePolicy, FfiFailure> {
     Ok(RuntimePolicy {
         resolution_mode: resolution_mode(mode)?,
         // SAFETY: Propagates the caller's readable-slice contract.
         hns_doh_resolver: unsafe { optional_policy_endpoint(endpoint) }?,
+        experimental_p2p_dns_relay: ffi_bool(experimental_p2p_dns_relay)?,
+        legacy_hns_doh_compatibility: ffi_bool(legacy_hns_doh_compatibility)?,
         stateless_dane_certificates: ffi_bool(stateless_dane_certificates)?,
     })
 }
@@ -762,11 +774,13 @@ fn validate_options(options: HnsBrowserRuntimeOptions) -> Result<(), FfiFailure>
             "runtime options struct size does not match ABI version",
         ));
     }
-    if options.reserved0 != [0; 2] || options.reserved1 != [0; 2] {
+    if options.reserved1 != [0; 2] {
         return Err(FfiFailure::invalid(
             "reserved runtime option fields must be zero",
         ));
     }
+    ffi_bool(options.experimental_p2p_dns_relay)?;
+    ffi_bool(options.legacy_hns_doh_compatibility)?;
     if options.sync_timeout_millis == 0 || options.sync_timeout_millis > MAX_SYNC_TIMEOUT_MILLIS {
         return Err(FfiFailure::invalid(
             "sync timeout is outside the supported range",
@@ -788,9 +802,11 @@ fn validate_policy(policy: HnsBrowserPolicy) -> Result<(), FfiFailure> {
             "policy struct size does not match ABI version",
         ));
     }
-    if policy.reserved0 != [0; 7] || policy.reserved1 != 0 {
+    if policy.reserved0 != [0; 5] || policy.reserved1 != 0 {
         return Err(FfiFailure::invalid("reserved policy fields must be zero"));
     }
+    ffi_bool(policy.experimental_p2p_dns_relay)?;
+    ffi_bool(policy.legacy_hns_doh_compatibility)?;
     Ok(())
 }
 
@@ -835,6 +851,12 @@ fn security_path_code(path: Option<BrowserProxySecurityPath>) -> u32 {
         }
         Some(BrowserProxySecurityPath::HnsThirdPartyDoh) => {
             HNS_BROWSER_SECURITY_PATH_HNS_THIRD_PARTY_DOH
+        }
+        Some(BrowserProxySecurityPath::DaneP2pDnsRelay) => {
+            HNS_BROWSER_SECURITY_PATH_DANE_P2P_DNS_RELAY
+        }
+        Some(BrowserProxySecurityPath::HnsP2pDnsRelay) => {
+            HNS_BROWSER_SECURITY_PATH_HNS_P2P_DNS_RELAY
         }
         Some(_) => HNS_BROWSER_SECURITY_PATH_UNKNOWN,
     }
@@ -1002,6 +1024,8 @@ pub unsafe extern "C" fn hns_browser_runtime_create(
                 options.resolution_mode,
                 options.hns_doh_resolver,
                 options.stateless_dane_certificates,
+                options.experimental_p2p_dns_relay,
+                options.legacy_hns_doh_compatibility,
             )
         }?;
         let resource_cache_limit_bytes = usize::try_from(options.resource_cache_limit_bytes)
@@ -1099,6 +1123,8 @@ pub unsafe extern "C" fn hns_browser_runtime_set_policy(
                 policy.resolution_mode,
                 policy.hns_doh_resolver,
                 policy.stateless_dane_certificates,
+                policy.experimental_p2p_dns_relay,
+                policy.legacy_hns_doh_compatibility,
             )
         }?;
         let entry = runtime_entry(runtime)?;
@@ -1796,8 +1822,21 @@ mod tests {
         assert_eq!(offset_of!(HnsBrowserBuffer, allocation_id), 16);
         assert_eq!(size_of::<HnsBrowserRuntimeOptions>(), 80);
         assert_eq!(offset_of!(HnsBrowserRuntimeOptions, data_dir), 8);
+        assert_eq!(
+            offset_of!(HnsBrowserRuntimeOptions, experimental_p2p_dns_relay),
+            46
+        );
+        assert_eq!(
+            offset_of!(HnsBrowserRuntimeOptions, legacy_hns_doh_compatibility),
+            47
+        );
         assert_eq!(offset_of!(HnsBrowserRuntimeOptions, hns_doh_resolver), 48);
         assert_eq!(size_of::<HnsBrowserPolicy>(), 40);
+        assert_eq!(offset_of!(HnsBrowserPolicy, experimental_p2p_dns_relay), 25);
+        assert_eq!(
+            offset_of!(HnsBrowserPolicy, legacy_hns_doh_compatibility),
+            26
+        );
         assert_eq!(size_of::<HnsBrowserProxyEndpoint>(), 112);
         assert_eq!(offset_of!(HnsBrowserProxyEndpoint, generation), 8);
         assert_eq!(offset_of!(HnsBrowserProxyEndpoint, session_id), 16);
@@ -2262,8 +2301,48 @@ mod tests {
                 assert_eq!(proxy, 0);
             }
         }
+
         assert_eq!(hns_browser_runtime_destroy(runtime), HNS_BROWSER_RESULT_OK);
         cleanup_dir(&data_dir);
+    }
+
+    #[test]
+    fn relay_policy_fields_are_independent_and_have_safe_defaults() {
+        let options = HnsBrowserRuntimeOptions::defaults();
+        assert_eq!(options.experimental_p2p_dns_relay, 0);
+        assert_eq!(options.legacy_hns_doh_compatibility, 1);
+        let policy = HnsBrowserPolicy::defaults();
+        assert_eq!(policy.experimental_p2p_dns_relay, 0);
+        assert_eq!(policy.legacy_hns_doh_compatibility, 1);
+
+        // SAFETY: The empty endpoint has the documented null/zero representation.
+        let runtime_policy = match unsafe {
+            policy_from_fields(
+                HNS_BROWSER_RESOLUTION_STRICT,
+                HnsBrowserSlice::empty(),
+                0,
+                1,
+                0,
+            )
+        } {
+            Ok(policy) => policy,
+            Err(_) => panic!("valid independent relay controls"),
+        };
+        assert!(runtime_policy.experimental_p2p_dns_relay);
+        assert!(!runtime_policy.legacy_hns_doh_compatibility);
+
+        let mut invalid = HnsBrowserPolicy::defaults();
+        invalid.experimental_p2p_dns_relay = 2;
+        assert!(validate_policy(invalid).is_err());
+
+        assert_eq!(
+            security_path_code(Some(BrowserProxySecurityPath::DaneP2pDnsRelay)),
+            HNS_BROWSER_SECURITY_PATH_DANE_P2P_DNS_RELAY
+        );
+        assert_eq!(
+            security_path_code(Some(BrowserProxySecurityPath::HnsP2pDnsRelay)),
+            HNS_BROWSER_SECURITY_PATH_HNS_P2P_DNS_RELAY
+        );
     }
 
     #[test]

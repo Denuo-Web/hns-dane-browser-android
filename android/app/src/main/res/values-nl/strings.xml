@@ -1,6 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
 <string name="action_analyze">Analyseer</string>
+<string name="action_add">Toevoegen</string>
 <string name="action_cancel">Annuleer</string>
 <string name="action_change">Verandering</string>
 <string name="action_clear">Duidelijk</string>
@@ -300,7 +301,6 @@
 <string name="gateway_clip_label">HNS DANE Browser-gatewaygebeurtenissen</string>
 <string name="gateway_copied">Gatewaygebeurtenissen gekopieerd</string>
 <string name="legal_license_summary">HNS DANE Browser is als bron beschikbaar onder de PolyForm Noncommercial License 1.0.0. Niet-commercieel gebruik, onderzoek, wijziging en herdistributie zijn toegestaan ​​onder de licentie. Voor commercieel gebruik is afzonderlijke schriftelijke toestemming van Denuo Web, LLC vereist.</string>
-<string name="legal_user_agreement">Dit is een experimentele Handshake-eerste browser met lokale HNS-bewijzen, RFC 8484 DoH-transport en DNSSEC/DANE-diagnostiek. HNS-resolutie, DNSSEC-validatie, DANE-controles, terugval op compatibiliteit en synchronisatie kunnen mislukken of onvolledig zijn. De app wordt geleverd zonder garantie, is geen financiële dienst en donaties zijn optioneel en ontsluiten geen functies.</string>
 <string name="legal_copy_privacy_policy_url">privacybeleid URL</string>
 <string name="legal_copy_source_code_url">broncode URL</string>
 <string name="legal_copy_hns_donation_address">HNS donatieadres</string>

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="action_analyze">تحلیل کنید</string>
+    <string name="action_add">افزودن</string>
     <string name="action_cancel">لغو کنید</string>
     <string name="action_change">تغییر دهید</string>
     <string name="action_clear">پاک کردن</string>
@@ -300,7 +301,6 @@
     <string name="gateway_clip_label">رویدادهای دروازه مرورگر HNS DANE</string>
     <string name="gateway_copied">رویدادهای دروازه کپی شد</string>
     <string name="legal_license_summary">مرورگر HNS DANE تحت مجوز PolyForm NonCommercial 1.0.0 در دسترس است. استفاده غیرتجاری، مطالعه، اصلاح و توزیع مجدد تحت مجوز مجاز است. استفاده تجاری نیاز به مجوز کتبی جداگانه از Denuo Web, LLC دارد.</string>
-    <string name="legal_user_agreement">این اولین مرورگر آزمایشی Handshake با اثبات محلی HNS، انتقال RFC 8484 DoH، و تشخیص DNSSEC/DANE است. وضوح HNS، اعتبارسنجی DNSSEC، بررسی‌های DANE، بازگرداندن سازگاری و همگام‌سازی ممکن است بسته نشود یا ناقص باشد. این برنامه بدون ضمانت ارائه می شود، یک سرویس مالی نیست، و کمک های مالی اختیاری است و هیچ ویژگی را باز نمی کند.</string>
     <string name="legal_copy_privacy_policy_url">URL خط مشی رازداری</string>
     <string name="legal_copy_source_code_url">URL کد منبع</string>
     <string name="legal_copy_hns_donation_address">آدرس اهدای HNS</string>

@@ -1,6 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
 <string name="action_analyze">Phân tích</string>
+<string name="action_add">Thêm</string>
 <string name="action_cancel">Hủy bỏ</string>
 <string name="action_change">Thay đổi</string>
 <string name="action_clear">Xóa</string>
@@ -300,7 +301,6 @@
 <string name="gateway_clip_label">Sự kiện cổng HNS DANE Browser</string>
 <string name="gateway_copied">Đã sao chép sự kiện cổng</string>
 <string name="legal_license_summary">HNS DANE Browser có sẵn nguồn theo Giấy phép Phi thương mại PolyForm 1.0.0. Giấy phép cho phép sử dụng, nghiên cứu, sửa đổi và phân phối lại phi thương mại. Việc sử dụng thương mại cần có sự cho phép riêng bằng văn bản của Denuo Web, LLC.</string>
-<string name="legal_user_agreement">Đây là trình duyệt Handshake thử nghiệm đầu tiên với các bằng chứng HNS cục bộ, truyền tải RFC 8484 DoH và chẩn đoán DNSSEC/DANE. Độ phân giải HNS, xác thực DNSSEC, kiểm tra DANE, dự phòng khả năng tương thích và đồng bộ hóa có thể không đóng được hoặc không đầy đủ. Ứng dụng được cung cấp không có bảo hành, không phải là dịch vụ tài chính và việc đóng góp là tùy chọn và không mở khóa tính năng nào.</string>
 <string name="legal_copy_privacy_policy_url">chính sách bảo mật URL</string>
 <string name="legal_copy_source_code_url">mã nguồn URL</string>
 <string name="legal_copy_hns_donation_address">Địa chỉ quyên góp HNS</string>

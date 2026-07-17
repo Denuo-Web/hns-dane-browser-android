@@ -110,6 +110,8 @@ pub enum ResolverError {
     LocalChainNotCurrent,
     #[error("DNSSEC validation failed")]
     DnssecFailed,
+    #[error("DNSSEC validation of an HNS P2P relay response failed")]
+    RelayDnssecFailed,
     #[error("HNS resource payload is invalid: {0}")]
     InvalidResource(#[from] ResourceError),
     #[error("resolver backend is not implemented")]
@@ -259,6 +261,7 @@ pub struct SystemDnssecVerifier;
 pub struct AuthoritativeDnssecResolver<T = UdpTcpDnsTransport, V = SystemDnssecVerifier> {
     transport: T,
     verifier: V,
+    authoritative_doh_enabled: bool,
     prefer_authoritative_doh: bool,
     authoritative_doh_endpoint_cache: Mutex<HashMap<String, Vec<AuthoritativeDohEndpoint>>>,
 }
@@ -282,6 +285,13 @@ pub trait DnsTransport {
 
     fn probe_dns_interception(&self) -> DnsInterceptionStatus {
         DnsInterceptionStatus::NotTested
+    }
+
+    /// A recursive relay ignores the proof-derived authoritative socket. Its
+    /// transport owns retry diversity, so authoritative UDP-to-TCP and
+    /// per-nameserver retries must not duplicate the same recursive question.
+    fn is_recursive_relay(&self) -> bool {
+        false
     }
 }
 
@@ -980,6 +990,7 @@ impl<T, V> AuthoritativeDnssecResolver<T, V> {
         Self {
             transport,
             verifier,
+            authoritative_doh_enabled: true,
             prefer_authoritative_doh: false,
             authoritative_doh_endpoint_cache: Mutex::new(HashMap::new()),
         }
@@ -987,6 +998,16 @@ impl<T, V> AuthoritativeDnssecResolver<T, V> {
 
     pub fn with_authoritative_doh_preferred(mut self) -> Self {
         self.prefer_authoritative_doh = true;
+        self
+    }
+
+    /// Disables authoritative DoH discovery for transports that deliberately
+    /// implement only a later resolver stage, such as the experimental P2P
+    /// recursive relay. The proof-backed primary resolver remains responsible
+    /// for trying authoritative DoH before such a stage is constructed.
+    pub fn without_authoritative_doh(mut self) -> Self {
+        self.authoritative_doh_enabled = false;
+        self.prefer_authoritative_doh = false;
         self
     }
 
@@ -1050,7 +1071,7 @@ where
 
         let ds_rrset = records_for(&delegation.records, &delegation.owner, RecordType::Ds);
         let mut last_error = None;
-        if self.prefer_authoritative_doh {
+        if self.authoritative_doh_enabled && self.prefer_authoritative_doh {
             match self.authoritative_doh_endpoints(delegation) {
                 Ok(endpoints) => {
                     for endpoint in endpoints {
@@ -1072,22 +1093,42 @@ where
             }
         }
 
-        for server in servers {
-            match resolve_delegated_from_server(
+        if self.transport.is_recursive_relay() {
+            let server = servers
+                .iter()
+                .copied()
+                .find(|server| {
+                    validate_dns_server(self.transport.endpoint_policy(), *server).is_ok()
+                })
+                .ok_or(ResolverError::NoNameserverAddress)?;
+            return resolve_delegated_from_server_target(
                 &self.transport,
                 &self.verifier,
                 server,
+                DnsQueryTarget::Server(server),
                 delegation,
                 &request_name,
                 qtype,
                 &ds_rrset,
-            ) {
-                Ok(answer) => return Ok(answer),
-                Err(error) => last_error = Some(error),
+            );
+        } else {
+            for server in servers {
+                match resolve_delegated_from_server(
+                    &self.transport,
+                    &self.verifier,
+                    server,
+                    delegation,
+                    &request_name,
+                    qtype,
+                    &ds_rrset,
+                ) {
+                    Ok(answer) => return Ok(answer),
+                    Err(error) => last_error = Some(error),
+                }
             }
         }
 
-        if !self.prefer_authoritative_doh {
+        if self.authoritative_doh_enabled && !self.prefer_authoritative_doh {
             for endpoint in self.authoritative_doh_endpoints(delegation)? {
                 match resolve_delegated_from_doh_endpoint(
                     &self.transport,
@@ -2754,6 +2795,17 @@ where
         return Err(ResolverError::NoNameserverAddress);
     }
 
+    if transport.is_recursive_relay() {
+        let server = input
+            .referral
+            .servers
+            .iter()
+            .copied()
+            .find(|server| validate_dns_server(transport.endpoint_policy(), *server).is_ok())
+            .ok_or(ResolverError::NoNameserverAddress)?;
+        return resolve_secure_child_from_server(transport, verifier, server, &input);
+    }
+
     let mut last_error = None;
     for &server in &input.referral.servers {
         match resolve_secure_child_from_server(transport, verifier, server, &input) {
@@ -3526,6 +3578,23 @@ fn dns_query_target<T: DnsTransport>(
     }
     let id = next_dns_query_id();
     let query = build_dns_query(id, qname, qtype)?;
+    if transport.is_recursive_relay()
+        && matches!(
+            target,
+            DnsQueryTarget::Server(_) | DnsQueryTarget::ServerTcp(_)
+        )
+    {
+        let server = match target {
+            DnsQueryTarget::Server(server) | DnsQueryTarget::ServerTcp(server) => server,
+            DnsQueryTarget::Doh(_) => return Err(ResolverError::UnsupportedBackend),
+        };
+        let response = transport.exchange_udp(server, &query)?;
+        let response = parse_dns_response(id, qname, qtype, &response)?;
+        if response.header.flags.truncated() {
+            return Err(ResolverError::InvalidDnsResponse);
+        }
+        return Ok(response);
+    }
     let server = match target {
         DnsQueryTarget::Server(server) => server,
         DnsQueryTarget::ServerTcp(server) => {
@@ -4006,6 +4075,11 @@ mod tests {
         requests: DnsRequestLog,
     }
 
+    struct RecursiveRelayErrorTransport {
+        udp_calls: AtomicUsize,
+        tcp_calls: AtomicUsize,
+    }
+
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     enum ScriptedUdpBehavior {
         #[default]
@@ -4373,6 +4447,36 @@ mod tests {
         }
     }
 
+    impl DnsTransport for RecursiveRelayErrorTransport {
+        fn endpoint_policy(&self) -> DnsEndpointPolicy {
+            DnsEndpointPolicy::permissive()
+        }
+
+        fn exchange_udp(
+            &self,
+            _server: SocketAddr,
+            _query: &[u8],
+        ) -> Result<Vec<u8>, ResolverError> {
+            self.udp_calls.fetch_add(1, Ordering::SeqCst);
+            Err(ResolverError::DnsTransport("relay unavailable".to_owned()))
+        }
+
+        fn exchange_tcp(
+            &self,
+            _server: SocketAddr,
+            _query: &[u8],
+        ) -> Result<Vec<u8>, ResolverError> {
+            self.tcp_calls.fetch_add(1, Ordering::SeqCst);
+            Err(ResolverError::DnsTransport(
+                "recursive relay must not receive TCP retry".to_owned(),
+            ))
+        }
+
+        fn is_recursive_relay(&self) -> bool {
+            true
+        }
+    }
+
     #[test]
     fn composite_resolver_routes_hns_and_icann_requests() {
         let resolver = CompositeResolver::new(
@@ -4409,6 +4513,40 @@ mod tests {
         let (hns, icann) = resolver.into_parts();
         assert_eq!(hns.count.load(Ordering::SeqCst), 1);
         assert_eq!(icann.count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn recursive_relay_owns_retries_and_ignores_additional_nameserver_addresses() {
+        let transport = RecursiveRelayErrorTransport {
+            udp_calls: AtomicUsize::new(0),
+            tcp_calls: AtomicUsize::new(0),
+        };
+        let resolver = AuthoritativeDnssecResolver::new(transport, accepting_dnssec_verifier())
+            .without_authoritative_doh();
+        let delegation = HnsDelegation {
+            root_name: "welcome".to_owned(),
+            owner: DnsName::from_ascii("welcome").unwrap(),
+            records: vec![
+                ns_record("welcome", "ns1.welcome"),
+                ns_record("welcome", "ns2.welcome"),
+                glue4_record("ns1.welcome", [203, 0, 113, 53]),
+                glue4_record("ns2.welcome", [203, 0, 113, 54]),
+            ],
+        };
+
+        assert!(matches!(
+            resolver.resolve_delegated(
+                &ResolutionRequest {
+                    qname: "www.welcome".to_owned(),
+                    qtype: RecordType::A.code(),
+                },
+                &delegation,
+            ),
+            Err(ResolverError::DnsTransport(_))
+        ));
+        let (transport, _) = resolver.into_parts();
+        assert_eq!(transport.udp_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.tcp_calls.load(Ordering::SeqCst), 0);
     }
 
     impl DelegatedDnssecVerifier for StaticDnssecVerifier {

@@ -1,6 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
 <string name="action_analyze">विश्लेषण करें</string>
+<string name="action_add">जोड़ें</string>
 <string name="action_cancel">रद्द करें</string>
 <string name="action_change">परिवर्तन</string>
 <string name="action_clear">स्पष्ट</string>
@@ -300,7 +301,6 @@
 <string name="gateway_clip_label">HNS DANE Browser गेटवे इवेंट</string>
 <string name="gateway_copied">गेटवे इवेंट की प्रतिलिपि बनाई गई</string>
 <string name="legal_license_summary">HNS DANE Browser पॉलीफॉर्म गैर-वाणिज्यिक लाइसेंस 1.0.0 के तहत स्रोत-उपलब्ध है। लाइसेंस के तहत गैर-व्यावसायिक उपयोग, अध्ययन, संशोधन और पुनर्वितरण की अनुमति है। व्यावसायिक उपयोग के लिए Denuo Web, LLC से अलग से लिखित अनुमति की आवश्यकता होती है।</string>
-<string name="legal_user_agreement">यह स्थानीय HNS प्रूफ़, RFC 8484 DoH ट्रांसपोर्ट और DNSSEC/DANE डायग्नोस्टिक्स वाला एक प्रयोगात्मक Handshake-पहला ब्राउज़र है। HNS रिज़ॉल्यूशन, DNSSEC सत्यापन, DANE जाँच, संगतता फ़ॉलबैक, और सिंक विफल हो सकता है या अधूरा हो सकता है। ऐप बिना वारंटी के प्रदान किया जाता है, यह एक वित्तीय सेवा नहीं है, और दान वैकल्पिक है और कोई सुविधाएँ अनलॉक नहीं करता है।</string>
 <string name="legal_copy_privacy_policy_url">गोपनीयता नीति URL</string>
 <string name="legal_copy_source_code_url">स्रोत कोड URL</string>
 <string name="legal_copy_hns_donation_address">HNS दान पता</string>

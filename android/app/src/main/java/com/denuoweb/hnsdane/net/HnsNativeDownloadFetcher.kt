@@ -15,6 +15,8 @@ internal class HnsNativeDownloadFetcher(
     private val strictHnsMode: () -> Boolean = { false },
     private val dohResolverUrl: () -> String = { "" },
     private val statelessDaneCertificates: () -> Boolean = { false },
+    private val experimentalP2pDnsRelay: () -> Boolean = { false },
+    private val legacyHnsDohCompatibility: () -> Boolean = { true },
     private val handshakeNetwork: () -> String = { DEFAULT_NETWORK },
 ) {
     @Throws(IOException::class)
@@ -148,6 +150,8 @@ internal class HnsNativeDownloadFetcher(
             strictHnsMode = strictHnsMode(),
             dohResolverUrl = dohResolverUrl(),
             statelessDaneCertificates = statelessDaneCertificates(),
+            experimentalP2pDnsRelay = experimentalP2pDnsRelay(),
+            legacyHnsDohCompatibility = legacyHnsDohCompatibility(),
         )
 
     private fun createBodyFile(): File {

@@ -505,7 +505,10 @@ val playSigningConfigured = listOf(
 
 val rustJniLibsDir = layout.buildDirectory.dir("generated/rustJniLibs")
 val rustJniLibsDirFile = rustJniLibsDir.get().asFile
-val androidNdkHome = System.getenv("ANDROID_NDK_HOME") ?: System.getenv("ANDROID_NDK_ROOT") ?: ""
+val androidNdkHome = providers.gradleProperty("hns.androidNdkHome").orNull
+    ?: System.getenv("ANDROID_NDK_HOME")
+    ?: System.getenv("ANDROID_NDK_ROOT")
+    ?: ""
 val buildRustAndroid = tasks.register<Exec>("buildRustAndroid") {
     val rootDir = rootProject.layout.projectDirectory.asFile.parentFile
     val script = rootDir.resolve("scripts/build-rust-android.sh")
@@ -552,8 +555,13 @@ android {
         applicationId = "com.denuoweb.hnsdane"
         minSdk = 34
         targetSdk = 37
-        versionCode = 39
-        versionName = "0.4.1"
+        versionCode = 40
+        versionName = "0.5.0"
+
+        buildConfigField("String", "HNS_DEFAULT_HANDSHAKE_NETWORK", "\"mainnet\"")
+        buildConfigField("boolean", "HNS_DEFAULT_STRICT_MODE", "false")
+        buildConfigField("boolean", "HNS_DEFAULT_EXPERIMENTAL_P2P_DNS_RELAY", "true")
+        buildConfigField("boolean", "HNS_DEFAULT_LEGACY_HNS_DOH_COMPATIBILITY", "true")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
@@ -576,6 +584,16 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+        }
+        create("relayTest") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".relaytest"
+            versionNameSuffix = "-relay-test"
+            matchingFallbacks += listOf("debug")
+            buildConfigField("String", "HNS_DEFAULT_HANDSHAKE_NETWORK", "\"regtest\"")
+            buildConfigField("boolean", "HNS_DEFAULT_STRICT_MODE", "true")
+            buildConfigField("boolean", "HNS_DEFAULT_EXPERIMENTAL_P2P_DNS_RELAY", "true")
+            buildConfigField("boolean", "HNS_DEFAULT_LEGACY_HNS_DOH_COMPATIBILITY", "false")
         }
         release {
             isDebuggable = false

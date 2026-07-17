@@ -2,6 +2,7 @@ package com.denuoweb.hnsdane.ui
 
 import android.content.Context
 import androidx.annotation.StringRes
+import com.denuoweb.hnsdane.BuildConfig
 import com.denuoweb.hnsdane.R
 import java.net.URI
 import java.util.Locale
@@ -40,18 +41,24 @@ enum class HandshakeNetwork(
 }
 
 internal object HnsResolutionPreferences {
+    const val DEFAULT_HANDSHAKE_NETWORK = "mainnet"
+    const val DEFAULT_STRICT_HNS_MODE = false
     const val DEFAULT_DOH_RESOLVER_URL = "https://zorro.hnsdoh.com/dns-query"
+    const val DEFAULT_EXPERIMENTAL_P2P_DNS_RELAY = true
+    const val DEFAULT_LEGACY_HNS_DOH_COMPATIBILITY = true
 
     private const val PREFS = "hns_resolution_preferences"
     private const val KEY_HANDSHAKE_NETWORK = "handshake_network"
     private const val KEY_STRICT_HNS_MODE = "strict_hns_mode"
     private const val KEY_DOH_RESOLVER_URL = "doh_resolver_url"
     private const val KEY_STATELESS_DANE_CERTIFICATES = "stateless_dane_certificates"
+    private const val KEY_EXPERIMENTAL_P2P_DNS_RELAY = "experimental_p2p_dns_relay"
+    private const val KEY_LEGACY_HNS_DOH_COMPATIBILITY = "legacy_hns_doh_compatibility"
 
     fun handshakeNetwork(context: Context): HandshakeNetwork =
         HandshakeNetwork.fromId(
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(KEY_HANDSHAKE_NETWORK, HandshakeNetwork.Mainnet.id),
+                .getString(KEY_HANDSHAKE_NETWORK, buildDefaultHandshakeNetwork().id),
         )
 
     fun handshakeNetworkId(context: Context): String =
@@ -66,7 +73,7 @@ internal object HnsResolutionPreferences {
 
     fun strictHnsMode(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(KEY_STRICT_HNS_MODE, false)
+            .getBoolean(KEY_STRICT_HNS_MODE, buildDefaultStrictHnsMode())
 
     fun setStrictHnsMode(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -83,6 +90,34 @@ internal object HnsResolutionPreferences {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putBoolean(KEY_STATELESS_DANE_CERTIFICATES, enabled)
+            .apply()
+    }
+
+    fun experimentalP2pDnsRelay(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(
+                KEY_EXPERIMENTAL_P2P_DNS_RELAY,
+                buildDefaultExperimentalP2pDnsRelay(),
+            )
+
+    fun setExperimentalP2pDnsRelay(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_EXPERIMENTAL_P2P_DNS_RELAY, enabled)
+            .apply()
+    }
+
+    fun legacyHnsDohCompatibility(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(
+                KEY_LEGACY_HNS_DOH_COMPATIBILITY,
+                buildDefaultLegacyHnsDohCompatibility(),
+            )
+
+    fun setLegacyHnsDohCompatibility(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_LEGACY_HNS_DOH_COMPATIBILITY, enabled)
             .apply()
     }
 
@@ -106,6 +141,74 @@ internal object HnsResolutionPreferences {
             .edit()
             .remove(KEY_DOH_RESOLVER_URL)
             .apply()
+    }
+
+    internal fun buildDefaultHandshakeNetwork(): HandshakeNetwork =
+        HandshakeNetwork.fromId(BuildConfig.HNS_DEFAULT_HANDSHAKE_NETWORK)
+
+    internal fun buildDefaultStrictHnsMode(): Boolean =
+        BuildConfig.HNS_DEFAULT_STRICT_MODE
+
+    internal fun buildDefaultExperimentalP2pDnsRelay(): Boolean =
+        BuildConfig.HNS_DEFAULT_EXPERIMENTAL_P2P_DNS_RELAY
+
+    internal fun buildDefaultLegacyHnsDohCompatibility(): Boolean =
+        BuildConfig.HNS_DEFAULT_LEGACY_HNS_DOH_COMPATIBILITY
+
+    /**
+     * Normalizes one explicit Handshake peer without performing DNS or opening a socket.
+     * Network-specific address and port policy is enforced again by the Rust runtime before save.
+     */
+    fun normalizeStaticRelayPeerEndpoint(input: String): String? {
+        val endpoint = input.trim()
+        if (endpoint.isEmpty() ||
+            endpoint.length > MAX_STATIC_RELAY_PEER_ENDPOINT_CHARS ||
+            endpoint.any { it.isWhitespace() || it.isISOControl() }
+        ) {
+            return null
+        }
+
+        val (host, portText, bracketedIpv6) = if (endpoint.startsWith('[')) {
+            val closingBracket = endpoint.indexOf(']')
+            if (closingBracket <= 1 ||
+                closingBracket + 2 >= endpoint.length ||
+                endpoint[closingBracket + 1] != ':'
+            ) {
+                return null
+            }
+            Triple(
+                endpoint.substring(1, closingBracket),
+                endpoint.substring(closingBracket + 2),
+                true,
+            )
+        } else {
+            val colon = endpoint.lastIndexOf(':')
+            if (colon <= 0 || colon == endpoint.lastIndex || endpoint.indexOf(':') != colon) {
+                return null
+            }
+            Triple(endpoint.substring(0, colon), endpoint.substring(colon + 1), false)
+        }
+
+        if (portText.isEmpty() || !portText.all(Char::isDigit)) {
+            return null
+        }
+        val port = portText.toIntOrNull()?.takeIf { it in 1..65535 } ?: return null
+
+        if (bracketedIpv6) {
+            if ('%' in host || ':' !in host || host.any { it !in IPV6_LITERAL_CHARS }) {
+                return null
+            }
+            val parsed = runCatching {
+                URI("hns://[$host]:$port").parseServerAuthority()
+            }.getOrNull() ?: return null
+            if (parsed.host.isNullOrBlank() || parsed.port != port) {
+                return null
+            }
+            return "[${host.lowercase(Locale.US)}]:$port"
+        }
+
+        normalizeIpv4Literal(host)?.let { return "$it:$port" }
+        return null
     }
 
     fun normalizeDohResolverUrl(input: String): String? {
@@ -147,4 +250,15 @@ internal object HnsResolutionPreferences {
     )
 
     private const val MAX_DOH_URL_CHARS = 4 * 1024
+    private const val MAX_STATIC_RELAY_PEER_ENDPOINT_CHARS = 320
+    private val IPV6_LITERAL_CHARS = ('0'..'9').toSet() + ('a'..'f') + ('A'..'F') + setOf(':', '.')
+
+    private fun normalizeIpv4Literal(host: String): String? {
+        val octets = host.split('.')
+        if (octets.size != 4 || octets.any { it.isEmpty() || !it.all(Char::isDigit) }) {
+            return null
+        }
+        val values = octets.map { it.toIntOrNull()?.takeIf { value -> value in 0..255 } ?: return null }
+        return values.joinToString(".")
+    }
 }

@@ -1,6 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
 <string name="action_analyze">Analizuj</string>
+<string name="action_add">Dodaj</string>
 <string name="action_cancel">Anuluj</string>
 <string name="action_change">Zmień</string>
 <string name="action_clear">Jasne</string>
@@ -312,7 +313,6 @@
 <string name="gateway_clip_label">Zdarzenia bramy HNS DANE Browser</string>
 <string name="gateway_copied">Skopiowano zdarzenia bramy</string>
 <string name="legal_license_summary">Wersja HNS DANE Browser jest dostępna w ramach licencji niekomercyjnej PolyForm 1.0.0. Licencja zezwala na niekomercyjne wykorzystanie, badanie, modyfikację i redystrybucję. Komercyjne wykorzystanie wymaga osobnej pisemnej zgody firmy Denuo Web, LLC.</string>
-<string name="legal_user_agreement">Jest to eksperymentalna przeglądarka oparta na Handshake, z lokalnymi testami HNS, transportem RFC 8484 DoH i diagnostyką DNSSEC/DANE. Rozdzielczość HNS, sprawdzanie poprawności DNSSEC, sprawdzanie DANE, przywracanie zgodności i synchronizacja mogą zakończyć się niepowodzeniem lub być niekompletne. Aplikacja jest dostarczana bez gwarancji, nie jest usługą finansową, a darowizny są opcjonalne i nie odblokowują żadnych funkcji.</string>
 <string name="legal_copy_privacy_policy_url">polityka prywatności URL</string>
 <string name="legal_copy_source_code_url">kod źródłowy URL</string>
 <string name="legal_copy_hns_donation_address">Adres darowizny HNS</string>

@@ -10,6 +10,10 @@ use std::path::Path;
 use std::time::Duration;
 use thiserror::Error;
 
+mod dns_relay;
+
+pub use dns_relay::*;
+
 pub const PROTOCOL_VERSION: u32 = 3;
 pub const SERVICE_NETWORK: u64 = 1;
 pub const MAX_INV: usize = 50_000;
@@ -60,6 +64,8 @@ pub enum PacketType {
     GetProof = 26,
     Proof = 27,
     Unknown = 30,
+    ExperimentalGetDnsRelay = EXPERIMENTAL_GET_DNS_RELAY,
+    ExperimentalDnsRelay = EXPERIMENTAL_DNS_RELAY,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,6 +130,8 @@ pub enum Packet {
     SendHeaders,
     GetProof(ProofRequest),
     Proof(ProofPacket),
+    GetDnsRelay(GetDnsRelayPacket),
+    DnsRelay(DnsRelayPacket),
     Unknown { packet_type: u8, payload: Vec<u8> },
 }
 
@@ -234,6 +242,16 @@ pub enum P2pError {
     InvalidMagic,
     #[error("message exceeds protocol limit")]
     MessageTooLarge,
+    #[error("DNS-relay request identifier must be nonzero")]
+    InvalidDnsRelayRequestId,
+    #[error("DNS-relay query exceeds protocol limit")]
+    DnsRelayQueryTooLarge,
+    #[error("DNS-relay response exceeds protocol limit")]
+    DnsRelayResponseTooLarge,
+    #[error("unknown DNS-relay status")]
+    InvalidDnsRelayStatus,
+    #[error("invalid DNS-relay packet: {0}")]
+    InvalidDnsRelayPacket(&'static str),
     #[error("network I/O error: {0:?}")]
     Io(std::io::ErrorKind),
     #[error("peer closed the connection")]
@@ -242,6 +260,8 @@ pub enum P2pError {
     SessionDisconnected(&'static str),
     #[error("unexpected peer session action")]
     UnexpectedAction,
+    #[error("peer handshake exceeded the advisory packet limit")]
+    HandshakePacketLimit,
     #[error("peer storage error: {0}")]
     Storage(String),
 }
@@ -338,6 +358,19 @@ impl PeerManager {
         let peer = self.upsert(address);
         peer.last_height = height;
         peer.last_connected_at = Some(now);
+    }
+
+    /// Records a transport connection without promoting its unverified height.
+    pub fn record_connection(&mut self, address: SocketAddr, now: u64) {
+        self.upsert(address).last_connected_at = Some(now);
+    }
+
+    /// Rewards a successful non-chain transport while preserving sync-owned height state.
+    pub fn record_transport_success(&mut self, address: SocketAddr, now: u64) {
+        let peer = self.upsert(address);
+        peer.score = peer.score.saturating_sub(SUCCESS_REWARD).max(0);
+        peer.last_connected_at = Some(now);
+        peer.successes = peer.successes.saturating_add(1);
     }
 
     pub fn record_transient_failure(&mut self, address: SocketAddr) {
@@ -1148,7 +1181,9 @@ impl<T: Read + Write> PeerConnection<T> {
                 | Packet::GetHeaders(_)
                 | Packet::Headers(_)
                 | Packet::GetProof(_)
-                | Packet::Proof(_) => return Err(P2pError::UnexpectedAction),
+                | Packet::Proof(_)
+                | Packet::GetDnsRelay(_)
+                | Packet::DnsRelay(_) => return Err(P2pError::UnexpectedAction),
             }
         }
     }
@@ -1197,7 +1232,7 @@ pub fn encode_frame(network: &Network, packet: &Packet) -> Result<Vec<u8>, P2pEr
     let mut out = Vec::with_capacity(FRAME_HEADER_SIZE + payload.len());
     FrameHeader {
         magic: network.magic,
-        packet_type: packet.packet_type() as u8,
+        packet_type: packet.raw_packet_type(),
         payload_len: payload.len() as u32,
     }
     .encode(&mut out);
@@ -1218,6 +1253,15 @@ pub fn decode_frame(network: &Network, data: &[u8]) -> Result<Option<(Packet, us
     let payload_len = header.payload_len as usize;
     if payload_len > MAX_MESSAGE {
         return Err(P2pError::MessageTooLarge);
+    }
+    match header.packet_type {
+        EXPERIMENTAL_GET_DNS_RELAY if payload_len > MAX_DNS_RELAY_REQUEST_PAYLOAD_SIZE => {
+            return Err(P2pError::DnsRelayQueryTooLarge);
+        }
+        EXPERIMENTAL_DNS_RELAY if payload_len > MAX_DNS_RELAY_RESPONSE_PAYLOAD_SIZE => {
+            return Err(P2pError::DnsRelayResponseTooLarge);
+        }
+        _ => {}
     }
 
     let frame_len = FRAME_HEADER_SIZE
@@ -1246,7 +1290,20 @@ impl Packet {
             Self::SendHeaders => PacketType::SendHeaders,
             Self::GetProof(_) => PacketType::GetProof,
             Self::Proof(_) => PacketType::Proof,
+            Self::GetDnsRelay(_) => PacketType::ExperimentalGetDnsRelay,
+            Self::DnsRelay(_) => PacketType::ExperimentalDnsRelay,
             Self::Unknown { .. } => PacketType::Unknown,
+        }
+    }
+
+    /// Returns the exact type byte used on the wire.
+    ///
+    /// Unlike `packet_type`, this preserves private or future packet identifiers decoded through
+    /// `Unknown`, allowing transparent decode/re-encode without collapsing them to type 30.
+    pub fn raw_packet_type(&self) -> u8 {
+        match self {
+            Self::Unknown { packet_type, .. } => *packet_type,
+            _ => self.packet_type() as u8,
         }
     }
 
@@ -1268,6 +1325,8 @@ impl Packet {
                 out.extend(packet.key.as_bytes());
                 out.extend(&packet.proof);
             }
+            Self::GetDnsRelay(packet) => out.extend(packet.encode()?),
+            Self::DnsRelay(packet) => out.extend(packet.encode()?),
             Self::Unknown { payload, .. } => out.extend(payload),
         }
         Ok(out)
@@ -1295,6 +1354,12 @@ impl Packet {
                 let key = Hash::new(reader.read_array()?);
                 let proof = reader.read_bytes(reader.remaining())?.to_vec();
                 Self::Proof(ProofPacket { root, key, proof })
+            }
+            EXPERIMENTAL_GET_DNS_RELAY => {
+                return GetDnsRelayPacket::decode(payload).map(Self::GetDnsRelay);
+            }
+            EXPERIMENTAL_DNS_RELAY => {
+                return DnsRelayPacket::decode(payload).map(Self::DnsRelay);
             }
             other => Self::Unknown {
                 packet_type: other,

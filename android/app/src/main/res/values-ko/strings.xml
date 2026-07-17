@@ -1,6 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
 <string name="action_analyze">분석하다</string>
+<string name="action_add">추가</string>
 <string name="action_cancel">취소</string>
 <string name="action_change">변경</string>
 <string name="action_clear">지우기</string>
@@ -300,7 +301,6 @@
 <string name="gateway_clip_label">HNS DANE Browser 게이트웨이 이벤트</string>
 <string name="gateway_copied">게이트웨이 이벤트가 복사되었습니다.</string>
 <string name="legal_license_summary">HNS DANE Browser은 PolyForm Noncommercial License 1.0.0에 따라 소스를 사용할 수 있습니다. 비상업적 사용, 연구, 수정 및 재배포는 라이센스에 따라 허용됩니다. 상업적으로 사용하려면 Denuo Web, LLC의 별도 서면 허가가 필요합니다.</string>
-<string name="legal_user_agreement">이는 로컬 HNS 증명, RFC 8484 DoH 전송 및 DNSSEC/DANE 진단 기능을 갖춘 실험적인 Handshake 우선 브라우저입니다. HNS 해상도, DNSSEC 유효성 검사, DANE 검사, 호환성 대체 및 동기화가 실패하거나 완료되지 않을 수 있습니다. 이 앱은 보증 없이 제공되며 금융 서비스가 아니며 기부는 선택 사항이며 잠금 해제 기능이 없습니다.</string>
 <string name="legal_copy_privacy_policy_url">개인정보 보호정책 URL</string>
 <string name="legal_copy_source_code_url">소스 코드 URL</string>
 <string name="legal_copy_hns_donation_address">HNS 기부 주소</string>

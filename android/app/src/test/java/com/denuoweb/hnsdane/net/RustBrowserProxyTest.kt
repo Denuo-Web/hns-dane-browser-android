@@ -176,7 +176,7 @@ class RustBrowserProxyTest {
         assertNull(parseRustProxyStatusBundle(statusBundle(mainFrame = false), endpoint, "welcome"))
         assertNull(parseRustProxyStatusBundle(statusBundle(tlsPolicy = 9), endpoint, "welcome"))
         assertNull(parseRustProxyStatusBundle(statusBundle(resolverPolicy = 9), endpoint, "welcome"))
-        assertNull(parseRustProxyStatusBundle(statusBundle(securityPath = 9), endpoint, "welcome"))
+        assertNull(parseRustProxyStatusBundle(statusBundle(securityPath = 11), endpoint, "welcome"))
         assertNull(parseRustProxyStatusBundle(statusBundle(host = "wel_come"), endpoint, "wel_come"))
         assertNull(
             parseRustProxyStatusBundle(
@@ -199,6 +199,8 @@ class RustBrowserProxyTest {
             6 to HnsPageSecurityPath.HnsAuthoritativeDoh,
             7 to HnsPageSecurityPath.HnsAuthoritativeDns53,
             8 to HnsPageSecurityPath.HnsThirdPartyDoh,
+            9 to HnsPageSecurityPath.DaneP2pDnsRelay,
+            10 to HnsPageSecurityPath.HnsP2pDnsRelay,
         )
         paths.forEach { (code, expected) ->
             val status = requireNotNull(

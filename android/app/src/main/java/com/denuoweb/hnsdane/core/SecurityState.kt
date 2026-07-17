@@ -7,11 +7,13 @@ enum class SecurityState {
     HnsCompatibility,
     HnsViaAuthoritativeDoh,
     HnsViaAuthoritativeDns53,
+    HnsViaP2pDnsRelay,
     HnsViaThirdPartyDoh,
     DaneVerified,
     DaneCompatibility,
     DaneViaAuthoritativeDoh,
     DaneViaAuthoritativeDns53,
+    DaneViaP2pDnsRelay,
     DaneViaThirdPartyDoh,
     StatelessDane,
     DaneViaIcannDoh,
@@ -39,6 +41,8 @@ enum class HnsPageSecurityPath {
     HnsAuthoritativeDoh,
     HnsAuthoritativeDns53,
     HnsThirdPartyDoh,
+    DaneP2pDnsRelay,
+    HnsP2pDnsRelay,
     ;
 
     companion object {
@@ -52,6 +56,8 @@ enum class HnsPageSecurityPath {
                 "hns-authoritative-doh" -> HnsAuthoritativeDoh
                 "hns-authoritative-dns53" -> HnsAuthoritativeDns53
                 "hns-third-party-doh" -> HnsThirdPartyDoh
+                "dane-p2p-dns-relay" -> DaneP2pDnsRelay
+                "hns-p2p-dns-relay" -> HnsP2pDnsRelay
                 else -> null
             }
     }

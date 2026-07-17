@@ -1,11 +1,15 @@
-HNS DANE Browser is a Handshake-first browser with local HNS proofs, RFC 8484 authoritative DoH, DNSSEC, and DANE diagnostics. It syncs Handshake headers, verifies HNS proofs, resolves delegated names, and shows clear security labels for local HNS, DANE, WebPKI, and compatibility fallback paths.
+HNS DANE Browser is a Handshake-first browser with local HNS proofs, authoritative DNS, an HNS P2P DNS relay, RFC 8484 authoritative DoH, DNSSEC, and DANE diagnostics. It syncs Handshake headers, verifies HNS proofs, resolves delegated names, and shows clear security labels for local HNS, DANE, WebPKI, and compatibility fallback paths.
 
-HNS DANE Browser opens the Denuo Web HNS homepage by default and is built for users who want to test HNS sites with a local verification path instead of relying on a normal system resolver.
+HNS DANE Browser opens a bundled start page by default and is built for users who want to test HNS sites with a local verification path instead of relying on a normal system resolver.
 
 Features:
 - HNS-aware omnibar for names such as `example/` and `name.tld/`
 - Local Handshake proof verification and resolver cache
 - RFC 8484 authoritative DoH retry for delegated HNS nameservers discovered through RFC 9461 SVCB records
+- HNS P2P DNS relay enabled on new Android installs after local proof and authoritative DNS attempts
+- Locally validated DNSSEC, TLSA, and DANE policy for relayed answers
+- Manual relay peers accepted only as IP-literal endpoints verified by a live HSD capability handshake before they are saved
+- Independent legacy HNS DoH compatibility fallback, also enabled on new installs
 - DNSSEC and TLSA/DANE diagnostics for HTTPS HNS sites
 - Strict HNS mode to disable third-party HNS DoH fallback
 - Resolver trace, HNS proof viewer, and TLSA inspector

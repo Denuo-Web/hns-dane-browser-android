@@ -26,7 +26,9 @@ final class BrowserRuntimeControlTests: XCTestCase {
         let configured = BrowserRuntimePolicy(
             resolutionMode: .strict,
             hnsDohResolver: "  https://resolver.example/dns-query  ",
-            statelessDANECertificates: true
+            statelessDANECertificates: true,
+            experimentalP2PDNSRelay: true,
+            legacyHNSDoHCompatibility: false
         )
         XCTAssertEqual(configured.hnsDohResolver, "https://resolver.example/dns-query")
     }
@@ -36,12 +38,21 @@ final class BrowserRuntimeControlTests: XCTestCase {
         let expected = BrowserRuntimePolicy(
             resolutionMode: .strict,
             hnsDohResolver: "https://resolver.example/dns-query",
-            statelessDANECertificates: true
+            statelessDANECertificates: true,
+            experimentalP2PDNSRelay: true,
+            legacyHNSDoHCompatibility: false
         )
 
         store.save(expected)
 
         XCTAssertEqual(store.load(), expected)
+    }
+
+    func testPolicyDefaultsKeepExperimentOffAndLegacyCompatibilityOn() {
+        let policy = BrowserRuntimePolicyStore(defaults: defaults).load()
+
+        XCTAssertFalse(policy.experimentalP2PDNSRelay)
+        XCTAssertTrue(policy.legacyHNSDoHCompatibility)
     }
 
     func testPolicyStoreFallsBackForUnknownResolutionMode() {
