@@ -121,6 +121,8 @@ xcodebuild \
   -resultBundlePath "$RESULT_BUNDLE" \
   -parallel-testing-enabled NO \
   -maximum-parallel-testing-workers 1 \
+  -test-iterations 2 \
+  -retry-tests-on-failure \
   CODE_SIGNING_ALLOWED=NO \
   test
 
