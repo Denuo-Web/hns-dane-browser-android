@@ -26,8 +26,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run the complete unsigned iOS gate
-        run: ./scripts/run-ios-gate.sh
+      - name: Build the Rust XCFramework required for live capture
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup target add --toolchain 1.92.0 \
+            aarch64-apple-ios \
+            aarch64-apple-ios-sim \
+            x86_64-apple-ios
+          HNS_RUST_IOS_CLEAN_TARGET=1 ./scripts/build-rust-ios.sh
 
       - name: Capture live Release App Store screenshots
         id: live_capture
