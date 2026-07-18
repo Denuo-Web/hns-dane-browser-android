@@ -19,6 +19,7 @@
 		B1000000000000000000000A /* PersistentWebKitProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000A /* PersistentWebKitProfile.swift */; };
 		B1000000000000000000000B /* RustBrowserRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000B /* RustBrowserRuntime.swift */; };
 		B1000000000000000000000C /* BrowserViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000C /* BrowserViewController.swift */; };
+		B1000000000000000000002A /* BrowserSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000002C /* BrowserSettingsViewController.swift */; };
 		B10000000000000000000017 /* BrowserRuntimePolicyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000027 /* BrowserRuntimePolicyStore.swift */; };
 		B10000000000000000000016 /* BrowserNavigationParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000025 /* BrowserNavigationParser.swift */; };
 		B1000000000000000000000D /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000E /* PrivacyInfo.xcprivacy */; };
@@ -97,6 +98,7 @@
 		F10000000000000000000029 /* third_party_notices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = third_party_notices.txt; path = ../android/app/src/main/assets/third_party_notices.txt; sourceTree = SOURCE_ROOT; };
 		F1000000000000000000002A /* HnsDaneBrowserScreenshotTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HnsDaneBrowserScreenshotTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F1000000000000000000002B /* AppStoreScreenshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreScreenshotTests.swift; sourceTree = "<group>"; };
+		F1000000000000000000002C /* BrowserSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserSettingsViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -184,6 +186,7 @@
 		G10000000000000000000005 /* UI */ = {
 			isa = PBXGroup;
 			children = (
+				F1000000000000000000002C /* BrowserSettingsViewController.swift */,
 				F1000000000000000000000C /* BrowserViewController.swift */,
 			);
 			path = UI;
@@ -399,6 +402,7 @@
 				B1000000000000000000000A /* PersistentWebKitProfile.swift in Sources */,
 				B1000000000000000000000B /* RustBrowserRuntime.swift in Sources */,
 				B1000000000000000000000C /* BrowserViewController.swift in Sources */,
+				B1000000000000000000002A /* BrowserSettingsViewController.swift in Sources */,
 				B10000000000000000000016 /* BrowserNavigationParser.swift in Sources */,
 				B10000000000000000000017 /* BrowserRuntimePolicyStore.swift in Sources */,
 			);
@@ -559,7 +563,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 41;
+				CURRENT_PROJECT_VERSION = 42;
 				DEVELOPMENT_TEAM = 45NQQK3G3S;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -597,7 +601,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 41;
+				CURRENT_PROJECT_VERSION = 42;
 				DEVELOPMENT_TEAM = 45NQQK3G3S;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -634,7 +638,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 41;
+				CURRENT_PROJECT_VERSION = 42;
 				DEVELOPMENT_TEAM = 45NQQK3G3S;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -653,7 +657,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 41;
+				CURRENT_PROJECT_VERSION = 42;
 				DEVELOPMENT_TEAM = 45NQQK3G3S;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -671,7 +675,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 41;
+				CURRENT_PROJECT_VERSION = 42;
 				DEVELOPMENT_TEAM = 45NQQK3G3S;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -694,7 +698,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 41;
+				CURRENT_PROJECT_VERSION = 42;
 				DEVELOPMENT_TEAM = 45NQQK3G3S;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;

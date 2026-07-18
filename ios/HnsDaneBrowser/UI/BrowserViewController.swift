@@ -10,6 +10,9 @@ final class BrowserViewController: UIViewController {
     private static let supportURL = URL(
         string: "https://denuoweb.com/work/hns-dane-browser"
     )!
+    private static let sourceCodeURL = URL(
+        string: "https://github.com/Denuo-Web/hns-dane-browser"
+    )!
 
 #if DEBUG && targetEnvironment(simulator)
     private static let appStoreScreenshotSceneKey = "HNS_APP_STORE_SCREENSHOT_SCENE"
@@ -44,6 +47,10 @@ final class BrowserViewController: UIViewController {
     private var isLoading = false
     private var isControlOperationInFlight = false
     private var isDestroyed = false
+    private var latestSyncSummary = BrowserSyncSummary.unavailable
+    private var resolverCacheSummary = "Ready to clear cached resolver values."
+    private weak var settingsViewController: BrowserSettingsViewController?
+    private var syncStatusPollTimer: Timer?
 
 #if DEBUG && targetEnvironment(simulator)
     private var appStoreScreenshotScene: AppStoreScreenshotScene?
@@ -83,6 +90,7 @@ final class BrowserViewController: UIViewController {
         if appStoreScreenshotScene != nil { return }
 #endif
         coordinator?.resume()
+        startSyncStatusPolling()
         process.resumeForegroundSync { [weak self] summary in
             self?.updateSyncSummary(summary)
         }
@@ -91,6 +99,7 @@ final class BrowserViewController: UIViewController {
     func suspendBrowsing() {
         guard !isDestroyed else { return }
         isForeground = false
+        stopSyncStatusPolling()
 #if DEBUG && targetEnvironment(simulator)
         if appStoreScreenshotScene != nil { return }
 #endif
@@ -103,6 +112,7 @@ final class BrowserViewController: UIViewController {
         guard !isDestroyed else { return }
         isDestroyed = true
         isForeground = false
+        stopSyncStatusPolling()
 #if DEBUG && targetEnvironment(simulator)
         if appStoreScreenshotScene != nil { return }
 #endif
@@ -133,10 +143,10 @@ final class BrowserViewController: UIViewController {
         configureButton(forwardButton, symbol: "chevron.forward", label: "Forward", action: #selector(goForward))
         configureButton(reloadButton, symbol: "arrow.clockwise", label: "Reload", action: #selector(reloadOrStop))
         configureButton(shareButton, symbol: "square.and.arrow.up", label: "Share", action: #selector(sharePage))
-        controlsButton.setImage(UIImage(systemName: "slider.horizontal.3"), for: .normal)
-        controlsButton.accessibilityLabel = "Browser settings and information"
+        controlsButton.setImage(UIImage(systemName: "gearshape"), for: .normal)
+        controlsButton.accessibilityLabel = "Settings"
         controlsButton.accessibilityIdentifier = "app-store-screenshot.controls"
-        controlsButton.showsMenuAsPrimaryAction = true
+        controlsButton.addTarget(self, action: #selector(presentBrowserSettings), for: .touchUpInside)
         backButton.isEnabled = false
         forwardButton.isEnabled = false
         shareButton.isEnabled = false
@@ -229,7 +239,7 @@ final class BrowserViewController: UIViewController {
             root.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             root.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
-        rebuildControlsMenu()
+        refreshSettingsIfPresented()
     }
 
     private func configureButton(
@@ -320,7 +330,7 @@ final class BrowserViewController: UIViewController {
             )
         }
 
-        rebuildControlsMenu()
+        refreshSettingsIfPresented()
         webView.loadHTMLString(appStoreScreenshotHTML(for: scene), baseURL: nil)
         return true
     }
@@ -455,8 +465,11 @@ final class BrowserViewController: UIViewController {
                 let coordinator = self.installCoordinator(environment: environment)
                 self.placeholderLabel.text = "Enter an address to begin"
                 self.updateSyncSummary(environment.runtime.syncSummary())
+                if self.isForeground {
+                    coordinator.refreshSyncStatus()
+                }
                 self.controlsButton.isEnabled = true
-                self.rebuildControlsMenu()
+                self.refreshSettingsIfPresented()
                 if let pending = self.pendingExternalAddress {
                     self.pendingExternalAddress = nil
                     coordinator.navigate(rawValue: pending)
@@ -536,195 +549,38 @@ final class BrowserViewController: UIViewController {
         presentShareSheet(items: [url], sourceView: shareButton)
     }
 
-    private func rebuildControlsMenu() {
-        let policy = process.currentPolicy
-        let runtimeDisabled: UIMenuElement.Attributes =
-            !runtimeControlsAreAvailable || isControlOperationInFlight ? .disabled : []
-
-        let compatibility = UIAction(
-            title: "Compatibility",
-            image: UIImage(systemName: "network"),
-            attributes: runtimeDisabled,
-            state: policy.resolutionMode == .compatibility ? .on : .off
-        ) { [weak self] _ in
-            guard let self else { return }
-            self.applyRuntimePolicy(
-                BrowserRuntimePolicy(
-                    resolutionMode: .compatibility,
-                    hnsDohResolver: policy.hnsDohResolver,
-                    statelessDANECertificates: policy.statelessDANECertificates,
-                    experimentalP2PDNSRelay: policy.experimentalP2PDNSRelay,
-                    legacyHNSDoHCompatibility: policy.legacyHNSDoHCompatibility
-                )
-            )
-        }
-        let strict = UIAction(
-            title: "Strict Handshake",
-            image: UIImage(systemName: "checkmark.shield"),
-            attributes: runtimeDisabled,
-            state: policy.resolutionMode == .strict ? .on : .off
-        ) { [weak self] _ in
-            guard let self else { return }
-            self.applyRuntimePolicy(
-                BrowserRuntimePolicy(
-                    resolutionMode: .strict,
-                    hnsDohResolver: policy.hnsDohResolver,
-                    statelessDANECertificates: policy.statelessDANECertificates,
-                    experimentalP2PDNSRelay: policy.experimentalP2PDNSRelay,
-                    legacyHNSDoHCompatibility: policy.legacyHNSDoHCompatibility
-                )
-            )
-        }
-        let modeMenu = UIMenu(
-            title: "Resolution Mode",
-            image: UIImage(systemName: "point.3.connected.trianglepath.dotted"),
-            children: [compatibility, strict]
+    @objc private func presentBrowserSettings() {
+        guard presentedViewController == nil else { return }
+        let settings = BrowserSettingsViewController(
+            policy: process.currentPolicy,
+            runtimeControlsAreAvailable: runtimeControlsAreAvailable,
+            isOperationInFlight: isControlOperationInFlight,
+            syncSummary: latestSyncSummary,
+            resolverCacheSummary: resolverCacheSummary
         )
+        settings.delegate = self
+        settingsViewController = settings
+        let navigation = UINavigationController(rootViewController: settings)
+        navigation.modalPresentationStyle = .formSheet
+        present(navigation, animated: true)
+    }
 
-        let statelessDANE = UIAction(
-            title: "Stateless DANE Certificates",
-            image: UIImage(systemName: "lock.shield"),
-            attributes: runtimeDisabled,
-            state: policy.statelessDANECertificates ? .on : .off
-        ) { [weak self] _ in
-            guard let self else { return }
-            self.applyRuntimePolicy(
-                BrowserRuntimePolicy(
-                    resolutionMode: policy.resolutionMode,
-                    hnsDohResolver: policy.hnsDohResolver,
-                    statelessDANECertificates: !policy.statelessDANECertificates,
-                    experimentalP2PDNSRelay: policy.experimentalP2PDNSRelay,
-                    legacyHNSDoHCompatibility: policy.legacyHNSDoHCompatibility
-                )
-            )
-        }
+    private func refreshSettingsIfPresented() {
+        settingsViewController?.update(
+            policy: process.currentPolicy,
+            runtimeControlsAreAvailable: runtimeControlsAreAvailable,
+            isOperationInFlight: isControlOperationInFlight,
+            syncSummary: latestSyncSummary,
+            resolverCacheSummary: resolverCacheSummary
+        )
+    }
 
-        let experimentalP2PRelay = UIAction(
-            title: "Experimental P2P DNS Relay",
-            image: UIImage(systemName: "point.3.filled.connected.trianglepath.dotted"),
-            attributes: runtimeDisabled,
-            state: policy.experimentalP2PDNSRelay ? .on : .off
-        ) { [weak self] _ in
-            guard let self else { return }
-            self.applyRuntimePolicy(
-                BrowserRuntimePolicy(
-                    resolutionMode: policy.resolutionMode,
-                    hnsDohResolver: policy.hnsDohResolver,
-                    statelessDANECertificates: policy.statelessDANECertificates,
-                    experimentalP2PDNSRelay: !policy.experimentalP2PDNSRelay,
-                    legacyHNSDoHCompatibility: policy.legacyHNSDoHCompatibility
-                )
-            )
+    private func dismissSettingsThen(_ action: @escaping () -> Void) {
+        guard let settings = settingsViewController else {
+            action()
+            return
         }
-        let legacyDoHCompatibility = UIAction(
-            title: "Legacy HNS DoH Compatibility",
-            image: UIImage(systemName: "network.badge.shield.half.filled"),
-            attributes: runtimeDisabled,
-            state: policy.legacyHNSDoHCompatibility ? .on : .off
-        ) { [weak self] _ in
-            guard let self else { return }
-            self.applyRuntimePolicy(
-                BrowserRuntimePolicy(
-                    resolutionMode: policy.resolutionMode,
-                    hnsDohResolver: policy.hnsDohResolver,
-                    statelessDANECertificates: policy.statelessDANECertificates,
-                    experimentalP2PDNSRelay: policy.experimentalP2PDNSRelay,
-                    legacyHNSDoHCompatibility: !policy.legacyHNSDoHCompatibility
-                )
-            )
-        }
-        let resolverPaths = UIMenu(
-            title: "Resolver Paths",
-            image: UIImage(systemName: "arrow.triangle.branch"),
-            children: [experimentalP2PRelay, legacyDoHCompatibility]
-        )
-
-        let configureDoH = UIAction(
-            title: "Configure DoH Resolver…",
-            image: UIImage(systemName: "server.rack"),
-            attributes: runtimeDisabled
-        ) { [weak self] _ in
-            self?.presentDoHConfiguration()
-        }
-        let clearDoHAttributes: UIMenuElement.Attributes =
-            !runtimeControlsAreAvailable || isControlOperationInFlight || policy.hnsDohResolver == nil
-                ? .disabled : []
-        let clearDoH = UIAction(
-            title: "Use Default Resolver",
-            image: UIImage(systemName: "arrow.uturn.backward"),
-            attributes: clearDoHAttributes
-        ) { [weak self] _ in
-            guard let self else { return }
-            self.applyRuntimePolicy(
-                BrowserRuntimePolicy(
-                    resolutionMode: policy.resolutionMode,
-                    hnsDohResolver: nil,
-                    statelessDANECertificates: policy.statelessDANECertificates,
-                    experimentalP2PDNSRelay: policy.experimentalP2PDNSRelay,
-                    legacyHNSDoHCompatibility: policy.legacyHNSDoHCompatibility
-                )
-            )
-        }
-        let dohMenu = UIMenu(
-            title: policy.hnsDohResolver == nil ? "Default HNS Resolver" : "Configured HNS DoH",
-            image: UIImage(systemName: "globe.desk"),
-            children: [configureDoH, clearDoH]
-        )
-
-        let syncNow = UIAction(
-            title: "Sync Headers Now",
-            image: UIImage(systemName: "arrow.triangle.2.circlepath"),
-            attributes: runtimeDisabled
-        ) { [weak self] _ in
-            self?.syncNow()
-        }
-        let clearCache = UIAction(
-            title: "Clear Resolver Cache",
-            image: UIImage(systemName: "trash"),
-            attributes: runtimeDisabled
-        ) { [weak self] _ in
-            self?.clearResolverCache()
-        }
-        let proofDetails = UIAction(
-            title: "Proof Details",
-            image: UIImage(systemName: "doc.text.magnifyingglass"),
-            attributes: runtimeDisabled
-        ) { [weak self] _ in
-            self?.showProofDetails()
-        }
-        let maintenance = UIMenu(
-            title: "",
-            options: .displayInline,
-            children: [syncNow, clearCache, proofDetails]
-        )
-
-        let privacyPolicy = UIAction(
-            title: "Privacy Policy",
-            image: UIImage(systemName: "hand.raised")
-        ) { [weak self] _ in
-            self?.presentStorefrontPage(Self.privacyPolicyURL)
-        }
-        let support = UIAction(
-            title: "Support",
-            image: UIImage(systemName: "questionmark.circle")
-        ) { [weak self] _ in
-            self?.presentStorefrontPage(Self.supportURL)
-        }
-        let thirdPartyNotices = UIAction(
-            title: "Third-Party Notices",
-            image: UIImage(systemName: "doc.plaintext")
-        ) { [weak self] _ in
-            self?.presentThirdPartyNotices()
-        }
-        let about = UIMenu(
-            title: "Information",
-            image: UIImage(systemName: "info.circle"),
-            children: [privacyPolicy, support, thirdPartyNotices]
-        )
-        controlsButton.menu = UIMenu(
-            title: "Browser Settings",
-            children: [modeMenu, statelessDANE, resolverPaths, dohMenu, maintenance, about]
-        )
+        settings.dismiss(animated: true, completion: action)
     }
 
     private func presentStorefrontPage(_ url: URL) {
@@ -761,54 +617,13 @@ final class BrowserViewController: UIViewController {
 #endif
     }
 
-    private func presentDoHConfiguration() {
-        guard !isControlOperationInFlight else { return }
-        let policy = process.currentPolicy
-        let alert = UIAlertController(
-            title: "Configured HNS DoH Resolver",
-            message: "Enter an HTTPS DNS-over-HTTPS endpoint. Leave it empty to use the runtime default.",
-            preferredStyle: .alert
-        )
-        alert.addTextField { textField in
-            textField.text = policy.hnsDohResolver
-            textField.placeholder = "https://resolver.example/dns-query"
-            textField.keyboardType = .URL
-            textField.autocapitalizationType = .none
-            textField.autocorrectionType = .no
-            textField.clearButtonMode = .whileEditing
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Use Default", style: .default) { [weak self] _ in
-            guard let self else { return }
-            self.applyRuntimePolicy(
-                BrowserRuntimePolicy(
-                    resolutionMode: policy.resolutionMode,
-                    hnsDohResolver: nil,
-                    statelessDANECertificates: policy.statelessDANECertificates,
-                    experimentalP2PDNSRelay: policy.experimentalP2PDNSRelay,
-                    legacyHNSDoHCompatibility: policy.legacyHNSDoHCompatibility
-                )
-            )
-        })
-        alert.addAction(UIAlertAction(title: "Apply", style: .default) { [weak self, weak alert] _ in
-            guard let self else { return }
-            self.applyRuntimePolicy(
-                BrowserRuntimePolicy(
-                    resolutionMode: policy.resolutionMode,
-                    hnsDohResolver: alert?.textFields?.first?.text,
-                    statelessDANECertificates: policy.statelessDANECertificates,
-                    experimentalP2PDNSRelay: policy.experimentalP2PDNSRelay,
-                    legacyHNSDoHCompatibility: policy.legacyHNSDoHCompatibility
-                )
-            )
-        })
-        present(alert, animated: true)
-    }
-
-    private func applyRuntimePolicy(_ policy: BrowserRuntimePolicy) {
+    private func applyRuntimePolicy(
+        _ policy: BrowserRuntimePolicy,
+        presenter: UIViewController? = nil
+    ) {
         guard !isControlOperationInFlight, let environment else { return }
         guard policy != process.currentPolicy else {
-            rebuildControlsMenu()
+            refreshSettingsIfPresented()
             return
         }
 
@@ -839,36 +654,61 @@ final class BrowserViewController: UIViewController {
             case .success(let revision):
                 self.syncLabel.text = "Runtime policy revision \(revision)"
             case .failure(let error):
-                self.showOperationError(title: "Policy update failed", error: error)
+                self.showOperationError(
+                    title: "Policy update failed",
+                    error: error,
+                    presenter: presenter
+                )
             }
+            self.refreshSettingsIfPresented()
         }
     }
 
-    private func syncNow() {
-        guard beginControlOperation() else { return }
+    private func syncNow(presenter: UIViewController? = nil) {
+        guard beginControlOperation() else {
+            refreshSettingsIfPresented()
+            return
+        }
         syncLabel.text = "Syncing Handshake headers…"
+        refreshSettingsIfPresented()
         process.syncNow { [weak self] result in
             guard let self, !self.isDestroyed else { return }
-            self.setControlOperationInFlight(false)
             switch result {
             case .success(let summary):
                 self.updateSyncSummary(summary)
-                self.showRuntimeSummary(summary)
-            case .failure(let error): self.showOperationError(title: "Header sync failed", error: error)
+                self.setControlOperationInFlight(false)
+            case .failure(let error):
+                self.updateSyncSummary(.failure(error))
+                self.setControlOperationInFlight(false)
+                self.showOperationError(
+                    title: "Header sync failed",
+                    error: error,
+                    presenter: presenter
+                )
             }
         }
     }
 
-    private func clearResolverCache() {
+    private func clearResolverCache(presenter: UIViewController? = nil) {
         guard beginControlOperation() else { return }
+        resolverCacheSummary = "Running…"
+        refreshSettingsIfPresented()
         process.clearResolverCache { [weak self] result in
             guard let self, !self.isDestroyed else { return }
-            self.setControlOperationInFlight(false)
             switch result {
             case .success(let summary):
-                self.updateSyncSummary(summary)
-                self.showRuntimeSummary(summary)
-            case .failure(let error): self.showOperationError(title: "Cache clear failed", error: error)
+                self.resolverCacheSummary = "Mainnet cache cleared just now."
+                self.setControlOperationInFlight(false)
+                self.showRuntimeSummary(summary, presenter: presenter)
+            case .failure(let error):
+                self.resolverCacheSummary =
+                    "Clear did not complete. Open diagnostics for details."
+                self.setControlOperationInFlight(false)
+                self.showOperationError(
+                    title: "Cache clear failed",
+                    error: error,
+                    presenter: presenter
+                )
             }
         }
     }
@@ -892,7 +732,10 @@ final class BrowserViewController: UIViewController {
             self.setControlOperationInFlight(false)
             switch result {
             case .success(let details):
-                let viewer = ProofDetailsViewController(details: details)
+                let viewer = ProofDetailsViewController(
+                    details: details,
+                    accessibilityIdentifier: "browser-proof-details.content"
+                )
                 self.present(UINavigationController(rootViewController: viewer), animated: true)
             case .failure(let error):
                 self.showOperationError(title: "Proof details unavailable", error: error)
@@ -909,7 +752,7 @@ final class BrowserViewController: UIViewController {
     private func setControlOperationInFlight(_ value: Bool) {
         isControlOperationInFlight = value
         controlsButton.isEnabled = !isDestroyed && !value
-        rebuildControlsMenu()
+        refreshSettingsIfPresented()
     }
 
     private func updateSecuritySummary(_ summary: BrowserSecuritySummary) {
@@ -944,30 +787,90 @@ final class BrowserViewController: UIViewController {
     }
 
     private func updateSyncSummary(_ summary: BrowserSyncSummary) {
+        latestSyncSummary = summary
         syncLabel.text = summary.headline
         syncLabel.accessibilityLabel = "\(summary.headline). \(summary.detail)"
+        refreshSettingsIfPresented()
     }
 
-    private func showOperationError(title: String, error: Error) {
-        guard presentedViewController == nil else { return }
+    private func startSyncStatusPolling() {
+        stopSyncStatusPolling()
+        coordinator?.refreshSyncStatus()
+        let timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) {
+            [weak self] _ in
+            guard let self, self.isForeground, !self.isDestroyed else { return }
+            self.coordinator?.refreshSyncStatus()
+        }
+        timer.tolerance = 0.25
+        syncStatusPollTimer = timer
+    }
+
+    private func stopSyncStatusPolling() {
+        syncStatusPollTimer?.invalidate()
+        syncStatusPollTimer = nil
+    }
+
+    private func showOperationError(
+        title: String,
+        error: Error,
+        presenter: UIViewController? = nil
+    ) {
         let alert = UIAlertController(
             title: title,
             message: error.localizedDescription,
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
+        presentAlertWhenReady(alert, preferredPresenter: presenter)
     }
 
-    private func showRuntimeSummary(_ summary: BrowserSyncSummary) {
-        guard presentedViewController == nil else { return }
+    private func showRuntimeSummary(
+        _ summary: BrowserSyncSummary,
+        presenter: UIViewController? = nil
+    ) {
         let alert = UIAlertController(
             title: summary.headline,
             message: summary.detail,
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
+        presentAlertWhenReady(alert, preferredPresenter: presenter)
+    }
+
+    private func presentAlertWhenReady(
+        _ alert: UIAlertController,
+        preferredPresenter: UIViewController?,
+        attemptsRemaining: Int = 20
+    ) {
+        guard !isDestroyed else { return }
+        let target: UIViewController
+        if let preferredPresenter,
+           preferredPresenter.viewIfLoaded?.window != nil,
+           !preferredPresenter.isBeingDismissed {
+            target = preferredPresenter
+        } else if let settingsViewController,
+                  settingsViewController.viewIfLoaded?.window != nil,
+                  !settingsViewController.isBeingDismissed {
+            target = settingsViewController
+        } else {
+            target = self
+        }
+
+        guard target.viewIfLoaded?.window != nil,
+              !target.isBeingPresented,
+              !target.isBeingDismissed,
+              target.presentedViewController == nil else {
+            guard attemptsRemaining > 0 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self, weak preferredPresenter] in
+                self?.presentAlertWhenReady(
+                    alert,
+                    preferredPresenter: preferredPresenter,
+                    attemptsRemaining: attemptsRemaining - 1
+                )
+            }
+            return
+        }
+        target.present(alert, animated: true)
     }
 
     private func presentShareSheet(items: [Any], sourceView: UIView) {
@@ -986,6 +889,42 @@ extension BrowserViewController: UITextFieldDelegate {
         guard let value = textField.text else { return false }
         coordinator?.navigate(rawValue: value)
         return true
+    }
+}
+
+extension BrowserViewController: BrowserSettingsViewControllerDelegate {
+    func browserSettingsViewController(
+        _ controller: BrowserSettingsViewController,
+        didRequest action: BrowserSettingsViewController.Action
+    ) {
+        switch action {
+        case .applyRuntimePolicy(let policy):
+            applyRuntimePolicy(policy, presenter: controller)
+        case .clearResolverCache:
+            clearResolverCache(presenter: controller)
+        case .runHNSSync:
+            syncNow(presenter: controller.navigationController?.topViewController ?? controller)
+        case .showHNSProofDetails:
+            dismissSettingsThen { [weak self] in
+                self?.showProofDetails()
+            }
+        case .showPrivacyPolicy:
+            dismissSettingsThen { [weak self] in
+                self?.presentStorefrontPage(Self.privacyPolicyURL)
+            }
+        case .showSupport:
+            dismissSettingsThen { [weak self] in
+                self?.presentStorefrontPage(Self.supportURL)
+            }
+        case .showSourceCode:
+            dismissSettingsThen { [weak self] in
+                self?.presentStorefrontPage(Self.sourceCodeURL)
+            }
+        case .showThirdPartyNotices:
+            dismissSettingsThen { [weak self] in
+                self?.presentThirdPartyNotices()
+            }
+        }
     }
 }
 

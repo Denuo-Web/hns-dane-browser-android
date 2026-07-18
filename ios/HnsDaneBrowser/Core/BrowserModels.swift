@@ -160,7 +160,22 @@ struct BrowserSyncSummary: Equatable, Sendable {
         error != nil || ["error", "peer_failed", "seed_failed"].contains(status)
     }
 
-    var isCaughtUp: Bool { status == "up_to_date" }
+    var targetHeight: UInt64? { bestPeerHeight ?? estimatedTipHeight }
+
+    var isBehind: Bool {
+        guard let bestHeight, let targetHeight else { return false }
+        return targetHeight > bestHeight
+    }
+
+    /// Mirrors Android's currentness interpretation. A successful sync tick
+    /// reports `synced` after it accepts headers and reaches its target; a
+    /// partially attempted tick is also current when its recorded target is
+    /// not ahead. Neither state should be forced through another foreground
+    /// catch-up cycle merely because it is not spelled `up_to_date`.
+    var isCaughtUp: Bool {
+        status == "up_to_date"
+            || (["synced", "attempted"].contains(status) && !isBehind)
+    }
 
     static let unavailable = BrowserSyncSummary(
         headline: "Sync unavailable",

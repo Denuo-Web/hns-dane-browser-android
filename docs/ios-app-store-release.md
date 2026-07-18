@@ -8,7 +8,7 @@ The committed application identity is:
 - Bundle ID: `com.denuoweb.hnsdane.ios`
 - Display name: `HNS DANE Browser`
 - Deployment floor: iOS 17.0
-- First iOS version/build: `0.5.0` (`41`)
+- First iOS version/build: `0.5.0` (`42`)
 - Device family: iPhone
 
 ## One-time Apple setup
@@ -59,12 +59,12 @@ The workflow then:
 1. runs `scripts/run-ios-gate.sh` with Xcode 26.5/26.6 and the iOS 26.5 SDK;
 2. writes the API key, distribution identity, and App Store profile only to the ephemeral runner's private temporary directory;
 3. verifies the identity and profile against the fixed team and bundle IDs, then creates a Release archive using manual App Store distribution signing in a disposable keychain;
-4. validates/exports the archive with App Store Connect authentication and uploads build `41`;
+4. validates/exports the archive with App Store Connect authentication and uploads build `42`;
 5. deletes the temporary keychain, installed profile, API key, `.p12`, and profile while GitHub discards the runner.
 
-Apple associates the uploaded build with the app record using its bundle ID, version, and build number. A rerun after Apple accepts build `41` requires a higher build number.
+Apple associates the uploaded build with the app record using its bundle ID, version, and build number. A rerun after Apple accepts build `42` requires a higher build number.
 
-Build `41` declares `ITSAppUsesNonExemptEncryption = false` because the first
+Build `42` declares `ITSAppUsesNonExemptEncryption = false` because the first
 release uses only industry-standard cryptography and excludes France from App
 Store availability. Do not add an export-compliance code to this build. Before
 enabling France, complete the French encryption declaration; after Apple

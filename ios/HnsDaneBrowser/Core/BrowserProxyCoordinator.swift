@@ -70,6 +70,7 @@ final class BrowserProxyCoordinator: NSObject {
     private var history: [String] = []
     private var historyIndex = -1
     private var destroyed = false
+    private var syncStatusRefreshInFlight = false
 
     init(runtime: BrowserRuntime, profile: PersistentWebKitProfile) {
         self.runtime = runtime
@@ -162,6 +163,24 @@ final class BrowserProxyCoordinator: NSObject {
             canGoForward: historyIndex + 1 < history.count,
             isLoading: false
         )
+    }
+
+    /// Reads the lightweight persisted sync state without waiting for a long
+    /// foreground `syncOnce()` call to return. Rust permits this concurrent
+    /// status read, and coalescing keeps the utility queue bounded.
+    func refreshSyncStatus() {
+        guard !destroyed, !syncStatusRefreshInFlight else { return }
+        syncStatusRefreshInFlight = true
+        let runtime = runtime
+        statusQueue.async { [weak self] in
+            let summary = runtime.syncSummary()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.syncStatusRefreshInFlight = false
+                guard !self.destroyed else { return }
+                self.delegate?.proxyCoordinator(self, didUpdateSync: summary)
+            }
+        }
     }
 
     var currentShareURL: URL? { webView?.url ?? lastNavigation?.destination.url }
@@ -482,14 +501,7 @@ final class BrowserProxyCoordinator: NSObject {
             delegate?.proxyCoordinator(self, didUpdateSecurity: summary)
         }
 
-        let runtime = runtime
-        statusQueue.async { [weak self] in
-            let summary = runtime.syncSummary()
-            DispatchQueue.main.async {
-                guard let self, !self.destroyed else { return }
-                self.delegate?.proxyCoordinator(self, didUpdateSync: summary)
-            }
-        }
+        refreshSyncStatus()
     }
 
     private func answerAuthenticationChallenge(

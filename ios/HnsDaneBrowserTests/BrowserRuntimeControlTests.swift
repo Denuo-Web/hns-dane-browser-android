@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import XCTest
 @testable import HnsDaneBrowser
 
@@ -51,8 +52,226 @@ final class BrowserRuntimeControlTests: XCTestCase {
     func testPolicyDefaultsKeepExperimentOffAndLegacyCompatibilityOn() {
         let policy = BrowserRuntimePolicyStore(defaults: defaults).load()
 
+        XCTAssertFalse(policy.statelessDANECertificates)
         XCTAssertFalse(policy.experimentalP2PDNSRelay)
         XCTAssertTrue(policy.legacyHNSDoHCompatibility)
+    }
+
+    @MainActor
+    func testIOSSettingsKeepBackedHNSControlsInAndroidRelativeOrder() {
+        let rows = BrowserSettingsViewController.rows(in: .hnsResolution)
+
+        XCTAssertEqual(
+            rows,
+            [
+                .strictHNSMode,
+                .statelessDANECertificates,
+                .experimentalP2PDNSRelay,
+                .legacyHNSDoHCompatibility,
+                .compatibilityDoHResolver,
+                .clearResolverCache,
+                .hnsSync,
+            ]
+        )
+        XCTAssertEqual(rows.map(\.title), [
+            "Strict HNS mode",
+            "Experimental stateless DANE certificates",
+            "Experimental P2P DNS relay",
+            "Legacy HNS DoH compatibility",
+            "Compatibility DoH resolver",
+            "Clear resolver cache",
+            "HNS sync",
+        ])
+    }
+
+    @MainActor
+    func testStatelessDANEIsAToggleWithAndroidExplanations() throws {
+        let settings = BrowserSettingsViewController(
+            policy: .default,
+            runtimeControlsAreAvailable: true
+        )
+        settings.loadViewIfNeeded()
+        let indexPath = IndexPath(row: 1, section: 0)
+
+        var cell = settings.tableView(settings.tableView, cellForRowAt: indexPath)
+        var content = try XCTUnwrap(cell.contentConfiguration as? UIListContentConfiguration)
+        let toggle = try XCTUnwrap(cell.accessoryView as? UISwitch)
+        XCTAssertEqual(cell.accessibilityIdentifier, "settings.hns-resolution.stateless-dane-certificates")
+        XCTAssertEqual(content.text, "Experimental stateless DANE certificates")
+        XCTAssertEqual(
+            content.secondaryText,
+            "Off. HNS proof and TLSA evidence use the live resolver path."
+        )
+        XCTAssertFalse(toggle.isOn)
+
+        settings.update(
+            policy: BrowserRuntimePolicy(statelessDANECertificates: true),
+            runtimeControlsAreAvailable: true,
+            isOperationInFlight: false
+        )
+        cell = settings.tableView(settings.tableView, cellForRowAt: indexPath)
+        content = try XCTUnwrap(cell.contentConfiguration as? UIListContentConfiguration)
+        XCTAssertEqual(
+            content.secondaryText,
+            "On. Certificate-carried HNS proof evidence may satisfy DANE when valid."
+        )
+        XCTAssertTrue(try XCTUnwrap(cell.accessoryView as? UISwitch).isOn)
+    }
+
+    @MainActor
+    func testHNSSyncRowNavigatesBeforeAnExplicitRun() throws {
+        let initialSummary = BrowserSyncSummary(
+            headline: "Handshake sync idle",
+            detail: "Local height 300000 · peer height 300100 · accepted 0/0",
+            status: "idle",
+            network: "mainnet",
+            peerCount: 4,
+            peerGroups: 2,
+            bestHeight: 300_000,
+            bestPeerHeight: 300_100
+        )
+        let settings = BrowserSettingsViewController(
+            policy: .default,
+            runtimeControlsAreAvailable: true,
+            syncSummary: initialSummary
+        )
+        let delegate = BrowserSettingsDelegateSpy()
+        settings.delegate = delegate
+        let navigation = UINavigationController(rootViewController: settings)
+        navigation.loadViewIfNeeded()
+        settings.loadViewIfNeeded()
+
+        let settingsIndexPath = IndexPath(row: 6, section: 0)
+        let settingsCell = settings.tableView(
+            settings.tableView,
+            cellForRowAt: settingsIndexPath
+        )
+        let settingsContent = try XCTUnwrap(
+            settingsCell.contentConfiguration as? UIListContentConfiguration
+        )
+        XCTAssertEqual(
+            settingsContent.secondaryText,
+            "View sync status and run a manual sync."
+        )
+
+        settings.tableView(settings.tableView, didSelectRowAt: settingsIndexPath)
+
+        let sync = try XCTUnwrap(navigation.topViewController as? HNSSyncViewController)
+        XCTAssertTrue(delegate.actions.isEmpty)
+        sync.loadViewIfNeeded()
+        let statusCell = sync.tableView(
+            sync.tableView,
+            cellForRowAt: IndexPath(row: 0, section: 0)
+        )
+        let statusContent = try XCTUnwrap(
+            statusCell.contentConfiguration as? UIListContentConfiguration
+        )
+        XCTAssertTrue(statusContent.secondaryText?.contains("Handshake sync idle") == true)
+        XCTAssertTrue(statusContent.secondaryText?.contains("Network: mainnet") == true)
+
+        sync.tableView(sync.tableView, didSelectRowAt: IndexPath(row: 1, section: 0))
+        XCTAssertEqual(delegate.actions, [.runHNSSync])
+    }
+
+    @MainActor
+    func testHNSSyncStatusScreenReceivesLiveSummaryUpdates() throws {
+        let settings = BrowserSettingsViewController(
+            policy: .default,
+            runtimeControlsAreAvailable: true,
+            syncSummary: .unavailable
+        )
+        let navigation = UINavigationController(rootViewController: settings)
+        navigation.loadViewIfNeeded()
+        settings.loadViewIfNeeded()
+        settings.tableView(
+            settings.tableView,
+            didSelectRowAt: IndexPath(row: 6, section: 0)
+        )
+        let sync = try XCTUnwrap(navigation.topViewController as? HNSSyncViewController)
+        sync.loadViewIfNeeded()
+
+        settings.update(
+            policy: .default,
+            runtimeControlsAreAvailable: true,
+            isOperationInFlight: false,
+            syncSummary: BrowserSyncSummary(
+                headline: "Handshake headers current",
+                detail: "Local height 335942 · peer height 335942 · accepted 2/2",
+                status: "up_to_date",
+                network: "mainnet",
+                attempted: 2,
+                successful: 2,
+                accepted: 2,
+                peerCount: 8,
+                peerGroups: 3,
+                bestHeight: 335_942,
+                bestPeerHeight: 335_942
+            )
+        )
+
+        let statusCell = sync.tableView(
+            sync.tableView,
+            cellForRowAt: IndexPath(row: 0, section: 0)
+        )
+        let content = try XCTUnwrap(
+            statusCell.contentConfiguration as? UIListContentConfiguration
+        )
+        XCTAssertTrue(content.secondaryText?.contains("Handshake headers current") == true)
+        XCTAssertTrue(content.secondaryText?.contains("Peers: 8 in 3 groups") == true)
+    }
+
+    @MainActor
+    func testIOSSettingsUseBackedAndroidDefaultsAndActionLabels() throws {
+        let settings = BrowserSettingsViewController(
+            policy: .default,
+            runtimeControlsAreAvailable: true
+        )
+        settings.loadViewIfNeeded()
+
+        let doh = settings.tableView(
+            settings.tableView,
+            cellForRowAt: IndexPath(row: 4, section: 0)
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(doh.contentConfiguration as? UIListContentConfiguration)
+                .secondaryText,
+            "https://zorro.hnsdoh.com/dns-query"
+        )
+        XCTAssertEqual((doh.accessoryView as? UILabel)?.text, "Edit")
+
+        let cache = settings.tableView(
+            settings.tableView,
+            cellForRowAt: IndexPath(row: 5, section: 0)
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(cache.contentConfiguration as? UIListContentConfiguration)
+                .secondaryText,
+            "Ready to clear cached resolver values."
+        )
+        XCTAssertEqual((cache.accessoryView as? UILabel)?.text, "Clear")
+
+        let hnsSync = settings.tableView(
+            settings.tableView,
+            cellForRowAt: IndexPath(row: 6, section: 0)
+        )
+        XCTAssertEqual((hnsSync.accessoryView as? UILabel)?.text, "View")
+
+        let proof = settings.tableView(
+            settings.tableView,
+            cellForRowAt: IndexPath(row: 0, section: 1)
+        )
+        XCTAssertEqual((proof.accessoryView as? UILabel)?.text, "Open")
+
+        let build = settings.tableView(
+            settings.tableView,
+            cellForRowAt: IndexPath(row: 0, section: 2)
+        )
+        let buildText = try XCTUnwrap(
+            (build.contentConfiguration as? UIListContentConfiguration)?.secondaryText
+        )
+        XCTAssertTrue(buildText.hasPrefix("release "))
+        XCTAssertTrue(buildText.contains(" ("))
+        XCTAssertTrue(buildText.hasSuffix(")"))
     }
 
     func testPolicyStoreFallsBackForUnknownResolutionMode() {
@@ -102,6 +321,36 @@ final class BrowserRuntimeControlTests: XCTestCase {
                 status: "peer_failed"
             ).requiresRetry
         )
+    }
+
+    func testIOSRecognizesAndroidCurrentSyncStates() throws {
+        let policy = BrowserSyncSchedulingPolicy()
+        for status in ["up_to_date", "synced", "attempted"] {
+            let summary = try RustBrowserRuntime.syncSummary(from: [
+                "network": "mainnet",
+                "status": status,
+                "bestHeight": 339_308,
+                "bestPeerHeight": 339_308,
+                "estimatedTipHeight": 339_400,
+            ])
+
+            XCTAssertTrue(summary.isCaughtUp, status)
+            XCTAssertFalse(summary.isBehind, status)
+            XCTAssertEqual(summary.headline, "Handshake headers current", status)
+            XCTAssertEqual(policy.delay(after: summary, consecutiveFailures: 0), 300)
+        }
+
+        let behind = try RustBrowserRuntime.syncSummary(from: [
+            "network": "mainnet",
+            "status": "attempted",
+            "bestHeight": 339_000,
+            "bestPeerHeight": 339_308,
+            "estimatedTipHeight": 339_400,
+        ])
+        XCTAssertTrue(behind.isBehind)
+        XCTAssertFalse(behind.isCaughtUp)
+        XCTAssertEqual(behind.headline, "Syncing Handshake headers")
+        XCTAssertEqual(policy.delay(after: behind, consecutiveFailures: 0), 30)
     }
 
     func testNativeSyncSummaryPreservesUsefulRuntimeResults() throws {
@@ -172,5 +421,17 @@ final class BrowserRuntimeControlTests: XCTestCase {
         XCTAssertEqual(details.blockHeight, 250_000)
         XCTAssertEqual(details.recordTypes, ["A", "TLSA"])
         XCTAssertTrue(details.formattedJSON.contains("\"proofStatus\" : \"verified\""))
+    }
+}
+
+@MainActor
+private final class BrowserSettingsDelegateSpy: BrowserSettingsViewControllerDelegate {
+    private(set) var actions: [BrowserSettingsViewController.Action] = []
+
+    func browserSettingsViewController(
+        _ controller: BrowserSettingsViewController,
+        didRequest action: BrowserSettingsViewController.Action
+    ) {
+        actions.append(action)
     }
 }

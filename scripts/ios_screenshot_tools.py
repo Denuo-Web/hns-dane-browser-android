@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic helpers for the iOS App Store screenshot workflow."""
+"""Validation and provenance helpers for iOS screenshot workflows."""
 
 from __future__ import annotations
 
@@ -14,24 +14,46 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCREENSHOTS = (
+LIVE_SCREENSHOTS = (
     (
-        "APPSTORE_SCREENSHOT_01_HNS_DANE_VERIFIED",
-        "01-hns-dane-verified",
+        "LIVE_APPSTORE_SCREENSHOT_01_HNS_PAGE",
+        "01-hns-page",
     ),
     (
-        "APPSTORE_SCREENSHOT_02_BROWSER_SETTINGS",
-        "02-browser-settings",
+        "LIVE_APPSTORE_SCREENSHOT_02_SETTINGS",
+        "02-settings",
     ),
     (
-        "APPSTORE_SCREENSHOT_03_PROOF_DETAILS",
+        "LIVE_APPSTORE_SCREENSHOT_03_PROOF_DETAILS",
         "03-proof-details",
     ),
     (
-        "APPSTORE_SCREENSHOT_04_WEBPKI",
+        "LIVE_APPSTORE_SCREENSHOT_04_WEBPKI",
         "04-webpki",
     ),
 )
+
+FIXTURE_SCREENSHOTS = (
+    ("UI_REGRESSION_FIXTURE_01_HNS", "fixture-01-hns"),
+    ("UI_REGRESSION_FIXTURE_02_PROOF_DETAILS", "fixture-02-proof-details"),
+    ("UI_REGRESSION_FIXTURE_03_WEBPKI", "fixture-03-webpki"),
+)
+
+# Submission tooling defaults to the live set. The old fixture set must always
+# be requested explicitly and is never accepted by verify-live.
+SCREENSHOTS = LIVE_SCREENSHOTS
+SCREENSHOT_PROFILES = {
+    "live": LIVE_SCREENSHOTS,
+    "fixture-regression": FIXTURE_SCREENSHOTS,
+}
+LIVE_PROVENANCE_ATTACHMENT = "LIVE_APPSTORE_PROVENANCE"
+LIVE_CAPTURE_MODE = "live-production-runtime"
+LIVE_TARGETS = {
+    "hnsNavigation": "https://denuoweb/",
+    "settings": "https://denuoweb/",
+    "proofDetails": "https://denuoweb/",
+    "webPKINavigation": "https://denuoweb.com/work/hns-dane-browser",
+}
 
 DEVICE_PRIORITY = (
     "iPhone 14 Plus",
@@ -109,26 +131,20 @@ def iter_attachment_records(value: Any) -> Iterable[dict[str, Any]]:
 
 def normalized_attachment_name(value: str) -> str:
     path = Path(value)
-    name = path.stem if path.suffix.lower() in {".png", ".jpg", ".jpeg"} else value
+    name = path.stem if path.suffix else value
     return XCRESULT_ATTACHMENT_SUFFIX.sub("", name)
 
 
-def collect_attachments(
+def attachment_sources(
     manifest: Any,
     attachments_dir: Path,
-    output_dir: Path,
-) -> list[Path]:
-    expected = {attachment: basename for attachment, basename in SCREENSHOTS}
-    found: dict[str, list[Path]] = {name: [] for name in expected}
+) -> dict[str, list[Path]]:
     attachments_root = attachments_dir.resolve()
-
+    sources: dict[str, list[Path]] = {}
     for record in iter_attachment_records(manifest):
         suggested_name = record.get("suggestedHumanReadableName")
         exported_name = record.get("exportedFileName")
         if not isinstance(suggested_name, str) or not isinstance(exported_name, str):
-            continue
-        normalized_name = normalized_attachment_name(suggested_name)
-        if normalized_name not in expected:
             continue
         source = (attachments_dir / exported_name).resolve()
         try:
@@ -137,7 +153,23 @@ def collect_attachments(
             raise ScreenshotToolError(
                 f"attachment path escapes the export directory: {exported_name}"
             ) from error
-        found[normalized_name].append(source)
+        name = normalized_attachment_name(suggested_name)
+        sources.setdefault(name, []).append(source)
+    return sources
+
+
+def collect_attachments(
+    manifest: Any,
+    attachments_dir: Path,
+    output_dir: Path,
+    screenshot_specs: tuple[tuple[str, str], ...] = SCREENSHOTS,
+    provenance_output: Path | None = None,
+) -> list[Path]:
+    expected = {attachment: basename for attachment, basename in screenshot_specs}
+    found: dict[str, list[Path]] = {name: [] for name in expected}
+    sources = attachment_sources(manifest, attachments_dir)
+    for name in expected:
+        found[name] = sources.get(name, [])
 
     problems = []
     for attachment_name, paths in found.items():
@@ -148,7 +180,7 @@ def collect_attachments(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs = []
-    for attachment_name, basename in SCREENSHOTS:
+    for attachment_name, basename in screenshot_specs:
         source = found[attachment_name][0]
         if not source.is_file():
             raise ScreenshotToolError(f"exported attachment does not exist: {source}")
@@ -157,6 +189,26 @@ def collect_attachments(
         destination = output_dir / f"{basename}.png"
         shutil.copyfile(source, destination)
         outputs.append(destination)
+
+    if provenance_output is not None:
+        provenance_sources = sources.get(LIVE_PROVENANCE_ATTACHMENT, [])
+        if len(provenance_sources) != 1:
+            raise ScreenshotToolError(
+                f"{LIVE_PROVENANCE_ATTACHMENT}: expected 1 attachment, "
+                f"found {len(provenance_sources)}"
+            )
+        source = provenance_sources[0]
+        if not source.is_file():
+            raise ScreenshotToolError(
+                f"exported provenance attachment does not exist: {source}"
+            )
+        provenance = load_json(str(source))
+        validate_live_provenance(provenance)
+        provenance_output.parent.mkdir(parents=True, exist_ok=True)
+        provenance_output.write_text(
+            json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     return outputs
 
 
@@ -214,6 +266,72 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def validate_live_provenance(document: Any) -> dict[str, Any]:
+    if not isinstance(document, dict):
+        raise ScreenshotToolError("live runtime provenance must be a JSON object")
+    if document.get("schemaVersion") != 1:
+        raise ScreenshotToolError("live runtime provenance schemaVersion must be 1")
+    if document.get("captureMode") != LIVE_CAPTURE_MODE:
+        raise ScreenshotToolError(
+            f"live runtime provenance captureMode must be {LIVE_CAPTURE_MODE!r}"
+        )
+    if document.get("configuration") != "Release":
+        raise ScreenshotToolError("live screenshots must be captured in Release")
+    if document.get("fixtureEnvironmentInjected") is not False:
+        raise ScreenshotToolError("live provenance must prove fixture injection was false")
+
+    for section, requested_url in LIVE_TARGETS.items():
+        evidence = document.get(section)
+        if not isinstance(evidence, dict):
+            raise ScreenshotToolError(f"live provenance is missing {section}")
+        request_key = (
+            "sourceRequestedURL"
+            if section in {"settings", "proofDetails"}
+            else "requestedURL"
+        )
+        if evidence.get(request_key) != requested_url:
+            raise ScreenshotToolError(
+                f"{section}.{request_key} must be {requested_url!r}"
+            )
+
+    for section in ("hnsNavigation", "webPKINavigation"):
+        evidence = document[section]
+        final_address = evidence.get("finalAddress")
+        security_label = evidence.get("securityLabel")
+        if not isinstance(final_address, str) or not final_address.strip():
+            raise ScreenshotToolError(f"{section}.finalAddress must be non-empty")
+        if not isinstance(security_label, str) or not security_label.strip():
+            raise ScreenshotToolError(f"{section}.securityLabel must be non-empty")
+        if security_label in {"Security pending", "Waiting for a verified response"}:
+            raise ScreenshotToolError(f"{section} captured a pending security state")
+
+    hns_runtime_status = document["hnsNavigation"].get(
+        "runtimeStatusBeforeNavigation"
+    )
+    if not isinstance(hns_runtime_status, str) or not hns_runtime_status.startswith(
+        "Handshake headers current"
+    ):
+        raise ScreenshotToolError(
+            "hnsNavigation.runtimeStatusBeforeNavigation must prove current Handshake headers"
+        )
+
+    proof_label = document["proofDetails"].get("contentAccessibilityLabel")
+    if not isinstance(proof_label, str) or not proof_label.strip():
+        raise ScreenshotToolError(
+            "proofDetails.contentAccessibilityLabel must be non-empty"
+        )
+    expected_settings_row = "settings.hns-resolution.stateless-dane-certificates"
+    if document["settings"].get("statelessDANERowIdentifier") != expected_settings_row:
+        raise ScreenshotToolError("settings provenance is missing the stateless DANE row")
+    expected_settings_toggle = f"{expected_settings_row}.toggle"
+    if (
+        document["settings"].get("statelessDANEToggleIdentifier")
+        != expected_settings_toggle
+    ):
+        raise ScreenshotToolError("settings provenance is missing the stateless DANE switch")
+    return document
+
+
 def write_manifest(
     directory: Path,
     width: int,
@@ -222,16 +340,19 @@ def write_manifest(
     xcode: str,
     sdk: str,
     device: str,
+    screenshot_specs: tuple[tuple[str, str], ...] = SCREENSHOTS,
+    configuration: str = "Release",
+    runtime_provenance: dict[str, Any] | None = None,
 ) -> Path:
-    expected_files = [f"{basename}.jpg" for _, basename in SCREENSHOTS]
+    expected_files = [f"{basename}.jpg" for _, basename in screenshot_specs]
     actual_files = sorted(path.name for path in directory.glob("*.jpg"))
     if actual_files != sorted(expected_files):
         raise ScreenshotToolError(
             f"expected JPEG set {sorted(expected_files)}, found {actual_files}"
         )
 
-    screenshots = []
-    for attachment_name, basename in SCREENSHOTS:
+    screenshot_records = []
+    for attachment_name, basename in screenshot_specs:
         path = directory / f"{basename}.jpg"
         actual_width, actual_height = jpeg_dimensions(path)
         if (actual_width, actual_height) != (width, height):
@@ -239,7 +360,7 @@ def write_manifest(
                 f"{path.name} is {actual_width} x {actual_height}; "
                 f"expected {width} x {height}"
             )
-        screenshots.append(
+        screenshot_records.append(
             {
                 "attachment": attachment_name,
                 "file": path.name,
@@ -251,17 +372,77 @@ def write_manifest(
 
     document = {
         "capture": {
+            "configuration": configuration,
             "commit": commit,
             "device": device,
+            "fixtureEnvironmentInjected": False,
             "iosSdk": sdk,
+            "mode": LIVE_CAPTURE_MODE,
             "xcode": xcode,
         },
         "schemaVersion": 1,
-        "screenshots": screenshots,
+        "screenshots": screenshot_records,
     }
+    if runtime_provenance is not None:
+        document["runtimeEvidence"] = validate_live_provenance(runtime_provenance)
     output = directory / "manifest.json"
     output.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return output
+
+
+def verify_live_set(directory: Path, manifest: Any) -> list[Path]:
+    if not isinstance(manifest, dict) or manifest.get("schemaVersion") != 1:
+        raise ScreenshotToolError("live screenshot manifest schemaVersion must be 1")
+    capture = manifest.get("capture")
+    if not isinstance(capture, dict):
+        raise ScreenshotToolError("live screenshot manifest is missing capture provenance")
+    if capture.get("mode") != LIVE_CAPTURE_MODE:
+        raise ScreenshotToolError("fixture screenshots cannot be staged for App Store use")
+    if capture.get("configuration") != "Release":
+        raise ScreenshotToolError("only Release screenshots can be staged")
+    if capture.get("fixtureEnvironmentInjected") is not False:
+        raise ScreenshotToolError("fixture-injected screenshots cannot be staged")
+    for field in ("commit", "device", "iosSdk", "xcode"):
+        value = capture.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ScreenshotToolError(f"live screenshot manifest is missing capture.{field}")
+    validate_live_provenance(manifest.get("runtimeEvidence"))
+
+    expected_files = [f"{basename}.jpg" for _, basename in LIVE_SCREENSHOTS]
+    actual_files = sorted(path.name for path in directory.glob("*.jpg"))
+    if actual_files != sorted(expected_files):
+        raise ScreenshotToolError(
+            f"expected live JPEG set {sorted(expected_files)}, found {actual_files}"
+        )
+
+    records = manifest.get("screenshots")
+    if not isinstance(records, list) or len(records) != len(LIVE_SCREENSHOTS):
+        raise ScreenshotToolError("live screenshot manifest has the wrong image count")
+    records_by_file = {
+        record.get("file"): record for record in records if isinstance(record, dict)
+    }
+    verified = []
+    expected_by_file = {
+        f"{basename}.jpg": attachment for attachment, basename in LIVE_SCREENSHOTS
+    }
+    for filename in expected_files:
+        path = directory / filename
+        record = records_by_file.get(filename)
+        if not isinstance(record, dict):
+            raise ScreenshotToolError(f"manifest has no record for {filename}")
+        dimensions = jpeg_dimensions(path)
+        if dimensions != (1284, 2778):
+            raise ScreenshotToolError(
+                f"{filename} is {dimensions[0]} x {dimensions[1]}; expected 1284 x 2778"
+            )
+        if dimensions != (record.get("width"), record.get("height")):
+            raise ScreenshotToolError(f"manifest dimensions do not match {filename}")
+        if record.get("attachment") != expected_by_file[filename]:
+            raise ScreenshotToolError(f"manifest attachment does not match {filename}")
+        if sha256(path) != record.get("sha256"):
+            raise ScreenshotToolError(f"manifest digest does not match {filename}")
+        verified.append(path)
+    return verified
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -279,6 +460,10 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--manifest", required=True)
     collect.add_argument("--attachments-dir", required=True)
     collect.add_argument("--output-dir", required=True)
+    collect.add_argument(
+        "--profile", choices=sorted(SCREENSHOT_PROFILES), default="live"
+    )
+    collect.add_argument("--provenance-output")
 
     manifest = subparsers.add_parser("manifest")
     manifest.add_argument("--directory", required=True)
@@ -288,6 +473,12 @@ def build_parser() -> argparse.ArgumentParser:
     manifest.add_argument("--xcode", required=True)
     manifest.add_argument("--sdk", required=True)
     manifest.add_argument("--device", required=True)
+    manifest.add_argument("--configuration", default="Release")
+    manifest.add_argument("--runtime-provenance", required=True)
+
+    verify = subparsers.add_parser("verify-live")
+    verify.add_argument("--directory", required=True)
+    verify.add_argument("--manifest")
     return parser
 
 
@@ -300,11 +491,19 @@ def main() -> int:
             identifier, name = select_device_type(load_json(args.input))
             print(f"{identifier}\t{name}")
         elif args.command == "collect":
+            if args.profile == "live" and not args.provenance_output:
+                raise ScreenshotToolError(
+                    "live attachment collection requires --provenance-output"
+                )
             manifest = load_json(args.manifest)
             for output in collect_attachments(
                 manifest,
                 Path(args.attachments_dir),
                 Path(args.output_dir),
+                screenshot_specs=SCREENSHOT_PROFILES[args.profile],
+                provenance_output=(
+                    Path(args.provenance_output) if args.provenance_output else None
+                ),
             ):
                 print(output)
         elif args.command == "manifest":
@@ -317,8 +516,15 @@ def main() -> int:
                     args.xcode,
                     args.sdk,
                     args.device,
+                    configuration=args.configuration,
+                    runtime_provenance=load_json(args.runtime_provenance),
                 )
             )
+        elif args.command == "verify-live":
+            directory = Path(args.directory)
+            manifest_path = Path(args.manifest) if args.manifest else directory / "manifest.json"
+            for output in verify_live_set(directory, load_json(str(manifest_path))):
+                print(output)
     except (OSError, json.JSONDecodeError, ScreenshotToolError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

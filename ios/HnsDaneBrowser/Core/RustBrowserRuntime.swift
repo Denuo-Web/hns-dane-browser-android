@@ -312,15 +312,25 @@ final class RustBrowserRuntime: BrowserRuntime {
         let cacheEntries = (object["resourceCacheEntries"] as? NSNumber)?.intValue ?? 0
         let cacheBytes = (object["resourceCacheBytes"] as? NSNumber)?.uint64Value ?? 0
         let cacheEvicted = (object["resourceCacheEvicted"] as? NSNumber)?.intValue ?? 0
+        let targetHeight = peerHeight ?? estimatedTipHeight
+        let isBehind = bestHeight.flatMap { best in
+            targetHeight.map { target in target > best }
+        } ?? false
+        let isCurrent = status == "up_to_date"
+            || (["synced", "attempted"].contains(status) && !isBehind)
 
         let headline: String
-        switch status {
-        case "up_to_date": headline = "Handshake headers current"
-        case "syncing": headline = "Syncing Handshake headers"
-        case "cleared": headline = "Resolver cache cleared"
-        case "idle": headline = "Handshake sync idle"
-        case "error", "peer_failed", "seed_failed": headline = "Header sync needs attention"
-        default: headline = "Handshake sync \(status.replacingOccurrences(of: "_", with: " "))"
+        if isCurrent {
+            headline = "Handshake headers current"
+        } else {
+            switch status {
+            case "syncing", "synced", "attempted":
+                headline = "Syncing Handshake headers"
+            case "cleared": headline = "Resolver cache cleared"
+            case "idle": headline = "Handshake sync idle"
+            case "error", "peer_failed", "seed_failed": headline = "Header sync needs attention"
+            default: headline = "Handshake sync \(status.replacingOccurrences(of: "_", with: " "))"
+            }
         }
 
         let detail: String
