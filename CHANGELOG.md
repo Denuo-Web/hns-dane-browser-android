@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- Replaced the iOS placeholder icon with the production HNS DANE Browser artwork used by Android and Google Play, and added release checks for the canonical icon and archived app identity.
+
 ## 0.5.0 - 2026-07-16
 
 ### Added

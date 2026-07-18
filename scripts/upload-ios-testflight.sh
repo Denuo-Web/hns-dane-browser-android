@@ -88,6 +88,12 @@ export DEVELOPER_DIR="$developer_dir"
 
 cd "$ROOT_DIR"
 ./scripts/check-version-consistency.sh
+python3 ./dist/app-store/validate.py --metadata-only
+
+version="$(sed -n 's/^[[:space:]]*MARKETING_VERSION: \([^[:space:]]*\).*/\1/p' ios/project.yml)"
+build="$(sed -n 's/^[[:space:]]*CURRENT_PROJECT_VERSION: \([0-9][0-9]*\).*/\1/p' ios/project.yml)"
+[[ -n "$version" && -n "$build" ]] ||
+  fail "the expected iOS version and build could not be read from ios/project.yml."
 
 if [[ ! -s "$FRAMEWORK_PATH/Info.plist" ]]; then
   ./scripts/build-rust-ios.sh
@@ -286,6 +292,30 @@ xcodebuild \
 [[ -s "$archive_path/Info.plist" ]] ||
   fail "xcodebuild did not create the expected archive."
 
+archived_app="$archive_path/Products/Applications/HnsDaneBrowser.app"
+archived_info="$archived_app/Info.plist"
+[[ -s "$archived_info" ]] ||
+  fail "the archive does not contain HnsDaneBrowser.app/Info.plist."
+archived_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$archived_info")"
+archived_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$archived_info")"
+archived_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$archived_info")"
+archived_icon_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName' "$archived_info")"
+archived_encryption="$(/usr/libexec/PlistBuddy -c 'Print :ITSAppUsesNonExemptEncryption' "$archived_info")"
+[[ "$archived_bundle_id" == "$BUNDLE_ID" ]] ||
+  fail "the archived bundle ID is $archived_bundle_id; expected $BUNDLE_ID."
+[[ "$archived_version" == "$version" ]] ||
+  fail "the archived version is $archived_version; expected $version."
+[[ "$archived_build" == "$build" ]] ||
+  fail "the archived build is $archived_build; expected $build."
+[[ "$archived_icon_name" == AppIcon ]] ||
+  fail "the archived primary icon is $archived_icon_name; expected AppIcon."
+[[ "$archived_encryption" == false ]] ||
+  fail "the archived export-compliance declaration is not the reviewed false value."
+[[ -s "$archived_app/Assets.car" ]] ||
+  fail "the archive does not contain the compiled AppIcon asset catalog."
+printf 'Verified archived app: %s %s (%s), icon %s.\n' \
+  "$archived_bundle_id" "$archived_version" "$archived_build" "$archived_icon_name"
+
 xcodebuild \
   -exportArchive \
   -archivePath "$archive_path" \
@@ -294,6 +324,4 @@ xcodebuild \
   -allowProvisioningUpdates \
   "${authentication_args[@]}"
 
-version="$(sed -n 's/^[[:space:]]*MARKETING_VERSION: \([^[:space:]]*\).*/\1/p' ios/project.yml)"
-build="$(sed -n 's/^[[:space:]]*CURRENT_PROJECT_VERSION: \([0-9][0-9]*\).*/\1/p' ios/project.yml)"
 echo "Uploaded HNS DANE Browser $version ($build) to App Store Connect."

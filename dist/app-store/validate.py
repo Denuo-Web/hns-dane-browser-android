@@ -2,7 +2,9 @@
 """Validate the canonical iOS App Store metadata and screenshot package."""
 
 import argparse
+import hashlib
 import json
+import plistlib
 import re
 import struct
 import sys
@@ -17,7 +19,36 @@ SCREENSHOT_MANIFEST = STORE_ROOT / "screenshots" / "manifest.json"
 REPOSITORY_ROOT = STORE_ROOT.parent.parent
 
 EXPECTED_VERSION = "0.5.0"
-EXPECTED_BUILD = "42"
+EXPECTED_BUILD = "43"
+
+APP_ICON_SET = (
+    REPOSITORY_ROOT
+    / "ios"
+    / "HnsDaneBrowser"
+    / "Support"
+    / "Assets.xcassets"
+    / "AppIcon.appiconset"
+)
+APP_ICON = APP_ICON_SET / "AppIcon.png"
+PLAY_ICON = (
+    REPOSITORY_ROOT
+    / "dist"
+    / "play-store"
+    / "hns-dane-browser-play-icon-512.png"
+)
+EXPECTED_PLAY_ICON_SHA256 = (
+    "902af116445e4dca22ffe82751015692f2c3103875c5eb0e36652b0ee630ba2a"
+)
+EXPECTED_APP_ICON_SHA256 = (
+    "9aca66e4687acef4187b41f40bf24bf79a40a05353cb77a034ec6efacbc3f834"
+)
+IOS_PROJECT_DEFINITION = REPOSITORY_ROOT / "ios" / "project.yml"
+IOS_INFO_PLIST = (
+    REPOSITORY_ROOT / "ios" / "HnsDaneBrowser" / "Support" / "Info.plist"
+)
+IOS_XCODE_PROJECT = (
+    REPOSITORY_ROOT / "ios" / "HnsDaneBrowser.xcodeproj" / "project.pbxproj"
+)
 
 # Apple counts keywords and review notes in UTF-8 bytes; the other text limits
 # below are characters.
@@ -309,6 +340,166 @@ def image_info(path):
     return jpeg_info(path)
 
 
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_app_icon(validation):
+    contents_path = APP_ICON_SET / "Contents.json"
+    if not contents_path.is_file():
+        validation.error("{}: AppIcon catalog metadata is missing".format(contents_path))
+    else:
+        try:
+            contents = json.loads(contents_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            validation.error("{}: cannot read: {}".format(contents_path, error))
+        else:
+            images = contents.get("images")
+            expected_entry = {
+                "filename": "AppIcon.png",
+                "idiom": "universal",
+                "platform": "ios",
+                "size": "1024x1024",
+            }
+            if not isinstance(images, list) or expected_entry not in images:
+                validation.error(
+                    "{}: missing the universal 1024x1024 iOS AppIcon entry".format(
+                        contents_path
+                    )
+                )
+
+    for path, expected_size, expected_digest, label in (
+        (
+            PLAY_ICON,
+            (512, 512),
+            EXPECTED_PLAY_ICON_SHA256,
+            "canonical Google Play icon",
+        ),
+        (
+            APP_ICON,
+            (1024, 1024),
+            EXPECTED_APP_ICON_SHA256,
+            "iOS AppIcon",
+        ),
+    ):
+        if not path.is_file():
+            validation.error("{}: {} is missing".format(path, label))
+            continue
+        try:
+            width, height, has_alpha = png_info(path)
+            digest = sha256(path)
+        except (OSError, ValueError, struct.error) as error:
+            validation.error("{}: cannot verify: {}".format(path, error))
+            continue
+        if (width, height) != expected_size:
+            validation.error(
+                "{}: {} is {}x{}; expected {}x{}".format(
+                    path,
+                    label,
+                    width,
+                    height,
+                    expected_size[0],
+                    expected_size[1],
+                )
+            )
+        if has_alpha:
+            validation.error("{}: {} must be opaque".format(path, label))
+        if digest != expected_digest:
+            validation.error(
+                "{}: {} digest changed; review the artwork and update the "
+                "release checksum deliberately".format(path, label)
+            )
+
+
+def validate_ios_version_declarations(validation):
+    try:
+        project_definition = IOS_PROJECT_DEFINITION.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        validation.error("{}: cannot read: {}".format(IOS_PROJECT_DEFINITION, error))
+    else:
+        versions = set(
+            re.findall(
+                r"^\s*MARKETING_VERSION:\s*(\S+)\s*$",
+                project_definition,
+                re.MULTILINE,
+            )
+        )
+        builds = set(
+            re.findall(
+                r"^\s*CURRENT_PROJECT_VERSION:\s*([0-9]+)\s*$",
+                project_definition,
+                re.MULTILINE,
+            )
+        )
+        if versions != {EXPECTED_VERSION}:
+            validation.error(
+                "{}: MARKETING_VERSION values are {}; expected only {}".format(
+                    IOS_PROJECT_DEFINITION, sorted(versions), EXPECTED_VERSION
+                )
+            )
+        if builds != {EXPECTED_BUILD}:
+            validation.error(
+                "{}: CURRENT_PROJECT_VERSION values are {}; expected only {}".format(
+                    IOS_PROJECT_DEFINITION, sorted(builds), EXPECTED_BUILD
+                )
+            )
+
+    try:
+        with IOS_INFO_PLIST.open("rb") as source:
+            info = plistlib.load(source)
+    except (OSError, plistlib.InvalidFileException) as error:
+        validation.error("{}: cannot read: {}".format(IOS_INFO_PLIST, error))
+    else:
+        if info.get("CFBundleShortVersionString") != EXPECTED_VERSION:
+            validation.error(
+                "{}: CFBundleShortVersionString must be {}".format(
+                    IOS_INFO_PLIST, EXPECTED_VERSION
+                )
+            )
+        if info.get("CFBundleVersion") != EXPECTED_BUILD:
+            validation.error(
+                "{}: CFBundleVersion must be {}".format(
+                    IOS_INFO_PLIST, EXPECTED_BUILD
+                )
+            )
+
+    try:
+        xcode_project = IOS_XCODE_PROJECT.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        validation.error("{}: cannot read: {}".format(IOS_XCODE_PROJECT, error))
+    else:
+        versions = set(
+            re.findall(
+                r"^\s*MARKETING_VERSION = ([^;]+);",
+                xcode_project,
+                re.MULTILINE,
+            )
+        )
+        builds = set(
+            re.findall(
+                r"^\s*CURRENT_PROJECT_VERSION = ([0-9]+);",
+                xcode_project,
+                re.MULTILINE,
+            )
+        )
+        if versions != {EXPECTED_VERSION}:
+            validation.error(
+                "{}: MARKETING_VERSION values are {}; expected only {}".format(
+                    IOS_XCODE_PROJECT, sorted(versions), EXPECTED_VERSION
+                )
+            )
+        if builds != {EXPECTED_BUILD}:
+            validation.error(
+                "{}: CURRENT_PROJECT_VERSION values are {}; expected only {}".format(
+                    IOS_XCODE_PROJECT, sorted(builds), EXPECTED_BUILD
+                )
+            )
+
+
 def validate_live_screenshot_provenance(validation):
     if not SCREENSHOT_MANIFEST.is_file():
         validation.error(
@@ -429,6 +620,8 @@ def main(argv=None):
 
     validation = Validation()
     values = validate_metadata(validation)
+    validate_app_icon(validation)
+    validate_ios_version_declarations(validation)
     if not arguments.metadata_only:
         validate_screenshots(validation)
 
@@ -446,7 +639,11 @@ def main(argv=None):
         )
         return 1
 
-    checked = "metadata" if arguments.metadata_only else "metadata and screenshots"
+    checked = (
+        "metadata and AppIcon"
+        if arguments.metadata_only
+        else "metadata, AppIcon, and screenshots"
+    )
     print(
         "PASS: {} field files validated for version {} build {}; {} checked; {} warning(s)".format(
             len(values), EXPECTED_VERSION, EXPECTED_BUILD, checked, len(validation.warnings)
