@@ -84,6 +84,7 @@ rustup target add --toolchain "$RUST_TOOLCHAIN" "${APPLE_TARGETS[@]}"
 
 cd "$ROOT_DIR"
 ./scripts/check-version-consistency.sh
+python3 ./dist/app-store/validate.py --metadata-only
 ./scripts/check-runtime-boundaries.sh
 python3 ./scripts/test_select_ios_simulator.py
 
