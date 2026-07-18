@@ -1,6 +1,6 @@
 {
   "capture": {
-    "commit": "767fe8c017546d714f87cec0fcbf243e3acde35f",
+    "commit": "528c97bd57c37e1547129b651881104203fd3542",
     "configuration": "Release",
     "device": "iPhone 14 Plus",
     "fixtureEnvironmentInjected": false,
@@ -15,7 +15,7 @@
     "hnsNavigation": {
       "finalAddress": "https://denuoweb/",
       "requestedURL": "https://denuoweb/",
-      "runtimeStatusBeforeNavigation": "Handshake headers current. Local height 338648 \u00b7 peer height 338648 \u00b7 accepted 38648/20",
+      "runtimeStatusBeforeNavigation": "Handshake headers current. Local height 338741 \u00b7 peer height 338741 \u00b7 accepted 38741/20",
       "securityLabel": "DANE verified \u00b7 authoritative DoH"
     },
     "proofDetails": {
@@ -40,28 +40,28 @@
       "attachment": "LIVE_APPSTORE_SCREENSHOT_01_HNS_PAGE",
       "file": "01-hns-page.jpg",
       "height": 2778,
-      "sha256": "6d8e72d6e114039eb1fee89bcaba3428cbd31401e7ad407ae3b6ad3f4b6b7a7b",
+      "sha256": "157615fafd3abb2c7748eb8bc00461f9943789af8635d0202ad3ddcd8d008121",
       "width": 1284
     },
     {
       "attachment": "LIVE_APPSTORE_SCREENSHOT_02_SETTINGS",
       "file": "02-settings.jpg",
       "height": 2778,
-      "sha256": "25a2dd489716201a04847ccd4e704ee9c6131a5582aa0acc56ac995e4952085b",
+      "sha256": "cb9131481c310cd569e80df1fba48c5e7ddec66e9fe411d2d64a00dcada0efb7",
       "width": 1284
     },
     {
       "attachment": "LIVE_APPSTORE_SCREENSHOT_03_PROOF_DETAILS",
       "file": "03-proof-details.jpg",
       "height": 2778,
-      "sha256": "35539e6c28d4022741e64a772369007a3f41ed57bb91466e233a6b9b2612b7ba",
+      "sha256": "78d4472d57cede01910475bee8f2726138c56f4471d949f12b4013978f78f800",
       "width": 1284
     },
     {
       "attachment": "LIVE_APPSTORE_SCREENSHOT_04_WEBPKI",
       "file": "04-webpki.jpg",
       "height": 2778,
-      "sha256": "9ef6d86c75670333ffd06f38ef8446409ed0b1d012e94087bba761f96b8fd5c2",
+      "sha256": "7eb10a3de8e280ab498f797265fbcb4b8e64568039dfd66a072c1c50bffaf09a",
       "width": 1284
     }
   ]
