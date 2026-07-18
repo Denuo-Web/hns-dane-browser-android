@@ -168,28 +168,19 @@ final class LiveAppStoreScreenshotTests: XCTestCase {
 
         let table = app.tables["settings.table"]
         XCTAssertTrue(table.waitForExistence(timeout: 10), "Settings table did not appear")
-        let statelessRow = app.descendants(matching: .any)[
+        let statelessRow = table.cells[
             "settings.hns-resolution.stateless-dane-certificates"
         ]
         let statelessToggle = app.switches[
             "settings.hns-resolution.stateless-dane-certificates.toggle"
         ]
-        for _ in 0..<6 where !statelessRow.exists || !statelessRow.isHittable {
-            assertNoNavigationAlert()
-            table.swipeUp()
-        }
         XCTAssertTrue(
-            waitUntil(
-                description: "Android-aligned HNS settings",
-                timeout: timeout,
-                condition: {
-                    table.exists
-                        && statelessRow.exists
-                        && statelessRow.isHittable
-                        && statelessToggle.exists
-                        && statelessToggle.isHittable
-                }
-            )
+            scrollUp(in: table, untilFullyVisible: statelessRow),
+            "Android-aligned HNS settings did not become visible"
+        )
+        XCTAssertTrue(
+            statelessToggle.waitForExistence(timeout: timeout),
+            "Stateless DANE toggle did not appear"
         )
         assertNoNavigationAlert()
         return [
@@ -203,17 +194,10 @@ final class LiveAppStoreScreenshotTests: XCTestCase {
 
     private func openProofDetails(timeout: TimeInterval) throws -> [String: Any] {
         let table = app.tables["settings.table"]
-        let proofRow = app.descendants(matching: .any)["browser-settings.proof-details"]
-        for _ in 0..<6 where !proofRow.exists || !proofRow.isHittable {
-            assertNoNavigationAlert()
-            table.swipeUp()
-        }
+        let proofRow = table.cells["browser-settings.proof-details"]
         XCTAssertTrue(
-            waitUntil(
-                description: "HNS proof details setting",
-                timeout: 20,
-                condition: { proofRow.exists && proofRow.isHittable }
-            )
+            scrollUp(in: table, untilFullyVisible: proofRow),
+            "HNS proof details setting did not become visible"
         )
         proofRow.tap()
 
@@ -234,6 +218,31 @@ final class LiveAppStoreScreenshotTests: XCTestCase {
             "sourceRequestedURL": Self.hnsURL,
             "contentAccessibilityLabel": proofContent.label,
         ]
+    }
+
+    private func scrollUp(
+        in table: XCUIElement,
+        untilFullyVisible element: XCUIElement,
+        maxSwipes: Int = 10
+    ) -> Bool {
+        for attempt in 0...maxSwipes {
+            assertNoNavigationAlert()
+
+            if element.exists {
+                let elementFrame = element.frame
+                let viewport = table.frame
+                if !elementFrame.isEmpty,
+                   elementFrame.minY >= viewport.minY,
+                   elementFrame.maxY <= viewport.maxY {
+                    return true
+                }
+            }
+
+            if attempt < maxSwipes {
+                table.swipeUp()
+            }
+        }
+        return false
     }
 
     @discardableResult
